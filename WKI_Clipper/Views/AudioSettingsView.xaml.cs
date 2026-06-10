@@ -147,26 +147,31 @@ public partial class AudioSettingsView : UserControl
         // Event handlers
         radioAll.Checked += (_, _) =>
         {
+            Logger.Info("AudioSettings: user selected AllAudio");
             host.Settings.Current.Audio.SystemCaptureMode = Models.AudioCaptureMode.AllAudio;
             host.Settings.Save();
             pickerPanel.Visibility = Visibility.Collapsed;
             host.StartGameWatcherIfNeeded();
             _ = host.ReplayBuffer.RestartIfRunningAsync();
+            UpdateGameStatus(statusText, host);
         };
         radioGame.Checked += (_, _) =>
         {
+            Logger.Info("AudioSettings: user selected GameOnly");
             host.Settings.Current.Audio.SystemCaptureMode = Models.AudioCaptureMode.GameOnly;
             host.Settings.Save();
             pickerPanel.Visibility = Visibility.Visible;
             host.StartGameWatcherIfNeeded();
             _ = host.ReplayBuffer.RestartIfRunningAsync();
+            UpdateGameStatus(statusText, host);
         };
         processBox.SelectionChanged += (_, _) =>
         {
             if (processBox.SelectedItem is ProcessListEntry entry)
             {
-                host.Settings.Current.Audio.GameProcessName =
-                    entry.IsAutoDetect ? null : entry.ProcessName;
+                var procName = entry.IsAutoDetect ? null : entry.ProcessName;
+                Logger.Info($"AudioSettings: process selected = '{procName ?? "(auto-detect)"}' (mode={host.Settings.Current.Audio.SystemCaptureMode})");
+                host.Settings.Current.Audio.GameProcessName = procName;
                 host.Settings.Save();
                 host.StartGameWatcherIfNeeded();
                 _ = host.ReplayBuffer.RestartIfRunningAsync();

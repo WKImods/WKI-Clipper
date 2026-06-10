@@ -50,6 +50,7 @@ public sealed class ReplayBufferService : IDisposable
         // If audio init fails, fall back to video-only — otherwise ffmpeg
         // would try to read from a dead pipe and the whole buffer dies.
         int? gamePid = null;
+        Logger.Info($"ReplayBuffer.Start: SystemCaptureMode={_settings.Current.Audio.SystemCaptureMode}, GameProcessName='{_settings.Current.Audio.GameProcessName ?? "(null)"}', WatcherPid={App.Host?.GameWatcher?.CurrentPid?.ToString() ?? "null"}");
         if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
         {
             gamePid = App.Host?.GameWatcher?.CurrentPid;

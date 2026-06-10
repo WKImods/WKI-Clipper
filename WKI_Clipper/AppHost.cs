@@ -93,6 +93,8 @@ public sealed class AppHost : IDisposable
         GameWatcher = null;
 
         var audio = Settings.Current.Audio;
+        Logger.Info($"StartGameWatcherIfNeeded: mode={audio.SystemCaptureMode}, processName='{audio.GameProcessName ?? "(null)"}'");
+
         if (audio.SystemCaptureMode == AudioCaptureMode.GameOnly
             && !string.IsNullOrEmpty(audio.GameProcessName))
         {
@@ -116,7 +118,12 @@ public sealed class AppHost : IDisposable
                         "Spiel beendet",
                         $"{gameName} — alle Sounds aktiv");
             };
+            // Start() does an immediate synchronous check before starting the poll loop
             GameWatcher.Start();
+        }
+        else
+        {
+            Logger.Info("StartGameWatcherIfNeeded: no watcher needed (AllAudio or no process name)");
         }
     }
 

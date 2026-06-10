@@ -35,9 +35,11 @@ public sealed class GameProcessWatcher : IDisposable
     public void Start()
     {
         if (_cts != null) return;
+        // Immediate synchronous check so CurrentPid is set BEFORE caller restarts buffer
+        CheckProcess();
         _cts = new CancellationTokenSource();
         _pollTask = Task.Run(() => PollLoop(_cts.Token));
-        Logger.Info($"GameProcessWatcher started, watching for: {_processName}");
+        Logger.Info($"GameProcessWatcher started, watching for: {_processName} | immediate PID: {CurrentPid?.ToString() ?? "not found"}");
     }
 
     public void Stop()
@@ -57,7 +59,8 @@ public sealed class GameProcessWatcher : IDisposable
         {
             try
             {
-                await Task.Delay(5000, ct).ConfigureAwait(false);
+                // Poll every 2s instead of 5s for snappier detection
+                await Task.Delay(2000, ct).ConfigureAwait(false);
                 CheckProcess();
             }
             catch (OperationCanceledException) { return; }

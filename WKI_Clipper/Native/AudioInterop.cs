@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using NAudio.Wave;
 
 namespace WKI_Clipper.Native;
 
@@ -18,6 +19,13 @@ internal enum PROCESS_LOOPBACK_MODE
 }
 
 [Flags]
+internal enum AUDCLNT_SHAREMODE
+{
+    SHARED = 0,
+    EXCLUSIVE = 1
+}
+
+[Flags]
 internal enum AUDCLNT_STREAMFLAGS : uint
 {
     NONE = 0,
@@ -29,7 +37,16 @@ internal enum AUDCLNT_STREAMFLAGS : uint
     SRC_DEFAULT_QUALITY = 0x08000000,
 }
 
-// ── Structs ────────────────────────────────────────────────────────
+[Flags]
+internal enum AUDCLNT_BUFFERFLAGS
+{
+    NONE = 0,
+    DATA_DISCONTINUITY = 0x1,
+    SILENT = 0x2,
+    TIMESTAMP_ERROR = 0x4
+}
+
+// ── Native Structs ────────────────────────────────────────────────
 
 [StructLayout(LayoutKind.Sequential)]
 internal struct AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS
@@ -63,7 +80,7 @@ internal struct PROPVARIANT : IDisposable
         Marshal.StructureToPtr(p, ptr, false);
         return new PROPVARIANT
         {
-            vt = 0x1011,  // VT_BLOB
+            vt = 0x0041,  // VT_BLOB (65)
             blob_cbSize = (IntPtr)size,
             blob_pBlobData = ptr
         };
@@ -79,7 +96,36 @@ internal struct PROPVARIANT : IDisposable
     }
 }
 
-// ── COM Interfaces ─────────────────────────────────────────────────
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+internal struct WAVEFORMATEX
+{
+    public ushort wFormatTag;
+    public ushort nChannels;
+    public uint nSamplesPerSec;
+    public uint nAvgBytesPerSec;
+    public ushort nBlockAlign;
+    public ushort wBitsPerSample;
+    public ushort cbSize;
+
+    /// <summary>Convert to NAudio WaveFormat for use in WaveInEventArgs.</summary>
+    public WaveFormat ToWaveFormat()
+    {
+        if (wFormatTag == 0xFFFE) // WAVE_FORMAT_EXTENSIBLE
+        {
+            // The WAVEFORMATEXTENSIBLE struct follows WAVEFORMATEX
+            // For IEEE float, the SubFormat GUID starts at offset +2 after cbSize
+            return WaveFormat.CreateIeeeFloatWaveFormat((int)nSamplesPerSec, nChannels);
+        }
+        if (wFormatTag == 3) // IEEE_FLOAT
+            return WaveFormat.CreateIeeeFloatWaveFormat((int)nSamplesPerSec, nChannels);
+        if (wFormatTag == 1) // PCM
+            return new WaveFormat((int)nSamplesPerSec, wBitsPerSample, nChannels);
+        // Fallback
+        return WaveFormat.CreateIeeeFloatWaveFormat((int)nSamplesPerSec, nChannels);
+    }
+}
+
+// ── COM Interfaces (exact Windows SDK vtable order) ───────────────
 
 [ComImport, Guid("72A22D78-CDE4-431D-B8CC-843A71199B6D"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -96,6 +142,101 @@ internal interface IActivateAudioInterfaceCompletionHandler
     void ActivateCompleted(IActivateAudioInterfaceAsyncOperation activateOperation);
 }
 
+/// <summary>
+/// IAudioClient COM interface with exact Windows SDK vtable layout.
+/// All methods use PreserveSig to return raw HRESULTs.
+/// We define our OWN interface because NAudio's internal IAudioClient has
+/// a vtable mismatch that causes E_NOTIMPL when used with Process Loopback.
+/// </summary>
+[ComImport, Guid("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IWasapiAudioClient
+{
+    // Slot 3
+    [PreserveSig]
+    int Initialize(
+        AUDCLNT_SHAREMODE shareMode,
+        AUDCLNT_STREAMFLAGS streamFlags,
+        long hnsBufferDuration,
+        long hnsPeriodicity,
+        IntPtr pFormat,     // WAVEFORMATEX*
+        IntPtr audioSessionGuid);  // LPCGUID, pass IntPtr.Zero
+
+    // Slot 4
+    [PreserveSig]
+    int GetBufferSize(out uint numBufferFrames);
+
+    // Slot 5
+    [PreserveSig]
+    int GetStreamLatency(out long hnsLatency);
+
+    // Slot 6
+    [PreserveSig]
+    int GetCurrentPadding(out uint numPaddingFrames);
+
+    // Slot 7
+    [PreserveSig]
+    int IsFormatSupported(
+        AUDCLNT_SHAREMODE shareMode,
+        IntPtr pFormat,
+        out IntPtr ppClosestMatch);
+
+    // Slot 8
+    [PreserveSig]
+    int GetMixFormat(out IntPtr ppDeviceFormat);
+
+    // Slot 9
+    [PreserveSig]
+    int GetDevicePeriod(out long hnsDefaultDevicePeriod, out long hnsMinimumDevicePeriod);
+
+    // Slot 10
+    [PreserveSig]
+    int Start();
+
+    // Slot 11
+    [PreserveSig]
+    int Stop();
+
+    // Slot 12
+    [PreserveSig]
+    int Reset();
+
+    // Slot 13
+    [PreserveSig]
+    int SetEventHandle(IntPtr eventHandle);
+
+    // Slot 14
+    [PreserveSig]
+    int GetService(
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
+        [MarshalAs(UnmanagedType.IUnknown)] out object ppv);
+}
+
+/// <summary>
+/// IAudioCaptureClient COM interface with exact Windows SDK vtable layout.
+/// </summary>
+[ComImport, Guid("C8ADBD64-E71E-48A0-A4DE-185C395CD317"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IWasapiCaptureClient
+{
+    // Slot 3
+    [PreserveSig]
+    int GetBuffer(
+        out IntPtr ppData,
+        out uint pNumFramesToRead,
+        out AUDCLNT_BUFFERFLAGS pdwFlags,
+        out ulong pu64DevicePosition,
+        out ulong pu64QPCPosition);
+
+    // Slot 4
+    [PreserveSig]
+    int ReleaseBuffer(uint numFramesRead);
+
+    // Slot 5
+    [PreserveSig]
+    int GetNextPacketSize(out uint pNumFramesInNextPacket);
+}
+
 // ── P/Invoke ───────────────────────────────────────────────────────
 
 internal static class AudioInterop
@@ -108,6 +249,10 @@ internal static class AudioInterop
     public static readonly Guid IID_IAudioClient =
         new("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
 
+    // IAudioCaptureClient GUID
+    public static readonly Guid IID_IAudioCaptureClient =
+        new("C8ADBD64-E71E-48A0-A4DE-185C395CD317");
+
     [DllImport("mmdevapi.dll", PreserveSig = true)]
     public static extern int ActivateAudioInterfaceAsync(
         [MarshalAs(UnmanagedType.LPWStr)] string deviceInterfacePath,
@@ -115,4 +260,7 @@ internal static class AudioInterop
         ref PROPVARIANT activationParams,
         IActivateAudioInterfaceCompletionHandler completionHandler,
         out IActivateAudioInterfaceAsyncOperation activationOperation);
+
+    [DllImport("ole32.dll")]
+    internal static extern void CoTaskMemFree(IntPtr ptr);
 }

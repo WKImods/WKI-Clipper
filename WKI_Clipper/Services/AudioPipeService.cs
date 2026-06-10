@@ -106,6 +106,7 @@ public sealed class AudioPipeService : IDisposable
         // System loopback — try independently of mic
         if (_wantSys)
         {
+            Logger.Info($"AudioPipe: captureMode={_captureMode}, gamePid={_gamePid?.ToString() ?? "null"}");
             try
             {
                 if (_captureMode == AudioCaptureMode.GameOnly && _gamePid.HasValue)
