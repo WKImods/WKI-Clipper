@@ -55,61 +55,207 @@ public partial class AudioSettingsView : UserControl
         RowsContainer.Children.Add(BuildMicCard(host));
         RowsContainer.Children.Add(BuildSysCard(host));
         RowsContainer.Children.Add(BuildSyncCard(host));
-        RowsContainer.Children.Add(BuildPerAppHintCard(host));
+        RowsContainer.Children.Add(BuildGameAudioCard(host));
 
         StartMeter();
     }
 
-    private FrameworkElement BuildPerAppHintCard(AppHost host)
+    private FrameworkElement BuildGameAudioCard(AppHost host)
     {
         var stack = new StackPanel();
+
+        // Header
         stack.Children.Add(new TextBlock
         {
-            Text = "Bestimmte App aus der Aufnahme ausschließen",
+            Text = "Spiel-Audio",
             FontWeight = System.Windows.FontWeights.SemiBold,
             FontSize = 14,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 6)
         });
-        stack.Children.Add(new TextBlock
-        {
-            Text = "Windows kann per-Process-Loopback (z.B. Discord aus der System-Audio-Spur rausschneiden), das braucht aber die WASAPI-Process-Loopback-API. Bis das hier eingebaut ist, einfacher Workaround:",
-            Style = (Style)FindResource("MutedStyle"),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 10)
-        });
 
-        var list = new TextBlock
+        // Radio: AllAudio vs GameOnly
+        var radioAll = new System.Windows.Controls.RadioButton
         {
-            Style = (Style)FindResource("MutedStyle"),
-            TextWrapping = TextWrapping.Wrap,
+            Content = "Alle Sounds aufnehmen",
+            IsChecked = host.Settings.Current.Audio.SystemCaptureMode == Models.AudioCaptureMode.AllAudio,
             Foreground = (Brush)FindResource("TextBrush"),
-            FontSize = 12,
-            Text = "• Windows-Lautstärkemixer öffnen (Rechtsklick aufs Lautsprecher-Symbol → Lautstärkemixer)\n" +
-                   "• Discord (oder andere App) im Output-Gerät dieser App auf ein anderes Wiedergabegerät umrouten (z.B. ein zweites virtuelles Output) — dann ist Discord NICHT in der System-Loopback drin.\n" +
-                   "• Alternativ: in den Settings dieser App ein anderes Output-Gerät einstellen, das nicht dein Spiel-Gerät ist."
+            Margin = new Thickness(0, 0, 0, 4)
         };
-        stack.Children.Add(list);
-
-        var openMixerBtn = new System.Windows.Controls.Button
+        var radioGame = new System.Windows.Controls.RadioButton
         {
-            Content = "Lautstärkemixer öffnen",
-            Padding = new Thickness(10, 6, 10, 6),
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
-            Margin = new Thickness(0, 12, 0, 0)
+            Content = "Nur Spiel-Audio aufnehmen",
+            IsChecked = host.Settings.Current.Audio.SystemCaptureMode == Models.AudioCaptureMode.GameOnly,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 0, 0, 8)
         };
-        openMixerBtn.Click += (_, _) =>
+        stack.Children.Add(radioAll);
+        stack.Children.Add(radioGame);
+
+        // Process picker panel — only visible when GameOnly
+        var pickerPanel = new StackPanel
+        {
+            Visibility = radioGame.IsChecked == true ? Visibility.Visible : Visibility.Collapsed,
+            Margin = new Thickness(20, 0, 0, 0)
+        };
+
+        // Process dropdown
+        var processBox = new System.Windows.Controls.ComboBox
+        {
+            MinWidth = 320,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        RefreshProcessList(processBox, host.Settings.Current.Audio.GameProcessName);
+
+        var refreshBtn = new System.Windows.Controls.Button
+        {
+            Content = "Aktualisieren",
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        refreshBtn.Click += (_, _) =>
+            RefreshProcessList(processBox, host.Settings.Current.Audio.GameProcessName);
+
+        var processRow = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+        DockPanel.SetDock(refreshBtn, Dock.Right);
+        processRow.Children.Add(refreshBtn);
+        processRow.Children.Add(processBox);
+        pickerPanel.Children.Add(BuildLabeledRow("Prozess", processRow));
+
+        // Status text
+        var statusText = new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        UpdateGameStatus(statusText, host);
+        pickerPanel.Children.Add(statusText);
+
+        stack.Children.Add(pickerPanel);
+
+        // Explanation
+        var hint = new TextBlock
+        {
+            Text = "Im Modus \"Nur Spiel-Audio\" wird nur der Sound des ausgewaehlten Prozesses aufgenommen. Discord, Browser und andere Apps sind automatisch stumm im Clip. Der Buffer startet automatisch neu wenn das Spiel erkannt wird.",
+            Style = (Style)FindResource("MutedStyle"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        stack.Children.Add(hint);
+
+        // Event handlers
+        radioAll.Checked += (_, _) =>
+        {
+            host.Settings.Current.Audio.SystemCaptureMode = Models.AudioCaptureMode.AllAudio;
+            host.Settings.Save();
+            pickerPanel.Visibility = Visibility.Collapsed;
+            host.StartGameWatcherIfNeeded();
+            _ = host.ReplayBuffer.RestartIfRunningAsync();
+        };
+        radioGame.Checked += (_, _) =>
+        {
+            host.Settings.Current.Audio.SystemCaptureMode = Models.AudioCaptureMode.GameOnly;
+            host.Settings.Save();
+            pickerPanel.Visibility = Visibility.Visible;
+            host.StartGameWatcherIfNeeded();
+            _ = host.ReplayBuffer.RestartIfRunningAsync();
+        };
+        processBox.SelectionChanged += (_, _) =>
+        {
+            if (processBox.SelectedItem is ProcessListEntry entry)
+            {
+                host.Settings.Current.Audio.GameProcessName =
+                    entry.IsAutoDetect ? null : entry.ProcessName;
+                host.Settings.Save();
+                host.StartGameWatcherIfNeeded();
+                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                UpdateGameStatus(statusText, host);
+            }
+        };
+
+        return Card(stack);
+    }
+
+    private static void RefreshProcessList(System.Windows.Controls.ComboBox box, string? currentName)
+    {
+        box.Items.Clear();
+
+        // First entry: auto-detect
+        var autoEntry = new ProcessListEntry("Automatisch (Vordergrundfenster)", null, true);
+        box.Items.Add(autoEntry);
+
+        // All processes with a main window
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var proc in System.Diagnostics.Process.GetProcesses())
         {
             try
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:apps-volume")
-                { UseShellExecute = true });
-            }
-            catch (Exception ex) { Logger.Error("open volume mixer failed", ex); }
-        };
-        stack.Children.Add(openMixerBtn);
+                if (proc.MainWindowHandle == IntPtr.Zero) continue;
+                string name = proc.ProcessName;
+                if (!seen.Add(name)) continue;
 
-        return Card(stack);
+                string title = proc.MainWindowTitle;
+                string display = string.IsNullOrEmpty(title) ? name : $"{title} ({name})";
+                var entry = new ProcessListEntry(display, name, false);
+                box.Items.Add(entry);
+            }
+            catch { }
+            finally { proc.Dispose(); }
+        }
+
+        // Select current
+        if (string.IsNullOrEmpty(currentName))
+        {
+            box.SelectedIndex = 0; // auto-detect
+        }
+        else
+        {
+            bool found = false;
+            for (int i = 1; i < box.Items.Count; i++)
+            {
+                if (box.Items[i] is ProcessListEntry e
+                    && string.Equals(e.ProcessName, currentName, StringComparison.OrdinalIgnoreCase))
+                {
+                    box.SelectedIndex = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                // Process not running — add a placeholder
+                var placeholder = new ProcessListEntry($"{currentName} (nicht aktiv)", currentName, false);
+                box.Items.Add(placeholder);
+                box.SelectedIndex = box.Items.Count - 1;
+            }
+        }
+    }
+
+    private static void UpdateGameStatus(TextBlock statusText, AppHost host)
+    {
+        if (host.Settings.Current.Audio.SystemCaptureMode != Models.AudioCaptureMode.GameOnly)
+        {
+            statusText.Text = "";
+            return;
+        }
+        var name = host.Settings.Current.Audio.GameProcessName ?? "Vordergrundfenster";
+        var pid = host.GameWatcher?.CurrentPid;
+        if (pid.HasValue)
+        {
+            statusText.Text = $"Aktiv: {name} (PID {pid}) — nur Game-Audio wird aufgenommen";
+            statusText.Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0xD8, 0x6A));
+        }
+        else
+        {
+            statusText.Text = $"{name} nicht gestartet — aktuell werden alle Sounds aufgenommen";
+            statusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40));
+        }
+    }
+
+    private sealed record ProcessListEntry(string DisplayName, string? ProcessName, bool IsAutoDetect)
+    {
+        public override string ToString() => DisplayName;
     }
 
     private FrameworkElement BuildSyncCard(AppHost host)
