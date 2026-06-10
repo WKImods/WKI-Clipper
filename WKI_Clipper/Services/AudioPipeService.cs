@@ -36,7 +36,7 @@ public sealed class AudioPipeService : IDisposable
 
     private readonly string _pipeName;
     private NamedPipeServerStream? _server;
-    private WasapiLoopbackCapture? _sysCapture;
+    private IWaveIn? _sysCapture;
     private WasapiCapture? _micCapture;
     private BufferedWaveProvider? _sysBuf;
     private BufferedWaveProvider? _micBuf;
@@ -54,8 +54,10 @@ public sealed class AudioPipeService : IDisposable
     private readonly string? _sysDeviceName;
     private readonly float _micVolume;
     private readonly float _sysVolume;
+    private readonly AudioCaptureMode _captureMode;
+    private readonly int? _gamePid;
 
-    public AudioPipeService(AppSettings settings)
+    public AudioPipeService(AppSettings settings, int? gamePid = null)
     {
         _wantMic = settings.Audio.RecordMicrophone && !string.IsNullOrWhiteSpace(settings.Audio.MicDeviceId);
         _wantSys = settings.Audio.RecordSystemSound && !string.IsNullOrWhiteSpace(settings.Audio.SystemDeviceId);
@@ -63,6 +65,8 @@ public sealed class AudioPipeService : IDisposable
         _sysDeviceName = settings.Audio.SystemDeviceId;
         _micVolume = (float)Math.Clamp(settings.Audio.MicVolume, 0.0, 8.0);
         _sysVolume = (float)Math.Clamp(settings.Audio.SystemVolume, 0.0, 8.0);
+        _captureMode = settings.Audio.SystemCaptureMode;
+        _gamePid = gamePid;
         _pipeName = "WKI_Clipper_Audio_" + Guid.NewGuid().ToString("N").Substring(0, 8);
     }
 
@@ -104,14 +108,22 @@ public sealed class AudioPipeService : IDisposable
         {
             try
             {
-                var sysDev = FindRender(enumerator, _sysDeviceName)
-                            ?? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                // WasapiLoopbackCapture in NAudio 2.2.1 has no event-sync
-                // constructor — it runs on the render-side period which is
-                // typically 10–20 ms anyway, so its callback cadence is
-                // already short and steady. The mic capture below is the
-                // one that needs forcing (default 100 ms).
-                _sysCapture = new WasapiLoopbackCapture(sysDev);
+                if (_captureMode == AudioCaptureMode.GameOnly && _gamePid.HasValue)
+                {
+                    // Process-specific loopback — only the game's audio
+                    var plc = new ProcessLoopbackCapture((uint)_gamePid.Value);
+                    _sysCapture = plc;
+                    Logger.Info($"Using ProcessLoopbackCapture for PID {_gamePid.Value}");
+                }
+                else
+                {
+                    // Standard loopback — all system audio
+                    var sysDev = FindRender(enumerator, _sysDeviceName)
+                                ?? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    _sysCapture = new WasapiLoopbackCapture(sysDev);
+                    Logger.Info($"Audio system loopback started: {sysDev.FriendlyName} | {_sysCapture.WaveFormat} | vol={_sysVolume:F2}");
+                }
+
                 _sysBuf = new BufferedWaveProvider(_sysCapture.WaveFormat)
                 {
                     BufferLength = 1 << 21,
@@ -128,7 +140,6 @@ public sealed class AudioPipeService : IDisposable
                 };
                 _sysCapture.StartRecording();
                 SystemActive = true;
-                Logger.Info($"Audio system loopback started: {sysDev.FriendlyName} | {_sysCapture.WaveFormat} | vol={_sysVolume:F2}");
             }
             catch (Exception ex)
             {
