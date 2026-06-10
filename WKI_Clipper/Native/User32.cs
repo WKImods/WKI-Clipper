@@ -43,6 +43,9 @@ internal static class User32
     public const uint PW_CLIENTONLY = 0x00000001;
     public const uint PW_RENDERFULLCONTENT = 0x00000002;
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {

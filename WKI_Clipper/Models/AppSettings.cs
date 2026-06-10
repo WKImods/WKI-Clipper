@@ -45,6 +45,25 @@ public sealed class AudioSettings
     /// (typical fix when audio plays delayed vs video). Range roughly -500..+500 ms.
     /// </summary>
     public int OffsetMilliseconds { get; set; } = 0;
+
+    /// <summary>
+    /// AllAudio = standard loopback (everything). GameOnly = only the selected process.
+    /// </summary>
+    public AudioCaptureMode SystemCaptureMode { get; set; } = AudioCaptureMode.AllAudio;
+
+    /// <summary>
+    /// Process name (without .exe) for GameOnly mode. null = auto-detect foreground window.
+    /// </summary>
+    public string? GameProcessName { get; set; }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AudioCaptureMode
+{
+    /// <summary>Standard WASAPI Loopback — captures ALL system audio.</summary>
+    AllAudio,
+    /// <summary>Process Loopback — captures ONLY audio from a specific process tree.</summary>
+    GameOnly
 }
 
 public sealed class VideoSettings
