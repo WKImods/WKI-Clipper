@@ -387,33 +387,7 @@ public sealed class AudioPipeService : IDisposable
         }
     }
 
-    private ISampleProvider? BuildMixGraph()
-    {
-        ISampleProvider? sys = null, mic = null;
 
-        if (_sysBuf != null)
-        {
-            sys = ToTargetFormat(_sysBuf);
-            if (Math.Abs(_sysVolume - 1.0f) > 0.001f)
-                sys = new VolumeSampleProvider(sys) { Volume = _sysVolume };
-        }
-        if (_micBuf != null)
-        {
-            mic = ToTargetFormat(_micBuf);
-            if (Math.Abs(_micVolume - 1.0f) > 0.001f)
-                mic = new VolumeSampleProvider(mic) { Volume = _micVolume };
-        }
-
-        if (sys != null && mic != null)
-        {
-            var mix = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(TargetSampleRate, TargetChannels));
-            mix.AddMixerInput(sys);
-            mix.AddMixerInput(mic);
-            mix.ReadFully = false;
-            return mix;
-        }
-        return sys ?? mic;
-    }
 
     private static ISampleProvider ToTargetFormat(BufferedWaveProvider source)
     {
