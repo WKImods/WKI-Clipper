@@ -39,7 +39,46 @@ public sealed class ManualRecordingService : IDisposable
         // Start the audio pipe FIRST so the named pipe exists before ffmpeg
         // tries to open it. If audio init fails, build the ffmpeg command
         // WITHOUT the pipe input so recording still works (silent video).
-        _audio = new AudioPipeService(_settings.Current);
+        int? gamePid = null;
+        if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
+        {
+            // Try the watcher's known PID first
+            gamePid = App.Host?.GameWatcher?.CurrentPid;
+
+            // If no watcher PID and no fixed process name → auto-detect foreground
+            if (gamePid == null && string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
+            {
+                var hwnd = User32.GetForegroundWindow();
+                if (hwnd != IntPtr.Zero)
+                {
+                    User32.GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (pid > 0) gamePid = (int)pid;
+                    Logger.Info($"ManualRecording: auto-detected foreground PID {pid}");
+                }
+            }
+
+            // If fixed name but watcher didn't find it, try direct lookup
+            if (gamePid == null && !string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
+            {
+                try
+                {
+                    var procs = System.Diagnostics.Process.GetProcessesByName(
+                        _settings.Current.Audio.GameProcessName);
+                    if (procs.Length > 0)
+                    {
+                        gamePid = procs[0].Id;
+                        foreach (var p in procs) p.Dispose();
+                    }
+                }
+                catch { }
+            }
+
+            if (gamePid != null)
+                Logger.Info($"ManualRecording: GameOnly mode, target PID {gamePid}");
+            else
+                Logger.Info("ManualRecording: GameOnly but no process found, fallback to AllAudio");
+        }
+        _audio = new AudioPipeService(_settings.Current, gamePid);
         string? audioArgs = null;
         if (_audio.HasAnyAudio())
         {

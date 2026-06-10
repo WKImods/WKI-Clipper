@@ -49,7 +49,31 @@ public sealed class ReplayBufferService : IDisposable
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
         // If audio init fails, fall back to video-only — otherwise ffmpeg
         // would try to read from a dead pipe and the whole buffer dies.
-        _audio = new AudioPipeService(_settings.Current);
+        int? gamePid = null;
+        if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
+        {
+            gamePid = App.Host?.GameWatcher?.CurrentPid;
+            if (gamePid == null && !string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
+            {
+                // Watcher hasn't found it yet — try a direct lookup
+                try
+                {
+                    var procs = System.Diagnostics.Process.GetProcessesByName(
+                        _settings.Current.Audio.GameProcessName);
+                    if (procs.Length > 0)
+                    {
+                        gamePid = procs[0].Id;
+                        foreach (var p in procs) p.Dispose();
+                    }
+                }
+                catch { }
+            }
+            if (gamePid != null)
+                Logger.Info($"ReplayBuffer: GameOnly mode, target PID {gamePid}");
+            else
+                Logger.Info("ReplayBuffer: GameOnly mode but process not found, falling back to AllAudio");
+        }
+        _audio = new AudioPipeService(_settings.Current, gamePid);
         string? audioArgs = null;
         if (_audio.HasAnyAudio())
         {
