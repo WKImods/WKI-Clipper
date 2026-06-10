@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using WKI_Clipper.Models;
 using WKI_Clipper.Services;
+using WKI_Clipper.Views;
 
 namespace WKI_Clipper;
 
@@ -17,6 +19,7 @@ public sealed class AppHost : IDisposable
     public ScreenshotService Screenshots { get; }
     public AudioDeviceService AudioDevices { get; }
     public FFmpegService FFmpeg { get; }
+    public GameProcessWatcher? GameWatcher { get; private set; }
 
     /// <summary>
     /// Codecs the local ffmpeg.exe actually supports. Populated in Initialize.
@@ -77,6 +80,44 @@ public sealed class AppHost : IDisposable
         Hotkeys.Initialize();
         // Codec detection runs async; not blocking startup.
         _ = DetectCodecsAsync();
+        StartGameWatcherIfNeeded();
+    }
+
+    /// <summary>
+    /// Starts or restarts the GameProcessWatcher based on current settings.
+    /// Called at init and whenever the user changes GameOnly settings.
+    /// </summary>
+    public void StartGameWatcherIfNeeded()
+    {
+        GameWatcher?.Dispose();
+        GameWatcher = null;
+
+        var audio = Settings.Current.Audio;
+        if (audio.SystemCaptureMode == AudioCaptureMode.GameOnly
+            && !string.IsNullOrEmpty(audio.GameProcessName))
+        {
+            var gameName = audio.GameProcessName;
+            GameWatcher = new GameProcessWatcher(gameName);
+            GameWatcher.ProcessFound += pid =>
+            {
+                Logger.Info($"Game process found: {gameName} (PID {pid}) — restarting buffer");
+                _ = ReplayBuffer.RestartIfRunningAsync();
+                if (Settings.Current.Behavior.ShowToastNotifications)
+                    ToastService.Show(ToastKind.Info,
+                        "Spiel erkannt",
+                        $"{gameName} (PID {pid}) — nur Game-Audio aktiv");
+            };
+            GameWatcher.ProcessLost += () =>
+            {
+                Logger.Info("Game process lost — reverting to all audio, restarting buffer");
+                _ = ReplayBuffer.RestartIfRunningAsync();
+                if (Settings.Current.Behavior.ShowToastNotifications)
+                    ToastService.Show(ToastKind.Info,
+                        "Spiel beendet",
+                        $"{gameName} — alle Sounds aktiv");
+            };
+            GameWatcher.Start();
+        }
     }
 
     private async Task DetectCodecsAsync()
@@ -128,6 +169,7 @@ public sealed class AppHost : IDisposable
 
     public void Dispose()
     {
+        GameWatcher?.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();
