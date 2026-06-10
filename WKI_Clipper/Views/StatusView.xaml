@@ -1,0 +1,22 @@
+<UserControl x:Class="WKI_Clipper.Views.StatusView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+            <TextBlock Style="{StaticResource HeadingStyle}" Text="Status" />
+            <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
+                       Text="Was die App gerade macht und wie sie konfiguriert ist. Aktualisiert sich live." />
+
+            <StackPanel x:Name="InfoContainer" />
+
+            <TextBlock Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Aktionen" />
+            <UniformGrid Columns="2" Rows="2">
+                <Button Margin="4" Content="Recording starten/stoppen" Command="{Binding ToggleRecordingCommand}" />
+                <Button Margin="4" Content="Buffer ein/aus" Command="{Binding ToggleBufferCommand}" />
+                <Button Margin="4" Content="Letzte N s speichern" Command="{Binding SaveReplayCommand}"
+                        Style="{StaticResource AccentButton}" />
+                <Button Margin="4" Content="Screenshot" Command="{Binding TakeScreenshotCommand}" />
+            </UniformGrid>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

@@ -1,0 +1,20 @@
+# Build outputs
+bin/
+obj/
+publish/
+installer_output/
+*.user
+*.suo
+
+# IDE
+.vs/
+.idea/
+*.swp
+*.bak
+
+# Bundled binaries (downloaded at build time)
+WKI_Clipper/Assets/ffmpeg/ffmpeg.exe
+WKI_Clipper/Assets/ffmpeg/ffprobe.exe
+
+# Logs
+*.log

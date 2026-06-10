@@ -1,0 +1,17 @@
+<UserControl x:Class="WKI_Clipper.Views.VideoSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel x:Name="Root">
+            <TextBlock Style="{StaticResource HeadingStyle}" Text="Video" />
+
+            <!-- All rows are built procedurally in code-behind so dropdowns can be
+                 wired up against detected codecs and saved settings without
+                 ItemsControl/DataTemplate fragility. -->
+            <StackPanel x:Name="VideoRows" />
+
+            <TextBlock Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Replay-Buffer" />
+            <StackPanel x:Name="BufferRows" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

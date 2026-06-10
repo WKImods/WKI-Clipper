@@ -1,0 +1,146 @@
+<Window x:Class="WKI_Clipper.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:WKI_Clipper.Views"
+        xmlns:vm="clr-namespace:WKI_Clipper.ViewModels"
+        Title="WKI Clipper"
+        Width="980" Height="640"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        WindowStartupLocation="Manual">
+    <Border CornerRadius="10" Background="#E61A1A1F" BorderBrush="#333" BorderThickness="1">
+        <Grid Margin="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="200" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar -->
+            <Border Grid.Column="0" Background="#FF111114" CornerRadius="10,0,0,10">
+                <StackPanel Margin="0,20,0,0">
+                    <TextBlock Text="WKI Clipper" Margin="20,0,0,4"
+                               FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock Text="v0.1.0" Margin="20,0,0,20" Style="{StaticResource MutedStyle}" />
+
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Status"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Status}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Status" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Clips"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Clips}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Clips" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Audio"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Audio}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Audio" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Video"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Video}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Video" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Hotkeys"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Hotkeys}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Hotkeys" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Pfade"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Paths}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Paths" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Über"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=About}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="About" />
+
+                    <Border Height="1" Background="#333" Margin="20,16,20,12" />
+
+                    <Button Margin="16,4" Content="Settings speichern"
+                            Style="{StaticResource AccentButton}"
+                            Command="{Binding SaveSettingsCommand}" />
+                    <Button Margin="16,4" Content="Clips-Ordner"
+                            Command="{Binding OpenClipsFolderCommand}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Content -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Title bar -->
+                <Grid Grid.Row="0" Height="44" Background="Transparent" MouseLeftButtonDown="OnTitleBarDrag">
+                    <TextBlock Text="{Binding CurrentTab}" VerticalAlignment="Center" Margin="20,0,0,0"
+                               FontSize="14" Style="{StaticResource MutedStyle}" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,12,0">
+                        <Button Content="×" Width="32" Height="32" FontSize="20"
+                                Background="Transparent" Click="OnCloseClick" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Tab content -->
+                <ContentControl Grid.Row="1" Margin="20,8,20,8">
+                    <ContentControl.Resources>
+                        <DataTemplate x:Key="StatusTab">
+                            <views:StatusView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="ClipsTab">
+                            <views:ClipsView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="AudioTab">
+                            <views:AudioSettingsView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="VideoTab">
+                            <views:VideoSettingsView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="HotkeysTab">
+                            <views:HotkeysView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="PathsTab">
+                            <views:PathsView />
+                        </DataTemplate>
+                        <DataTemplate x:Key="AboutTab">
+                            <views:AboutView />
+                        </DataTemplate>
+                    </ContentControl.Resources>
+                    <ContentControl.Style>
+                        <Style TargetType="ContentControl">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Status">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource StatusTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Clips">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource ClipsTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Audio">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource AudioTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Video">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource VideoTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Hotkeys">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource HotkeysTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Paths">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource PathsTab}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="About">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource AboutTab}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ContentControl.Style>
+                </ContentControl>
+
+                <!-- Footer -->
+                <Border Grid.Row="2" Background="#FF111114" CornerRadius="0,0,10,0" Padding="20,10">
+                    <TextBlock Text="{Binding LastEvent}" Style="{StaticResource MutedStyle}" />
+                </Border>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

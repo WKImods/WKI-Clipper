@@ -1,0 +1,10 @@
+<UserControl x:Class="WKI_Clipper.Views.AboutView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel>
+            <TextBlock Style="{StaticResource HeadingStyle}" Text="Über WKI Clipper" />
+            <StackPanel x:Name="InfoContainer" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

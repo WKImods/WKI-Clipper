@@ -1,0 +1,26 @@
+<UserControl x:Class="WKI_Clipper.Views.PathsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel>
+            <TextBlock Style="{StaticResource HeadingStyle}" Text="Pfade" />
+            <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
+                       Text="Klick Durchsuchen für Folder-Picker. Klick Öffnen für Explorer. ↺ setzt auf Standard zurück." />
+
+            <StackPanel x:Name="RowsContainer" />
+
+            <Border Background="#22FFFFFF" CornerRadius="4" Padding="12" Margin="0,24,0,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,8"
+                               Text="Umgebungsvariablen wie %USERPROFILE% oder %LOCALAPPDATA% werden automatisch expandiert." />
+                    <WrapPanel>
+                        <Button x:Name="OpenSettingsJsonBtn" Content="settings.json in Notepad öffnen" Margin="0,0,8,0" />
+                        <Button x:Name="OpenSettingsDirBtn" Content="Settings-Ordner öffnen" Margin="0,0,8,0" />
+                        <Button x:Name="ResetAllBtn" Content="Alle Einstellungen zurücksetzen"
+                                Background="{StaticResource DangerBrush}" Foreground="White" />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
