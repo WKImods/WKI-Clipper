@@ -80,6 +80,14 @@ public sealed class ReplayBufferService : IDisposable
         _bufferDir = SettingsService.ExpandPath(_settings.Current.Output.BufferFolder);
         Directory.CreateDirectory(_bufferDir);
 
+        // Resolve the single capture plan (video monitor + audio route) FIRST, so
+        // we can tell whether the capture target changed across a warm restart.
+        // Same resolver as manual recording + the status UI, so F9 clips exactly
+        // what the UI advertises. Resolved once per generation → pinned; alt-tab
+        // does not restart the buffer, so the clip stays on the game's monitor.
+        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+        var prevPlan = CurrentPlan;
+
         if (clearHistory)
         {
             ClearBufferDir(_bufferDir);
@@ -89,22 +97,23 @@ public sealed class ReplayBufferService : IDisposable
         else
         {
             _generation++;
+            // If the target MONITOR changed (e.g. the game launched on another
+            // monitor), the previous segments are a different display/resolution.
+            // Start a fresh save-window so they can never be spliced into a clip
+            // (which would give wrong footage or break the stream-copy concat).
+            if (prevPlan is { } pp && pp.MonitorIndex != plan.MonitorIndex)
+                _sessionStartUtc = DateTime.UtcNow;
             // Keep the buffer folder from growing without bound across restarts.
             PruneOldSegments();
         }
+
+        CurrentPlan = plan;
 
         _segmentPattern = Path.Combine(_bufferDir, $"seg_{_generation}_%02d.mp4");
         int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
         int durSec = Math.Max(segSec, _settings.Current.ReplayBuffer.DurationSeconds);
         // Wrap = how many segments this run holds. ceil(dur/seg) + 1 for tail tolerance.
         int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
-
-        // Resolve the single capture plan (video monitor + audio route). Same
-        // resolver as manual recording + the status UI, so F9 clips exactly what
-        // the UI advertises. Resolved once per generation → pinned; alt-tab does
-        // not restart the buffer, so the clip stays on the game's monitor.
-        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-        CurrentPlan = plan;
         Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
@@ -164,7 +173,13 @@ public sealed class ReplayBufferService : IDisposable
             // of the exit code (0/255 self-exit means the pipeline died). Only a
             // StopRequested exit (our own graceful/forced stop) is silent.
             if (!ownFfmpeg.StopRequested)
+            {
+                // Genuine crash: drop the dead instance so IsRunning is accurate
+                // and the process handle isn't held until GC. (Re-check we're
+                // still the current instance to avoid nulling a fresh restart.)
+                if (_ffmpeg == ownFfmpeg) _ffmpeg = null;
                 BufferError?.Invoke(this, $"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.");
+            }
         };
 
         try

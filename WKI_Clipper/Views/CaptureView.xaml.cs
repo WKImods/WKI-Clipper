@@ -28,6 +28,7 @@ public partial class CaptureView : UserControl
     private DispatcherTimer? _timer;
     private TextBlock? _targetText;
     private TextBlock? _audioText;
+    private TextBlock? _noteText;
     private System.Windows.Shapes.Ellipse? _bufferDot;
     private TextBlock? _bufferText;
     private System.Windows.Shapes.Ellipse? _recDot;
@@ -73,6 +74,7 @@ public partial class CaptureView : UserControl
             FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap
         };
         _audioText = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap };
+        _noteText = new TextBlock { Foreground = (Brush)FindResource("AccentBrush"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         _bufferDot = MakeDot();
         _bufferText = MakeRowText();
         _recDot = MakeDot();
@@ -81,6 +83,7 @@ public partial class CaptureView : UserControl
         var headStack = new StackPanel();
         headStack.Children.Add(_targetText);
         headStack.Children.Add(_audioText);
+        headStack.Children.Add(_noteText);
         headStack.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("BorderBrush"), Margin = new Thickness(0, 12, 0, 12) });
         headStack.Children.Add(MakeIconRow(_bufferDot, _bufferText));
         headStack.Children.Add(MakeIconRow(_recDot, _recText));
@@ -109,7 +112,7 @@ public partial class CaptureView : UserControl
         {
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
-            Text = "Nimmt den Monitor des Spiels/Fensters auf, das beim Aufnahmestart im Vordergrund ist, und bleibt dort — ein Alt-Tab (z.B. zu Discord auf einem anderen Monitor) ändert den Clip nicht."
+            Text = "Nimmt den Monitor des Fensters auf, das beim Start des Buffers im Vordergrund ist, und bleibt dort — ein Alt-Tab (z.B. zu Discord) ändert den F9-Clip nicht.\n\nWichtig: Läuft der Clipper schon, bevor du das Spiel startest, richte den Buffer danach einmal per Strg+F10 neu aus. Für Spiele, die du oft clippst, ist der Fenster-Modus besser — der pinnt automatisch auf das Spiel, sobald es startet."
         });
 
         // Window panel: shared window picker.
@@ -284,6 +287,19 @@ public partial class CaptureView : UserControl
 
         _targetText.Text = (bufferPlan?.VideoLabel) ?? preview.VideoLabel;
         _audioText!.Text = "Ton: " + ((bufferPlan?.AudioLabel) ?? preview.AudioLabel);
+
+        // In Auto mode the pinned F9 target can differ from what's in the
+        // foreground right now (which is what a fresh Ctrl+F9 would grab). Be
+        // honest about that instead of pretending both are identical.
+        if (bufferPlan is { } bp && bp.VideoLabel != preview.VideoLabel)
+        {
+            _noteText!.Text = $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {preview.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.";
+            _noteText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _noteText!.Visibility = Visibility.Collapsed;
+        }
 
         if (host.ReplayBuffer.IsRunning)
         {
