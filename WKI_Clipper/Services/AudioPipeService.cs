@@ -54,18 +54,24 @@ public sealed class AudioPipeService : IDisposable
     private readonly string? _sysDeviceName;
     private readonly float _micVolume;
     private readonly float _sysVolume;
-    private readonly AudioCaptureMode _captureMode;
+    private readonly SystemAudioMode _sysMode;
     private readonly int? _gamePid;
 
-    public AudioPipeService(AppSettings settings, int? gamePid = null)
+    /// <param name="sysMode">
+    /// How to capture system audio, decided by the caller via
+    /// <see cref="CaptureTargetResolver"/>. Process = loopback of <paramref name="gamePid"/>.
+    /// This is independent of the "System-Sound" checkbox, so game-only audio works
+    /// even when desktop loopback is off.
+    /// </param>
+    public AudioPipeService(AppSettings settings, SystemAudioMode sysMode, int? gamePid = null)
     {
         _wantMic = settings.Audio.RecordMicrophone && !string.IsNullOrWhiteSpace(settings.Audio.MicDeviceId);
-        _wantSys = settings.Audio.RecordSystemSound && !string.IsNullOrWhiteSpace(settings.Audio.SystemDeviceId);
+        _sysMode = sysMode;
+        _wantSys = sysMode != SystemAudioMode.None;
         _micDeviceName = settings.Audio.MicDeviceId;
         _sysDeviceName = settings.Audio.SystemDeviceId;
         _micVolume = (float)Math.Clamp(settings.Audio.MicVolume, 0.0, 8.0);
         _sysVolume = (float)Math.Clamp(settings.Audio.SystemVolume, 0.0, 8.0);
-        _captureMode = settings.Audio.SystemCaptureMode;
         _gamePid = gamePid;
         _pipeName = "WKI_Clipper_Audio_" + Guid.NewGuid().ToString("N").Substring(0, 8);
     }
@@ -106,10 +112,10 @@ public sealed class AudioPipeService : IDisposable
         // System loopback — try independently of mic
         if (_wantSys)
         {
-            Logger.Info($"AudioPipe: captureMode={_captureMode}, gamePid={_gamePid?.ToString() ?? "null"}");
+            Logger.Info($"AudioPipe: sysMode={_sysMode}, gamePid={_gamePid?.ToString() ?? "null"}");
             try
             {
-                if (_captureMode == AudioCaptureMode.GameOnly && _gamePid.HasValue)
+                if (_sysMode == SystemAudioMode.Process && _gamePid.HasValue)
                 {
                     // Process-specific loopback — only the game's audio
                     var plc = new ProcessLoopbackCapture((uint)_gamePid.Value);

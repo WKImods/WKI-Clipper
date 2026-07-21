@@ -92,38 +92,45 @@ public sealed class AppHost : IDisposable
         GameWatcher?.Dispose();
         GameWatcher = null;
 
+        // Which process to watch: the Window-mode capture target takes priority
+        // (so the buffer re-pins onto the game's monitor the moment it launches),
+        // else the legacy GameOnly audio process name.
+        var cap = Settings.Current.Capture;
         var audio = Settings.Current.Audio;
-        Logger.Info($"StartGameWatcherIfNeeded: mode={audio.SystemCaptureMode}, processName='{audio.GameProcessName ?? "(null)"}'");
+        string? watchName = cap.Mode == CaptureMode.Window && !string.IsNullOrEmpty(cap.TargetProcessName)
+            ? cap.TargetProcessName
+            : (audio.SystemCaptureMode == AudioCaptureMode.GameOnly ? audio.GameProcessName : null);
 
-        if (audio.SystemCaptureMode == AudioCaptureMode.GameOnly
-            && !string.IsNullOrEmpty(audio.GameProcessName))
+        Logger.Info($"StartGameWatcherIfNeeded: captureMode={cap.Mode}, watchName='{watchName ?? "(null)"}'");
+
+        if (!string.IsNullOrEmpty(watchName))
         {
-            var gameName = audio.GameProcessName;
+            var gameName = watchName;
             GameWatcher = new GameProcessWatcher(gameName);
             GameWatcher.ProcessFound += pid =>
             {
-                Logger.Info($"Game process found: {gameName} (PID {pid}) — restarting buffer");
+                Logger.Info($"Target process found: {gameName} (PID {pid}) — re-pinning capture");
                 ReplayBuffer.RequestRestart();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
-                        "Spiel erkannt",
-                        $"{gameName} (PID {pid}) — nur Game-Audio aktiv");
+                        "Ziel erkannt",
+                        $"{gameName} — Aufnahme richtet sich darauf aus");
             };
             GameWatcher.ProcessLost += () =>
             {
-                Logger.Info("Game process lost — reverting to all audio, restarting buffer");
+                Logger.Info("Target process lost — re-resolving capture");
                 ReplayBuffer.RequestRestart();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
-                        "Spiel beendet",
-                        $"{gameName} — alle Sounds aktiv");
+                        "Ziel beendet",
+                        $"{gameName} — Aufnahme neu ausgerichtet");
             };
             // Start() does an immediate synchronous check before starting the poll loop
             GameWatcher.Start();
         }
         else
         {
-            Logger.Info("StartGameWatcherIfNeeded: no watcher needed (AllAudio or no process name)");
+            Logger.Info("StartGameWatcherIfNeeded: no watcher needed");
         }
     }
 

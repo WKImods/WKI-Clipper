@@ -1,6 +1,8 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Windows.Forms;
 using WKI_Clipper.Models;
 
 namespace WKI_Clipper.Services;
@@ -21,9 +23,15 @@ public static class FFmpegCommandBuilder
     /// is skipped entirely. The string must be a complete ffmpeg input fragment
     /// like <c>-f s16le -ar 48000 -ac 2 -i "\\.\pipe\WKI_Clipper_Audio_xyz"</c>.
     /// </param>
+    /// <param name="monitorIndex">
+    /// DXGI output index (ddagrab output_idx) of the monitor to capture, resolved
+    /// by <see cref="CaptureTargetResolver"/>. Phase 1 is always monitor-based:
+    /// even "window" targets capture the window's monitor, which is alt-tab-stable
+    /// and can grab exclusive fullscreen.
+    /// </param>
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
         int segmentDurationSec = 5, int segmentWrap = 12, string? audioPipeArgs = null,
-        string? captureWindowTitle = null)
+        int monitorIndex = 0)
     {
         var sb = new StringBuilder();
         sb.Append("-hide_banner -loglevel warning -nostats ");
@@ -32,26 +40,10 @@ public static class FFmpegCommandBuilder
         // sitting in a 500 ms-1 s queue (which manifests as audio lag in clips).
         sb.Append("-fflags +nobuffer+flush_packets -flags low_delay ");
 
-        bool windowCapture = !string.IsNullOrWhiteSpace(captureWindowTitle);
-
-        if (windowCapture)
-        {
-            // gdigrab follows the named window's screen position. Works while the
-            // window is visible (incl. when moved). When fully hidden behind
-            // another window, it captures whatever is rendered at that location
-            // (Windows GDI limitation — true hidden-window capture needs WGC).
-            sb.Append("-f gdigrab -framerate ").Append(settings.Video.Framerate).Append(' ');
-            sb.Append("-i title=\"").Append(EscapeForDshow(captureWindowTitle!)).Append("\" ");
-        }
-        else
-        {
-            // DXGI Desktop Duplication — always captures the full primary display
-            // at its native resolution. Any downscale happens in the -vf chain
-            // below. (ddagrab's video_size parameter CROPS to that region from
-            // the top-left, it does NOT downscale.)
-            sb.Append("-f lavfi -i \"ddagrab=output_idx=0:framerate=").Append(settings.Video.Framerate);
-            sb.Append("\" ");
-        }
+        // DXGI Desktop Duplication of the chosen monitor. Captures at native
+        // resolution; any downscale happens in the -vf chain below.
+        sb.Append("-f lavfi -i \"ddagrab=output_idx=").Append(monitorIndex)
+          .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
 
         bool usePipe = !string.IsNullOrWhiteSpace(audioPipeArgs);
         int audioInputs = 0;
@@ -112,13 +104,10 @@ public static class FFmpegCommandBuilder
             sb.Append("-map 0:v ");
         }
 
-        // Effective bitrate
-        int bitrate = settings.Video.Quality == QualityPreset.Custom
-            ? settings.Video.Bitrate
-            : QualityPresets.ComputeBitrate(settings.Video.Quality, settings.Video.Resolution);
+        // Effective bitrate (monitor-aware for the Native preset).
+        int bitrate = EffectiveBitrate(settings, monitorIndex);
 
-        // For ddagrab the frames are on the GPU (d3d11); hwdownload brings them to sysmem.
-        // gdigrab already delivers BGRA in sysmem, so we skip hwdownload there.
+        // ddagrab delivers frames on the GPU (d3d11); hwdownload brings them to sysmem.
         string codec = settings.Video.Codec;
         bool isAmf   = codec.Contains("amf");
         bool isNvenc = codec.Contains("nvenc");
@@ -138,19 +127,11 @@ public static class FFmpegCommandBuilder
 
         if (isHwAccel)
         {
-            if (windowCapture)
-            {
-                // gdigrab delivers BGRA in system memory — scale on CPU if needed.
-                if (needScale) sb.Append("-vf \"").Append(scaleFilter.TrimStart(',')).Append("\" ");
-            }
-            else
-            {
-                // ddagrab → D3D11 textures. AMF/NVENC/QSV can't consume D3D11
-                // textures directly (SubmitInput error 18), so hwdownload is
-                // required. But we skip CPU scale/pad when resolution is Native
-                // — that alone saves ~25-50% FPS overhead on ultrawide monitors.
-                sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append("\" ");
-            }
+            // ddagrab → D3D11 textures. AMF/NVENC/QSV can't consume D3D11 textures
+            // directly (SubmitInput error 18), so hwdownload is required. CPU
+            // scale/pad is skipped when resolution is Native — that alone saves
+            // ~25-50% FPS overhead on ultrawide monitors.
+            sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append("\" ");
 
             sb.Append("-c:v ").Append(codec).Append(' ');
             if (isAmf)
@@ -170,17 +151,7 @@ public static class FFmpegCommandBuilder
         else
         {
             // CPU encoder (libx264 / libx265)
-            if (windowCapture)
-            {
-                if (needScale)
-                    sb.Append("-vf \"").Append(scaleFilter.TrimStart(',')).Append(",format=yuv420p\" ");
-                else
-                    sb.Append("-pix_fmt yuv420p ");
-            }
-            else
-            {
-                sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append(",format=yuv420p\" ");
-            }
+            sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append(",format=yuv420p\" ");
             sb.Append("-c:v ").Append(codec).Append(' ');
             // tune zerolatency = no lookahead, no B-frames → no 670 ms encoder queue.
             sb.Append("-preset veryfast -tune zerolatency ");
@@ -214,11 +185,42 @@ public static class FFmpegCommandBuilder
     public static string BuildConcat(string listFilePath, string outputPath)
         => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -c copy -movflags +faststart \"{outputPath}\"";
 
-    public static string BuildScreenshot(string outputPath)
-        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx=0:framerate=1\" -frames:v 1 -y \"{outputPath}\"";
+    public static string BuildScreenshot(string outputPath, int monitorIndex = 0)
+        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx={monitorIndex}:framerate=1\" -frames:v 1 -y \"{outputPath}\"";
 
     public static string BuildThumbnail(string videoPath, string thumbnailPath, int width = 320)
         => $"-hide_banner -loglevel error -ss 1 -i \"{videoPath}\" -frames:v 1 -vf \"scale={width}:-1\" -y \"{thumbnailPath}\"";
+
+    /// <summary>
+    /// Effective video bitrate. For fixed resolutions it uses the quality-preset
+    /// table; for Native it scales the WQHD base by the target monitor's actual
+    /// pixel count so an ultrawide (e.g. 3440×1440) isn't under-allocated.
+    /// </summary>
+    private static int EffectiveBitrate(AppSettings settings, int monitorIndex)
+    {
+        if (settings.Video.Quality == QualityPreset.Custom)
+            return settings.Video.Bitrate;
+        if (settings.Video.Resolution != ResolutionPreset.Native)
+            return QualityPresets.ComputeBitrate(settings.Video.Quality, settings.Video.Resolution);
+
+        long pixels = MonitorPixels(monitorIndex);
+        const long wqhdPixels = 2560L * 1440;
+        int wqhdBitrate = QualityPresets.ComputeBitrate(settings.Video.Quality, ResolutionPreset.WQHD);
+        double factor = Math.Clamp((double)pixels / wqhdPixels, 0.6, 2.2);
+        return (int)(wqhdBitrate * factor);
+    }
+
+    private static long MonitorPixels(int monitorIndex)
+    {
+        try
+        {
+            var screens = Screen.AllScreens;
+            if (monitorIndex >= 0 && monitorIndex < screens.Length)
+                return (long)screens[monitorIndex].Bounds.Width * screens[monitorIndex].Bounds.Height;
+        }
+        catch { }
+        return 2560L * 1440;
+    }
 
     private static (int w, int h) GetResolution(ResolutionPreset preset) => preset switch
     {

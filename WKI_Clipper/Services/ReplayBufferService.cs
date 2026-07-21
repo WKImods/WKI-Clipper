@@ -43,6 +43,8 @@ public sealed class ReplayBufferService : IDisposable
     private int _saving;
 
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
+    /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
+    public CaptureTargetResolver.CapturePlan? CurrentPlan { get; private set; }
     public event EventHandler<string>? ReplaySaved;          // final clip path
     public event EventHandler<string>? BufferError;
     public event EventHandler<string>? BufferInfo;           // non-error notices (save busy, restarting)
@@ -92,33 +94,17 @@ public sealed class ReplayBufferService : IDisposable
         // Wrap = how many segments this run holds. ceil(dur/seg) + 1 for tail tolerance.
         int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
 
+        // Resolve the single capture plan (video monitor + audio route). Same
+        // resolver as manual recording + the status UI, so F9 clips exactly what
+        // the UI advertises. Resolved once per generation → pinned; alt-tab does
+        // not restart the buffer, so the clip stays on the game's monitor.
+        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+        CurrentPlan = plan;
+        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
+
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
         // If audio init fails, fall back to video-only.
-        int? gamePid = null;
-        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, SystemCaptureMode={_settings.Current.Audio.SystemCaptureMode}, GameProcessName='{_settings.Current.Audio.GameProcessName ?? "(null)"}', WatcherPid={App.Host?.GameWatcher?.CurrentPid?.ToString() ?? "null"}");
-        if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
-        {
-            gamePid = App.Host?.GameWatcher?.CurrentPid;
-            if (gamePid == null && !string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
-            {
-                try
-                {
-                    var procs = System.Diagnostics.Process.GetProcessesByName(
-                        _settings.Current.Audio.GameProcessName);
-                    if (procs.Length > 0)
-                    {
-                        gamePid = procs[0].Id;
-                        foreach (var p in procs) p.Dispose();
-                    }
-                }
-                catch { }
-            }
-            if (gamePid != null)
-                Logger.Info($"ReplayBuffer: GameOnly mode, target PID {gamePid}");
-            else
-                Logger.Info("ReplayBuffer: GameOnly mode but process not found, falling back to AllAudio");
-        }
-        _audio = new AudioPipeService(_settings.Current, gamePid);
+        _audio = new AudioPipeService(_settings.Current, plan.SysMode, plan.AudioPid);
         string? audioArgs = null;
         if (_audio.HasAnyAudio())
         {
@@ -138,7 +124,7 @@ public sealed class ReplayBufferService : IDisposable
 
         var args = FFmpegCommandBuilder.Build(_settings.Current, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
-            audioPipeArgs: audioArgs);
+            audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex);
         Logger.Info("[buffer-ffmpeg] CMD: " + args);
 
         _ffmpeg = new FFmpegService();
@@ -209,6 +195,7 @@ public sealed class ReplayBufferService : IDisposable
         _ffmpeg = null;
         _audio?.Dispose();
         _audio = null;
+        CurrentPlan = null;
         BufferStateChanged?.Invoke(this, false);
     }
 

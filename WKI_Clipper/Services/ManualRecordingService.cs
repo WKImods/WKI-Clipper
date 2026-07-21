@@ -1,9 +1,7 @@
 using System;
 using System.IO;
-using System.Text;
 using System.Threading.Tasks;
 using WKI_Clipper.Models;
-using WKI_Clipper.Native;
 
 namespace WKI_Clipper.Services;
 
@@ -36,49 +34,16 @@ public sealed class ManualRecordingService : IDisposable
         var filename = $"Rec_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
         var path = Path.Combine(clipsDir, filename);
 
-        // Start the audio pipe FIRST so the named pipe exists before ffmpeg
-        // tries to open it. If audio init fails, build the ffmpeg command
-        // WITHOUT the pipe input so recording still works (silent video).
-        int? gamePid = null;
-        if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
-        {
-            // Try the watcher's known PID first
-            gamePid = App.Host?.GameWatcher?.CurrentPid;
+        // Resolve the single capture plan (video monitor + audio route) — the same
+        // resolver the replay buffer and status UI use, so Ctrl+F9 records exactly
+        // what the UI advertises.
+        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+        Logger.Info($"ManualRecording target: video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
-            // If no watcher PID and no fixed process name → auto-detect foreground
-            if (gamePid == null && string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
-            {
-                var hwnd = User32.GetForegroundWindow();
-                if (hwnd != IntPtr.Zero)
-                {
-                    User32.GetWindowThreadProcessId(hwnd, out uint pid);
-                    if (pid > 0) gamePid = (int)pid;
-                    Logger.Info($"ManualRecording: auto-detected foreground PID {pid}");
-                }
-            }
-
-            // If fixed name but watcher didn't find it, try direct lookup
-            if (gamePid == null && !string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
-            {
-                try
-                {
-                    var procs = System.Diagnostics.Process.GetProcessesByName(
-                        _settings.Current.Audio.GameProcessName);
-                    if (procs.Length > 0)
-                    {
-                        gamePid = procs[0].Id;
-                        foreach (var p in procs) p.Dispose();
-                    }
-                }
-                catch { }
-            }
-
-            if (gamePid != null)
-                Logger.Info($"ManualRecording: GameOnly mode, target PID {gamePid}");
-            else
-                Logger.Info("ManualRecording: GameOnly but no process found, fallback to AllAudio");
-        }
-        _audio = new AudioPipeService(_settings.Current, gamePid);
+        // Start the audio pipe FIRST so the named pipe exists before ffmpeg opens
+        // it. If audio init fails, build the ffmpeg command WITHOUT the pipe input
+        // so recording still works (silent video).
+        _audio = new AudioPipeService(_settings.Current, plan.SysMode, plan.AudioPid);
         string? audioArgs = null;
         if (_audio.HasAnyAudio())
         {
@@ -95,22 +60,8 @@ public sealed class ManualRecordingService : IDisposable
             }
         }
 
-        string? windowTitle = null;
-        if (_settings.Current.Video.CaptureSource == CaptureSource.ActiveWindow)
-        {
-            windowTitle = ResolveForegroundWindowTitle();
-            if (string.IsNullOrEmpty(windowTitle))
-            {
-                Logger.Warn("CaptureSource=ActiveWindow but foreground window has no title — falling back to Display");
-            }
-            else
-            {
-                Logger.Info($"Window capture target: {windowTitle}");
-            }
-        }
-
         var args = FFmpegCommandBuilder.Build(_settings.Current, path,
-            segmentOutput: false, audioPipeArgs: audioArgs, captureWindowTitle: windowTitle);
+            segmentOutput: false, audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex);
         Logger.Info("[rec-ffmpeg] CMD: " + args);
 
         _ffmpeg = new FFmpegService();
@@ -190,17 +141,6 @@ public sealed class ManualRecordingService : IDisposable
     {
         _ffmpeg?.Dispose();
         _audio?.Dispose();
-    }
-
-    private static string? ResolveForegroundWindowTitle()
-    {
-        var hwnd = User32.GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return null;
-        int len = User32.GetWindowTextLength(hwnd);
-        if (len <= 0) return null;
-        var sb = new StringBuilder(len + 1);
-        User32.GetWindowText(hwnd, sb, sb.Capacity);
-        return sb.ToString();
     }
 }
 

@@ -5,8 +5,15 @@ namespace WKI_Clipper.Models;
 
 public sealed class AppSettings
 {
+    /// <summary>
+    /// Bumped when the settings shape changes so <see cref="Services.SettingsService"/>
+    /// can migrate old files. 0 = pre-CaptureProfile (legacy CaptureSource + GameProcessName).
+    /// </summary>
+    public int SchemaVersion { get; set; }
+
     public AudioSettings Audio { get; set; } = new();
     public VideoSettings Video { get; set; } = new();
+    public CaptureProfile Capture { get; set; } = new();
     public ReplayBufferSettings ReplayBuffer { get; set; } = new();
     public OutputSettings Output { get; set; } = new();
     public Dictionary<string, HotkeyBinding> Hotkeys { get; set; } = HotkeyDefaults();
@@ -64,6 +71,57 @@ public enum AudioCaptureMode
     AllAudio,
     /// <summary>Process Loopback — captures ONLY audio from a specific process tree.</summary>
     GameOnly
+}
+
+/// <summary>
+/// The single source of truth for "what gets clipped" — consumed identically by
+/// the replay buffer, manual recording, screenshots and (when coupled) audio.
+/// </summary>
+public sealed class CaptureProfile
+{
+    /// <summary>How the video target is chosen.</summary>
+    public CaptureMode Mode { get; set; } = CaptureMode.Auto;
+
+    /// <summary>
+    /// For <see cref="CaptureMode.Monitor"/>: the display device name (stable
+    /// across replugging) to capture. null = primary monitor.
+    /// </summary>
+    public string? MonitorDeviceName { get; set; }
+
+    /// <summary>
+    /// For <see cref="CaptureMode.Window"/>: the process name (without .exe) whose
+    /// window's monitor is captured and whose audio is used when coupled.
+    /// </summary>
+    public string? TargetProcessName { get; set; }
+
+    /// <summary>
+    /// When true, the audio route follows the resolved video target's process
+    /// (capture only the game's sound). When false, audio uses the Audio-tab
+    /// settings (all sounds / manual GameOnly).
+    /// </summary>
+    public bool CoupleAudio { get; set; } = true;
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum CaptureMode
+{
+    /// <summary>Capture the monitor of the current foreground app, pinned. Audio follows that app.</summary>
+    Auto,
+    /// <summary>Capture the monitor of a specific chosen window/process, pinned.</summary>
+    Window,
+    /// <summary>Capture a whole chosen monitor (e.g. for tutorials).</summary>
+    Monitor
+}
+
+/// <summary>Runtime decision for the system-audio source of a capture session.</summary>
+public enum SystemAudioMode
+{
+    /// <summary>No system audio (mic-only or nothing).</summary>
+    None,
+    /// <summary>WASAPI loopback of the whole render device.</summary>
+    AllAudio,
+    /// <summary>Process loopback of a specific PID tree.</summary>
+    Process
 }
 
 public sealed class VideoSettings

@@ -15,6 +15,9 @@ public sealed class SettingsService
         Converters = { new JsonStringEnumConverter() }
     };
 
+    /// <summary>Current settings schema version — bump when migrating.</summary>
+    public const int CurrentSchemaVersion = 1;
+
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
 
@@ -35,7 +38,9 @@ public sealed class SettingsService
     {
         if (!File.Exists(SettingsFilePath))
         {
-            Current = new AppSettings();
+            // Fresh install: use the modern defaults (Auto capture + coupled audio),
+            // no legacy migration needed.
+            Current = new AppSettings { SchemaVersion = CurrentSchemaVersion };
             Save();
             return Current;
         }
@@ -44,19 +49,60 @@ public sealed class SettingsService
         {
             var json = File.ReadAllText(SettingsFilePath);
             var loaded = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
-            Current = loaded ?? new AppSettings();
+            Current = loaded ?? new AppSettings { SchemaVersion = CurrentSchemaVersion };
         }
         catch (Exception)
         {
             // Corrupt settings file → back it up, start fresh
             var backup = SettingsFilePath + ".broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
             try { File.Move(SettingsFilePath, backup); } catch { }
-            Current = new AppSettings();
+            Current = new AppSettings { SchemaVersion = CurrentSchemaVersion };
             Save();
         }
 
+        if (MigrateIfNeeded(Current))
+            Save();
+
         EnsureOutputDirs();
         return Current;
+    }
+
+    /// <summary>
+    /// Upgrades an older settings file in place. Returns true if anything changed
+    /// (so the caller re-saves). Migration is best-effort — it derives the new
+    /// <see cref="CaptureProfile"/> from the legacy video CaptureSource + GameOnly
+    /// audio fields so existing users keep a sensible behaviour.
+    /// </summary>
+    private static bool MigrateIfNeeded(AppSettings s)
+    {
+        if (s.SchemaVersion >= CurrentSchemaVersion) return false;
+
+        // v0 → v1: legacy Video.CaptureSource + Audio.SystemCaptureMode/GameProcessName
+        // become a unified CaptureProfile.
+        if (s.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
+        {
+            s.Capture.CoupleAudio = true;
+            if (!string.IsNullOrEmpty(s.Audio.GameProcessName))
+            {
+                s.Capture.Mode = CaptureMode.Window;
+                s.Capture.TargetProcessName = s.Audio.GameProcessName;
+            }
+            else
+            {
+                s.Capture.Mode = CaptureMode.Auto;
+            }
+        }
+        else
+        {
+            s.Capture.CoupleAudio = false;
+            s.Capture.Mode = s.Video.CaptureSource == CaptureSource.ActiveWindow
+                ? CaptureMode.Auto
+                : CaptureMode.Monitor;
+        }
+
+        s.SchemaVersion = CurrentSchemaVersion;
+        Logger.Info($"Settings migrated to schema v{CurrentSchemaVersion}: Capture.Mode={s.Capture.Mode}, CoupleAudio={s.Capture.CoupleAudio}, TargetProcess='{s.Capture.TargetProcessName ?? "(null)"}'");
+        return true;
     }
 
     public void Save()
