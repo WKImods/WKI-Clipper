@@ -36,6 +36,10 @@ public sealed class ReplayBufferService : IDisposable
     // Increments on each warm restart so a new ffmpeg run writes new filenames
     // instead of clearing/overwriting the previous run's segments.
     private int _generation = -1;
+    // Set on cold start; SaveLast/AvailableSeconds only consider segments from
+    // this session, so stragglers from a previous run (e.g. locked files a cold
+    // ClearBufferDir couldn't delete) can never be spliced into a clip.
+    private DateTime _sessionStartUtc = DateTime.MinValue;
     // Trailing-debounce for coalescing restart bursts.
     private readonly object _debounceLock = new();
     private CancellationTokenSource? _restartDebounceCts;
@@ -80,6 +84,7 @@ public sealed class ReplayBufferService : IDisposable
         {
             ClearBufferDir(_bufferDir);
             _generation = 0;
+            _sessionStartUtc = DateTime.UtcNow;
         }
         else
         {
@@ -201,8 +206,21 @@ public sealed class ReplayBufferService : IDisposable
 
     public async Task ToggleAsync()
     {
-        if (IsRunning) await StopAsync().ConfigureAwait(false);
-        else await StartInternalAsync(clearHistory: true).ConfigureAwait(false);
+        if (IsRunning)
+        {
+            await StopAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            // Toggling ON is an explicit intent — honour it even if the auto-start
+            // checkbox was off, instead of silently doing nothing (#19).
+            if (!_settings.Current.ReplayBuffer.Enabled)
+            {
+                _settings.Current.ReplayBuffer.Enabled = true;
+                _settings.Save();
+            }
+            await StartInternalAsync(clearHistory: true).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -271,7 +289,7 @@ public sealed class ReplayBufferService : IDisposable
         {
             complete = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
-                .Count(fi => fi.Length > 1024);
+                .Count(fi => fi.Length > 1024 && fi.LastWriteTimeUtc >= _sessionStartUtc);
         }
         catch { return 0; }
         // Exclude the one segment currently being written.
@@ -310,7 +328,7 @@ public sealed class ReplayBufferService : IDisposable
             // generations. Guard by size so a just-created tiny file is skipped.
             var segments = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
-                .Where(fi => fi.Length > 1024)
+                .Where(fi => fi.Length > 1024 && fi.LastWriteTimeUtc >= _sessionStartUtc)
                 .OrderBy(fi => fi.LastWriteTimeUtc)
                 .ToList();
 

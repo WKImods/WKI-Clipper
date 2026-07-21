@@ -35,6 +35,39 @@ public static class CaptureTargetResolver
 
     private static int SelfPid => Environment.ProcessId;
 
+    /// <summary>A pickable window: its process name (the stable id) + current title.</summary>
+    public readonly record struct WindowEntry(string ProcessName, string Title);
+
+    /// <summary>
+    /// Lists distinct top-level windowed processes for the shared window picker
+    /// (excludes our own process and shell/system processes).
+    /// </summary>
+    public static System.Collections.Generic.List<WindowEntry> ListWindowedProcesses()
+    {
+        var result = new System.Collections.Generic.List<WindowEntry>();
+        var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    if (p.MainWindowHandle == IntPtr.Zero) continue;
+                    if (p.Id == SelfPid) continue;
+                    if (NonCouplable.Contains(p.ProcessName)) continue;
+                    var title = p.MainWindowTitle;
+                    if (string.IsNullOrWhiteSpace(title)) continue;
+                    if (seen.Add(p.ProcessName))
+                        result.Add(new WindowEntry(p.ProcessName, title));
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
+        return result.OrderBy(e => e.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
     public static CapturePlan Resolve(CaptureProfile profile, AppSettings settings)
     {
         var (hwnd, videoPid, appName) = ResolveApp(profile);

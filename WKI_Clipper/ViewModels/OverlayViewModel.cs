@@ -16,7 +16,7 @@ public partial class OverlayViewModel : ObservableObject
 {
     private readonly AppHost _host;
 
-    [ObservableProperty] private string _currentTab = "Status";
+    [ObservableProperty] private string _currentTab = "Capture";
     [ObservableProperty] private bool _isRecording;
     [ObservableProperty] private bool _isBufferRunning;
     [ObservableProperty] private string _bufferStatusText = "Buffer aus";

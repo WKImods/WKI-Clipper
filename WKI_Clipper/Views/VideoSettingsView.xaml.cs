@@ -34,26 +34,15 @@ public partial class VideoSettingsView : UserControl
         var host = App.Host;
         if (host is null) return;
 
-        // Capture source
-        var captureBox = new System.Windows.Controls.ComboBox { MinWidth = 360 };
-        captureBox.Items.Add("Gesamter Bildschirm  (volle Performance, immer das was du siehst)");
-        captureBox.Items.Add("Aktives Fenster beim Aufnahme-Start  (folgt dem Fenster wenn es bewegt wird)");
-        captureBox.SelectedIndex = host.Settings.Current.Video.CaptureSource == CaptureSource.ActiveWindow ? 1 : 0;
-        captureBox.SelectionChanged += (_, _) =>
+        // Capture target (which monitor/window + audio) now lives in the Aufnahme
+        // tab; this tab only covers how it is encoded.
+        VideoRows.Children.Add(new TextBlock
         {
-            host.Settings.Current.Video.CaptureSource =
-                captureBox.SelectedIndex == 1 ? CaptureSource.ActiveWindow : CaptureSource.Display;
-            host.Settings.Save();
-            // Replay buffer always uses Display source per design, so no restart needed here.
-        };
-        VideoRows.Children.Add(LabeledRow("Aufnahme-Quelle", captureBox,
-            new TextBlock
-            {
-                Text = "Hinweis: Bei 'Aktives Fenster' wird das Fenster gecapturet, das beim Hotkey-Druck im Vordergrund war. Solange das Fenster sichtbar ist, läuft die Aufnahme stabil. Wenn ein anderes Fenster es komplett verdeckt, capturt ffmpeg den darunter liegenden Bildschirmbereich (Windows-GDI-Limit — echte Hintergrund-Aufnahme via WGC kommt in V2). Replay-Buffer läuft immer auf dem Gesamtbildschirm.",
-                Style = (Style)FindResource("MutedStyle"),
-                Margin = new Thickness(0, 4, 0, 0),
-                TextWrapping = TextWrapping.Wrap
-            }));
+            Text = "Was aufgenommen wird (Monitor/Fenster) legst du im Tab „Aufnahme“ fest. Hier geht es nur um die Encoding-Qualität.",
+            Style = (Style)FindResource("MutedStyle"),
+            Margin = new Thickness(0, 0, 0, 14),
+            TextWrapping = TextWrapping.Wrap
+        });
 
         // Resolution
         _resolutionBox = new System.Windows.Controls.ComboBox { MinWidth = 220 };

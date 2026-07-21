@@ -28,39 +28,39 @@ public sealed class ScreenshotService
     {
         var outDir = SettingsService.ExpandPath(_settings.Current.Output.ScreenshotsFolder);
         Directory.CreateDirectory(outDir);
+        var ts = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
 
-        var (windowTitle, _) = GetActiveWindowInfo();
-        var safeTitle = SanitizeFilename(windowTitle);
-        var outPath = Path.Combine(outDir, $"Shot_{safeTitle}_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png");
+        var (windowTitle, hwnd) = GetActiveWindowInfo();
 
-        // Try PrintWindow first
-        if (TryPrintWindow(outPath))
+        // Try a clean per-window shot first.
+        var winPath = Path.Combine(outDir, $"Shot_{SanitizeFilename(windowTitle)}_{ts}.png");
+        if (TryPrintWindow(hwnd, winPath))
         {
-            ScreenshotSaved?.Invoke(this, outPath);
-            return outPath;
+            ScreenshotSaved?.Invoke(this, winPath);
+            return winPath;
         }
 
-        // Fallback: ffmpeg ddagrab single frame (captures the whole display)
-        var ok = await TryFFmpegFallbackAsync(outPath);
-        if (ok)
+        // Fallback: whole-monitor grab. Name + notify it HONESTLY as a display
+        // shot (not the window title) and capture the resolved target monitor.
+        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+        var dispPath = Path.Combine(outDir, $"Shot_Display{plan.MonitorIndex + 1}_{ts}.png");
+        if (await TryFFmpegFallbackAsync(dispPath, plan.MonitorIndex))
         {
-            ScreenshotSaved?.Invoke(this, outPath);
-            return outPath;
+            ScreenshotSaved?.Invoke(this, dispPath);
+            return dispPath;
         }
 
-        ScreenshotFailed?.Invoke(this, outPath);
+        ScreenshotFailed?.Invoke(this, dispPath);
         return null;
     }
 
-    private static bool TryPrintWindow(string outPath)
+    private static bool TryPrintWindow(IntPtr hwnd, string outPath)
     {
         try
         {
-            var hwnd = User32.GetForegroundWindow();
             if (hwnd == IntPtr.Zero) return false;
-            if (!User32.GetWindowRect(hwnd, out var rect)) return false;
-            int w = rect.Width;
-            int h = rect.Height;
+            if (!User32.GetWindowRect(hwnd, out var wr)) return false;
+            int w = wr.Width, h = wr.Height;
             if (w <= 0 || h <= 0) return false;
 
             using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
@@ -69,16 +69,34 @@ public sealed class ScreenshotService
                 var hdc = g.GetHdc();
                 try
                 {
-                    bool ok = User32.PrintWindow(hwnd, hdc, User32.PW_RENDERFULLCONTENT);
-                    if (!ok) return false;
+                    if (!User32.PrintWindow(hwnd, hdc, User32.PW_RENDERFULLCONTENT))
+                        return false;
                 }
-                finally
+                finally { g.ReleaseHdc(hdc); }
+            }
+
+            // Crop away the invisible resize border (GetWindowRect includes it,
+            // DWM's extended frame bounds don't) so the PNG has no blank edges.
+            if (User32.DwmGetWindowAttribute(hwnd, User32.DWMWA_EXTENDED_FRAME_BOUNDS,
+                    out var fb, System.Runtime.InteropServices.Marshal.SizeOf<User32.RECT>()) == 0
+                && fb.Width > 0 && fb.Height > 0)
+            {
+                int offX = fb.Left - wr.Left;
+                int offY = fb.Top - wr.Top;
+                var crop = new Rectangle(
+                    Math.Max(0, offX), Math.Max(0, offY),
+                    Math.Min(fb.Width, w - Math.Max(0, offX)),
+                    Math.Min(fb.Height, h - Math.Max(0, offY)));
+                if (crop.Width > 0 && crop.Height > 0)
                 {
-                    g.ReleaseHdc(hdc);
+                    using var cropped = bmp.Clone(crop, bmp.PixelFormat);
+                    cropped.Save(outPath, ImageFormat.Png);
+                    return new FileInfo(outPath).Length > 1024;
                 }
             }
+
             bmp.Save(outPath, ImageFormat.Png);
-            return new FileInfo(outPath).Length > 1024; // PrintWindow can return true and produce a blank image
+            return new FileInfo(outPath).Length > 1024; // PrintWindow can return true yet produce a blank image
         }
         catch
         {
@@ -86,13 +104,13 @@ public sealed class ScreenshotService
         }
     }
 
-    private async Task<bool> TryFFmpegFallbackAsync(string outPath)
+    private async Task<bool> TryFFmpegFallbackAsync(string outPath, int monitorIndex)
     {
         try
         {
             var ffmpeg = new FFmpegService();
             if (!ffmpeg.IsAvailable()) return false;
-            var args = FFmpegCommandBuilder.BuildScreenshot(outPath);
+            var args = FFmpegCommandBuilder.BuildScreenshot(outPath, monitorIndex);
             var tcs = new TaskCompletionSource<int>();
             ffmpeg.Exited += (_, code) => tcs.TrySetResult(code);
             ffmpeg.Start(args);

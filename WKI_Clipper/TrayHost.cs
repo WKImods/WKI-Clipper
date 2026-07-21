@@ -106,11 +106,14 @@ internal static class TrayHost
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
 
+            // Base colour is the primary state signal: red = recording, orange =
+            // buffer active, desaturated grey = idle (so "puffert es gerade?" is
+            // readable at a glance, not only via the tiny corner dot).
             var bgColor = state switch
             {
                 TrayState.Recording    => System.Drawing.Color.FromArgb(255, 0xE0, 0x3E, 0x3E),
                 TrayState.BufferActive => System.Drawing.Color.FromArgb(255, 0xFF, 0x6A, 0x2C),
-                _                      => System.Drawing.Color.FromArgb(255, 0xFF, 0x6A, 0x2C),
+                _                      => System.Drawing.Color.FromArgb(255, 0x4A, 0x4A, 0x52),
             };
 
             using var bg = new SolidBrush(bgColor);

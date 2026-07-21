@@ -66,6 +66,14 @@ internal static class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(IntPtr hWnd);
 
+    // --- DWM: real visible window bounds (excludes the invisible resize border
+    // that GetWindowRect includes, which shows up as blank edges in PrintWindow) ---
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+    public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {

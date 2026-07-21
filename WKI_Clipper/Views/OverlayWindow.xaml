@@ -26,6 +26,10 @@
                     <TextBlock Text="v0.1.0" Margin="20,0,0,20" Style="{StaticResource MutedStyle}" />
 
                     <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                                 Content="Aufnahme"
+                                 IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Capture}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="Capture" />
+                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Status"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Status}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Status" />
@@ -85,6 +89,9 @@
                 <!-- Tab content -->
                 <ContentControl Grid.Row="1" Margin="20,8,20,8">
                     <ContentControl.Resources>
+                        <DataTemplate x:Key="CaptureTab">
+                            <views:CaptureView />
+                        </DataTemplate>
                         <DataTemplate x:Key="StatusTab">
                             <views:StatusView />
                         </DataTemplate>
@@ -110,6 +117,9 @@
                     <ContentControl.Style>
                         <Style TargetType="ContentControl">
                             <Style.Triggers>
+                                <DataTrigger Binding="{Binding CurrentTab}" Value="Capture">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource CaptureTab}" />
+                                </DataTrigger>
                                 <DataTrigger Binding="{Binding CurrentTab}" Value="Status">
                                     <Setter Property="ContentTemplate" Value="{StaticResource StatusTab}" />
                                 </DataTrigger>

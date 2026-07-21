@@ -127,12 +127,13 @@ public partial class StatusView : UserControl
             _bufferText!.Text = "Buffer aus. Strg+F10 schaltet ihn ein.";
         }
 
-        // Audio
-        var parts = new System.Collections.Generic.List<string>();
-        if (s.Audio.RecordMicrophone) parts.Add("Mikro");
-        if (s.Audio.RecordSystemSound) parts.Add("System");
-        var audioParts = parts.Count == 0 ? "aus" : string.Join(" + ", parts);
-        _audioText!.Text = $"{audioParts}  ·  Offset {s.Audio.OffsetMilliseconds} ms";
+        // Effective capture plan (same resolver F9/Ctrl+F9 use). Buffer's pinned
+        // plan if running, else a fresh preview of the current profile.
+        var plan = host.ReplayBuffer.CurrentPlan
+                   ?? CaptureTargetResolver.Resolve(s.Capture, s);
+
+        // Audio (effective route, not just the checkboxes)
+        _audioText!.Text = $"{plan.AudioLabel}  ·  Offset {s.Audio.OffsetMilliseconds} ms";
 
         // Video
         var resName = s.Video.Resolution switch
@@ -149,10 +150,8 @@ public partial class StatusView : UserControl
         var codecLabel = host.AvailableCodecs.FirstOrDefault(c => c.FFmpegName == s.Video.Codec)?.Label ?? s.Video.Codec;
         _videoText!.Text = $"{resName}  ·  {s.Video.Framerate} fps  ·  {codecLabel}  ·  {bitrate / 1_000_000} Mbps";
 
-        // Capture source
-        _captureSrcText!.Text = s.Video.CaptureSource == CaptureSource.ActiveWindow
-            ? "Aktives Fenster beim Aufnahme-Start (gdigrab)"
-            : "Gesamter Bildschirm (ddagrab)";
+        // Capture target (effective, from the resolver)
+        _captureSrcText!.Text = plan.VideoLabel;
 
         // FFmpeg
         _ffmpegText!.Text = host.FFmpeg.IsAvailable()
