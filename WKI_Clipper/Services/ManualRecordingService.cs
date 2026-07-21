@@ -18,8 +18,8 @@ public sealed class ManualRecordingService : IDisposable
     public bool IsRecording => _ffmpeg?.IsRunning ?? false;
 
     public event EventHandler<string>? RecordingStarted;
-    public event EventHandler<string>? RecordingStopped;
-    public event EventHandler<string>? RecordingError;
+    /// <summary>Fired once when a recording ends — carries whether the file is usable.</summary>
+    public event EventHandler<RecordingResult>? RecordingStopped;
     public event EventHandler<string>? FFmpegLog;
 
     public ManualRecordingService(SettingsService settings)
@@ -125,15 +125,46 @@ public sealed class ManualRecordingService : IDisposable
             if (!string.IsNullOrWhiteSpace(line)) Logger.Info("[rec-ffmpeg] " + line);
             FFmpegLog?.Invoke(this, line);
         };
+        // Capture the own instance so a stale exit (after a new recording began)
+        // can't fire events for the wrong session.
+        var ownFfmpeg = _ffmpeg;
+        var ownAudio = _audio;
         _ffmpeg.Exited += (_, code) =>
         {
-            if (code != 0 && code != 255 /* SIGINT */)
-                RecordingError?.Invoke(this, $"FFmpeg exited with code {code}");
-            _audio?.Dispose();
-            _audio = null;
-            RecordingStopped?.Invoke(this, path);
+            if (_ffmpeg != ownFfmpeg) return;
+
+            if (_audio == ownAudio)
+            {
+                ownAudio?.Dispose();
+                _audio = null;
+            }
+
+            // A usable clip must exist and be non-trivial (a failed ffmpeg leaves
+            // a 0-byte / moov-less stub). We requested the stop → exit -1 from the
+            // kill-on-timeout is fine as long as the file is valid.
+            bool fileValid = false;
+            try { fileValid = File.Exists(path) && new FileInfo(path).Length > 8 * 1024; } catch { }
+            bool userStopped = ownFfmpeg.StopRequested;
+            bool success = fileValid && (userStopped || code == 0);
+
             CurrentOutputPath = null;
             StartedAt = null;
+
+            if (success)
+            {
+                RecordingStopped?.Invoke(this, new RecordingResult(path, true, null));
+            }
+            else
+            {
+                if (!fileValid)
+                {
+                    try { if (File.Exists(path)) File.Delete(path); } catch { }
+                }
+                string err = userStopped
+                    ? "Aufnahme unvollständig — die Datei ist defekt und wurde verworfen."
+                    : $"Aufnahme fehlgeschlagen (ffmpeg code {code}). Schau ins Log.";
+                RecordingStopped?.Invoke(this, new RecordingResult(path, false, err));
+            }
         };
 
         _ffmpeg.Start(args);
@@ -172,3 +203,6 @@ public sealed class ManualRecordingService : IDisposable
         return sb.ToString();
     }
 }
+
+/// <summary>Outcome of a finished manual recording.</summary>
+public readonly record struct RecordingResult(string Path, bool Success, string? Error);

@@ -81,22 +81,27 @@ public partial class App : Application
             {
                 ToastService.Show(Views.ToastKind.Warning, "Buffer-Fehler", msg, durationSeconds: 6.0);
             };
-            Host.ManualRecording.RecordingError += (_, msg) =>
+            Host.ReplayBuffer.BufferInfo += (_, msg) =>
             {
-                ToastService.Show(Views.ToastKind.Warning, "Recording-Fehler", msg, durationSeconds: 6.0);
+                ToastService.Show(Views.ToastKind.Info, "Replay-Buffer", msg, durationSeconds: 3.5);
             };
             Host.ManualRecording.RecordingStarted += (_, path) =>
             {
                 TrayHost.UpdateState(TrayState.Recording, System.IO.Path.GetFileNameWithoutExtension(path));
-                ToastService.Show(Views.ToastKind.Recording, "Recording gestartet",
+                ToastService.Show(Views.ToastKind.Recording, "Aufnahme gestartet",
                     System.IO.Path.GetFileName(path), durationSeconds: 2.5);
             };
-            Host.ManualRecording.RecordingStopped += (_, path) =>
+            Host.ManualRecording.RecordingStopped += (_, result) =>
             {
+                // Revert the tray icon regardless of outcome.
                 TrayHost.UpdateState(Host.ReplayBuffer.IsRunning ? TrayState.BufferActive : TrayState.Idle,
                     Host.ReplayBuffer.IsRunning ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
-                ToastService.Show(Views.ToastKind.Recording, "Recording gespeichert",
-                    System.IO.Path.GetFileName(path), path);
+                if (result.Success)
+                    ToastService.Show(Views.ToastKind.Recording, "Aufnahme gespeichert",
+                        System.IO.Path.GetFileName(result.Path), result.Path);
+                else
+                    ToastService.Show(Views.ToastKind.Warning, "Aufnahme fehlgeschlagen",
+                        result.Error ?? "Unbekannter Fehler.", durationSeconds: 6.0);
             };
             Host.Screenshots.ScreenshotSaved += (_, path) =>
             {

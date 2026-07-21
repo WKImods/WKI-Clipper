@@ -152,7 +152,7 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Save();
             pickerPanel.Visibility = Visibility.Collapsed;
             host.StartGameWatcherIfNeeded();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
             UpdateGameStatus(statusText, host);
         };
         radioGame.Checked += (_, _) =>
@@ -162,7 +162,7 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Save();
             pickerPanel.Visibility = Visibility.Visible;
             host.StartGameWatcherIfNeeded();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
             UpdateGameStatus(statusText, host);
         };
         processBox.SelectionChanged += (_, _) =>
@@ -174,7 +174,7 @@ public partial class AudioSettingsView : UserControl
                 host.Settings.Current.Audio.GameProcessName = procName;
                 host.Settings.Save();
                 host.StartGameWatcherIfNeeded();
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
                 UpdateGameStatus(statusText, host);
             }
         };
@@ -305,7 +305,7 @@ public partial class AudioSettingsView : UserControl
         slider.LostMouseCapture += (_, _) =>
         {
             host.Settings.Save();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
 
         stack.Children.Add(valueLabel);
@@ -323,7 +323,7 @@ public partial class AudioSettingsView : UserControl
             slider.Value = -150;
             host.Settings.Current.Audio.OffsetMilliseconds = -150;
             host.Settings.Save();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         stack.Children.Add(resetBtn);
 
@@ -435,14 +435,14 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Current.Audio.RecordMicrophone = true;
             host.Settings.Save();
             UpdateStatusDot(_micStatusDot, true, _micDevice != null);
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         _micEnable.Unchecked += (_, _) =>
         {
             host.Settings.Current.Audio.RecordMicrophone = false;
             host.Settings.Save();
             UpdateStatusDot(_micStatusDot, false, _micDevice != null);
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         header.Children.Add(_micEnable);
 
@@ -457,7 +457,7 @@ public partial class AudioSettingsView : UserControl
                 host.Settings.Current.Audio.MicDeviceId = d.Id;
                 host.Settings.Save();
                 _micDevice = null; // force refresh
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
             }
         };
         stack.Children.Add(BuildLabeledRow("Gerät", _micBox));
@@ -472,7 +472,7 @@ public partial class AudioSettingsView : UserControl
         {
             host.Settings.Current.Audio.MicVolume = v;
             host.Settings.Save();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         });
         stack.Children.Add(BuildLabeledRow("Verstärkung", BuildGainPanel(gainSlider, gainText)));
 
@@ -513,14 +513,14 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Current.Audio.RecordSystemSound = true;
             host.Settings.Save();
             UpdateStatusDot(_sysStatusDot, true, _sysDevice != null);
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         _sysEnable.Unchecked += (_, _) =>
         {
             host.Settings.Current.Audio.RecordSystemSound = false;
             host.Settings.Save();
             UpdateStatusDot(_sysStatusDot, false, _sysDevice != null);
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         header.Children.Add(_sysEnable);
 
@@ -535,7 +535,7 @@ public partial class AudioSettingsView : UserControl
                 host.Settings.Current.Audio.SystemDeviceId = d.Id;
                 host.Settings.Save();
                 _sysDevice = null;
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
             }
         };
         stack.Children.Add(BuildLabeledRow("Gerät", _sysBox));
@@ -549,7 +549,7 @@ public partial class AudioSettingsView : UserControl
         {
             host.Settings.Current.Audio.SystemVolume = v;
             host.Settings.Save();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         });
         stack.Children.Add(BuildLabeledRow("Verstärkung", BuildGainPanel(gainSlider, gainText)));
 

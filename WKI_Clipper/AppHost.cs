@@ -103,7 +103,7 @@ public sealed class AppHost : IDisposable
             GameWatcher.ProcessFound += pid =>
             {
                 Logger.Info($"Game process found: {gameName} (PID {pid}) — restarting buffer");
-                _ = ReplayBuffer.RestartIfRunningAsync();
+                ReplayBuffer.RequestRestart();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
                         "Spiel erkannt",
@@ -112,7 +112,7 @@ public sealed class AppHost : IDisposable
             GameWatcher.ProcessLost += () =>
             {
                 Logger.Info("Game process lost — reverting to all audio, restarting buffer");
-                _ = ReplayBuffer.RestartIfRunningAsync();
+                ReplayBuffer.RequestRestart();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
                         "Spiel beendet",

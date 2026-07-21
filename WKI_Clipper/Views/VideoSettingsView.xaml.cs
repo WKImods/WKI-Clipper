@@ -17,6 +17,10 @@ public partial class VideoSettingsView : UserControl
     private System.Windows.Controls.ComboBox? _resolutionBox;
     private System.Windows.Controls.ComboBox? _qualityBox;
     private TextBox? _customBitrateBox;
+    // True while RefreshCodecBox rebuilds the list programmatically, so the
+    // SelectionChanged handler ignores the induced selection changes (which
+    // otherwise fire Save + buffer restart on every codec-detection tick).
+    private bool _suppressCodecChange;
 
     public VideoSettingsView()
     {
@@ -58,10 +62,12 @@ public partial class VideoSettingsView : UserControl
         _resolutionBox.SelectedIndex = IndexFromResolution(host.Settings.Current.Video.Resolution);
         _resolutionBox.SelectionChanged += (_, _) =>
         {
-            host.Settings.Current.Video.Resolution = ResolutionFromIndex(_resolutionBox.SelectedIndex);
+            var newRes = ResolutionFromIndex(_resolutionBox.SelectedIndex);
+            if (newRes == host.Settings.Current.Video.Resolution) return;
+            host.Settings.Current.Video.Resolution = newRes;
             host.Settings.Save();
             UpdateBitrateHint(host);
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         _resolutionHint = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0) };
         UpdateResolutionHint();
@@ -79,9 +85,11 @@ public partial class VideoSettingsView : UserControl
         };
         fpsBox.SelectionChanged += (_, _) =>
         {
-            host.Settings.Current.Video.Framerate = fpsBox.SelectedIndex switch { 0 => 30, 2 => 120, _ => 60 };
+            var newFps = fpsBox.SelectedIndex switch { 0 => 30, 2 => 120, _ => 60 };
+            if (newFps == host.Settings.Current.Video.Framerate) return;
+            host.Settings.Current.Video.Framerate = newFps;
             host.Settings.Save();
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         VideoRows.Children.Add(LabeledRow("Framerate", fpsBox));
 
@@ -90,11 +98,15 @@ public partial class VideoSettingsView : UserControl
         RefreshCodecBox(host);
         _codecBox.SelectionChanged += (_, _) =>
         {
+            if (_suppressCodecChange) return;
             if (_codecBox.SelectedItem is CodecInfo c)
             {
+                // Only persist + restart on a real change, not a programmatic
+                // re-selection of the same codec during list refresh.
+                if (c.FFmpegName == host.Settings.Current.Video.Codec) return;
                 host.Settings.Current.Video.Codec = c.FFmpegName;
                 host.Settings.Save();
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
             }
         };
         VideoRows.Children.Add(LabeledRow("Codec", _codecBox,
@@ -115,12 +127,14 @@ public partial class VideoSettingsView : UserControl
         _qualityBox.SelectedIndex = (int)host.Settings.Current.Video.Quality;
         _qualityBox.SelectionChanged += (_, _) =>
         {
-            host.Settings.Current.Video.Quality = (QualityPreset)_qualityBox.SelectedIndex;
+            var newQuality = (QualityPreset)_qualityBox.SelectedIndex;
+            if (newQuality == host.Settings.Current.Video.Quality) return;
+            host.Settings.Current.Video.Quality = newQuality;
             host.Settings.Save();
             UpdateBitrateHint(host);
             if (_customBitrateBox != null)
                 _customBitrateBox.IsEnabled = host.Settings.Current.Video.Quality == QualityPreset.Custom;
-            _ = host.ReplayBuffer.RestartIfRunningAsync();
+            host.ReplayBuffer.RequestRestart();
         };
         _bitrateHint = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0) };
         VideoRows.Children.Add(LabeledRow("Qualität", _qualityBox, _bitrateHint));
@@ -138,7 +152,7 @@ public partial class VideoSettingsView : UserControl
             {
                 host.Settings.Current.Video.Bitrate = bps;
                 host.Settings.Save();
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
             }
             UpdateBitrateHint(host);
         };
@@ -193,7 +207,7 @@ public partial class VideoSettingsView : UserControl
             {
                 host.Settings.Current.ReplayBuffer.DurationSeconds = bufferValues[bufferDur.SelectedIndex];
                 host.Settings.Save();
-                _ = host.ReplayBuffer.RestartIfRunningAsync();
+                host.ReplayBuffer.RequestRestart();
             }
         };
         BufferRows.Children.Add(LabeledRow("Buffer-Länge", bufferDur,
@@ -209,18 +223,23 @@ public partial class VideoSettingsView : UserControl
     {
         if (_codecBox is null) return;
         var current = host.Settings.Current.Video.Codec;
-        _codecBox.Items.Clear();
-        var codecs = host.AvailableCodecs.Count > 0
-            ? host.AvailableCodecs
-            : new[] { new CodecInfo(current, "(läuft Detection…) " + current) };
-        int select = 0;
-        for (int i = 0; i < codecs.Count; i++)
+        _suppressCodecChange = true;
+        try
         {
-            _codecBox.Items.Add(codecs[i]);
-            if (codecs[i].FFmpegName == current) select = i;
+            _codecBox.Items.Clear();
+            var codecs = host.AvailableCodecs.Count > 0
+                ? host.AvailableCodecs
+                : new[] { new CodecInfo(current, "(läuft Detection…) " + current) };
+            int select = 0;
+            for (int i = 0; i < codecs.Count; i++)
+            {
+                _codecBox.Items.Add(codecs[i]);
+                if (codecs[i].FFmpegName == current) select = i;
+            }
+            _codecBox.DisplayMemberPath = nameof(CodecInfo.Label);
+            _codecBox.SelectedIndex = select;
         }
-        _codecBox.DisplayMemberPath = nameof(CodecInfo.Label);
-        _codecBox.SelectedIndex = select;
+        finally { _suppressCodecChange = false; }
     }
 
     private void UpdateResolutionHint()

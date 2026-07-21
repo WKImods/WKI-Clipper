@@ -10,6 +10,16 @@ namespace WKI_Clipper.Services;
 /// <summary>
 /// Runs ffmpeg in segment mode permanently while enabled. On SaveLast(),
 /// concatenates the most recent N segments into a single MP4 in the clips folder.
+///
+/// Lifecycle is serialized through <see cref="_lifecycleLock"/> so overlapping
+/// Start/Stop/Restart requests (settings sliders, game-detection events, the
+/// watchdog, hotkeys) can never spawn two ffmpeg processes writing the same
+/// segment files. Settings-driven restarts go through <see cref="RequestRestart"/>
+/// which coalesces bursts into a single restart.
+///
+/// Restarts do NOT wipe the buffer directory: each ffmpeg run writes a fresh
+/// segment "generation" (seg_{gen}_NN.mp4) and old generations survive so a clip
+/// saved right after a restart still contains the seconds recorded before it.
 /// </summary>
 public sealed class ReplayBufferService : IDisposable
 {
@@ -21,9 +31,21 @@ public sealed class ReplayBufferService : IDisposable
     private string _bufferDir = "";
     private string _segmentPattern = "";
 
+    // Serializes every lifecycle transition (Start/Stop/Restart).
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    // Increments on each warm restart so a new ffmpeg run writes new filenames
+    // instead of clearing/overwriting the previous run's segments.
+    private int _generation = -1;
+    // Trailing-debounce for coalescing restart bursts.
+    private readonly object _debounceLock = new();
+    private CancellationTokenSource? _restartDebounceCts;
+    // Reentrancy guard for SaveLastAsync (0 = idle, 1 = saving).
+    private int _saving;
+
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
     public event EventHandler<string>? ReplaySaved;          // final clip path
     public event EventHandler<string>? BufferError;
+    public event EventHandler<string>? BufferInfo;           // non-error notices (save busy, restarting)
     public event EventHandler<bool>? BufferStateChanged;     // true=running
 
     public ReplayBufferService(SettingsService settings)
@@ -31,32 +53,54 @@ public sealed class ReplayBufferService : IDisposable
         _settings = settings;
     }
 
-    public void Start()
-    {
-        if (IsRunning) return;
-        if (!_settings.Current.ReplayBuffer.Enabled) return;
+    /// <summary>Cold start: clears the buffer directory and starts a fresh generation.</summary>
+    public void Start() => _ = StartInternalAsync(clearHistory: true);
 
+    private async Task StartInternalAsync(bool clearHistory)
+    {
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (IsRunning) return;
+            if (!_settings.Current.ReplayBuffer.Enabled) return;
+            StartCore(clearHistory);
+        }
+        finally { _lifecycleLock.Release(); }
+    }
+
+    // Assumes _lifecycleLock is held.
+    private void StartCore(bool clearHistory)
+    {
         _bufferDir = SettingsService.ExpandPath(_settings.Current.Output.BufferFolder);
         Directory.CreateDirectory(_bufferDir);
-        ClearBufferDir(_bufferDir);
 
-        _segmentPattern = Path.Combine(_bufferDir, "seg_%02d.mp4");
+        if (clearHistory)
+        {
+            ClearBufferDir(_bufferDir);
+            _generation = 0;
+        }
+        else
+        {
+            _generation++;
+            // Keep the buffer folder from growing without bound across restarts.
+            PruneOldSegments();
+        }
+
+        _segmentPattern = Path.Combine(_bufferDir, $"seg_{_generation}_%02d.mp4");
         int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
         int durSec = Math.Max(segSec, _settings.Current.ReplayBuffer.DurationSeconds);
-        // Wrap = how many segments we hold. We hold ceil(dur/seg) + 1 for tail tolerance.
+        // Wrap = how many segments this run holds. ceil(dur/seg) + 1 for tail tolerance.
         int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
-        // If audio init fails, fall back to video-only — otherwise ffmpeg
-        // would try to read from a dead pipe and the whole buffer dies.
+        // If audio init fails, fall back to video-only.
         int? gamePid = null;
-        Logger.Info($"ReplayBuffer.Start: SystemCaptureMode={_settings.Current.Audio.SystemCaptureMode}, GameProcessName='{_settings.Current.Audio.GameProcessName ?? "(null)"}', WatcherPid={App.Host?.GameWatcher?.CurrentPid?.ToString() ?? "null"}");
+        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, SystemCaptureMode={_settings.Current.Audio.SystemCaptureMode}, GameProcessName='{_settings.Current.Audio.GameProcessName ?? "(null)"}', WatcherPid={App.Host?.GameWatcher?.CurrentPid?.ToString() ?? "null"}");
         if (_settings.Current.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
         {
             gamePid = App.Host?.GameWatcher?.CurrentPid;
             if (gamePid == null && !string.IsNullOrEmpty(_settings.Current.Audio.GameProcessName))
             {
-                // Watcher hasn't found it yet — try a direct lookup
                 try
                 {
                     var procs = System.Diagnostics.Process.GetProcessesByName(
@@ -105,21 +149,17 @@ public sealed class ReplayBufferService : IDisposable
             _audio = null;
             return;
         }
-        // Pipe ffmpeg's stderr into our log so we can actually see what went
-        // wrong when it dies (e.g. bad pipe format, codec init failure, etc.).
         _ffmpeg.StdErrLine += (_, line) =>
         {
             if (!string.IsNullOrWhiteSpace(line)) Logger.Info("[buffer-ffmpeg] " + line);
         };
         // Capture LOCAL references so this handler only reacts to ITS OWN
-        // ffmpeg/audio instances. Without this, an old ffmpeg dying after a
-        // restart would dispose the brand-new audio pipe (this._audio already
-        // points at the new instance) and fire a false BufferError.
+        // ffmpeg/audio instances (an old ffmpeg dying after a restart must not
+        // dispose the brand-new audio pipe or fire a false error).
         var ownFfmpeg = _ffmpeg;
         var ownAudio = _audio;
         _ffmpeg.Exited += (_, code) =>
         {
-            // Race-safe: ignore if we've already moved on to a new ffmpeg.
             if (_ffmpeg != ownFfmpeg) return;
 
             BufferStateChanged?.Invoke(this, false);
@@ -129,11 +169,11 @@ public sealed class ReplayBufferService : IDisposable
                 _audio = null;
             }
 
-            // Only report as error if THIS process wasn't intentionally stopped.
-            // StopAsync sets StopRequested=true; the ensuing exit code (often -1
-            // from forced kill on timeout) is then expected, not a failure.
-            if (!ownFfmpeg.StopRequested && code != 0 && code != 255)
-                BufferError?.Invoke(this, $"buffer ffmpeg exited with code {code}");
+            // Any exit we did NOT request is unexpected — report it, regardless
+            // of the exit code (0/255 self-exit means the pipeline died). Only a
+            // StopRequested exit (our own graceful/forced stop) is silent.
+            if (!ownFfmpeg.StopRequested)
+                BufferError?.Invoke(this, $"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.");
         };
 
         try
@@ -150,9 +190,21 @@ public sealed class ReplayBufferService : IDisposable
 
     public async Task StopAsync()
     {
+        CancelDebounce();
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await StopCoreAsync().ConfigureAwait(false);
+        }
+        finally { _lifecycleLock.Release(); }
+    }
+
+    // Assumes _lifecycleLock is held. Stops ffmpeg + audio; does NOT clear segments.
+    private async Task StopCoreAsync()
+    {
         _watchdogCts?.Cancel();
         if (_ffmpeg is not null)
-            await _ffmpeg.StopAsync(TimeSpan.FromSeconds(5));
+            await _ffmpeg.StopAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         _ffmpeg?.Dispose();
         _ffmpeg = null;
         _audio?.Dispose();
@@ -162,82 +214,178 @@ public sealed class ReplayBufferService : IDisposable
 
     public async Task ToggleAsync()
     {
-        if (IsRunning) await StopAsync();
-        else Start();
+        if (IsRunning) await StopAsync().ConfigureAwait(false);
+        else await StartInternalAsync(clearHistory: true).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Stops and restarts the buffer if it is currently running. Used when
-    /// settings change so the running ffmpeg/NAudio pipeline picks up the new
-    /// audio device / mic toggle / resolution / codec / etc. without the user
-    /// having to toggle it manually.
+    /// Coalesces settings-driven restart requests: many rapid calls (sliders,
+    /// codec-list refresh, game events) collapse into a single restart ~300 ms
+    /// after the last request, instead of a restart storm.
+    /// </summary>
+    public void RequestRestart()
+    {
+        lock (_debounceLock)
+        {
+            _restartDebounceCts?.Cancel();
+            _restartDebounceCts?.Dispose();
+            var cts = new CancellationTokenSource();
+            _restartDebounceCts = cts;
+            var token = cts.Token;
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(300, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+                if (token.IsCancellationRequested) return;
+                await RestartIfRunningAsync().ConfigureAwait(false);
+            });
+        }
+    }
+
+    private void CancelDebounce()
+    {
+        lock (_debounceLock)
+        {
+            _restartDebounceCts?.Cancel();
+            _restartDebounceCts?.Dispose();
+            _restartDebounceCts = null;
+        }
+    }
+
+    /// <summary>
+    /// Warm restart: stops and restarts ffmpeg to pick up new settings WITHOUT
+    /// clearing the recorded segments (a new generation is written, old segments
+    /// survive so a clip saved right after still has its history).
     /// </summary>
     public async Task RestartIfRunningAsync()
     {
-        if (!IsRunning) return;
-        Logger.Info("ReplayBuffer: restart triggered by settings change");
-        await StopAsync();
-        Start();
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning) return;
+            Logger.Info("ReplayBuffer: restart triggered by settings change");
+            await StopCoreAsync().ConfigureAwait(false);
+            StartCore(clearHistory: false);
+        }
+        finally { _lifecycleLock.Release(); }
     }
 
     /// <summary>
-    /// Save the most recent N seconds (taken from settings) into a single MP4.
-    /// Uses concat demuxer + stream copy — no re-encoding, instant.
+    /// Approximate seconds currently available to save (complete segments × seg
+    /// length, capped at the configured buffer length). For honest UI display.
+    /// </summary>
+    public int AvailableSeconds()
+    {
+        if (!IsRunning || string.IsNullOrEmpty(_bufferDir)) return 0;
+        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+        int target = _settings.Current.ReplayBuffer.DurationSeconds;
+        int complete;
+        try
+        {
+            complete = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
+                .Select(p => new FileInfo(p))
+                .Count(fi => fi.Length > 1024);
+        }
+        catch { return 0; }
+        // Exclude the one segment currently being written.
+        complete = Math.Max(0, complete - 1);
+        return Math.Min(target, complete * segSec);
+    }
+
+    /// <summary>
+    /// Save the most recent N seconds into a single MP4. Concat demuxer + stream
+    /// copy — no re-encoding, instant. Reentrancy-guarded and timeout-bounded.
     /// </summary>
     public async Task<string?> SaveLastAsync()
     {
-        if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
-            return null;
-
-        int targetSec = _settings.Current.ReplayBuffer.DurationSeconds;
-        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-        int neededSegments = (int)Math.Ceiling((double)targetSec / segSec);
-
-        // Pick segments sorted oldest→newest by mtime, take the last N that exist
-        var segments = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
-            .Select(p => new FileInfo(p))
-            .Where(fi => fi.Length > 1024) // skip the segment currently being written if it's tiny
-            .OrderBy(fi => fi.LastWriteTimeUtc)
-            .ToList();
-
-        if (segments.Count == 0)
+        // Reentrancy guard: a second F9 while a save is in flight must not kill
+        // the running concat (which would corrupt the first clip).
+        if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
-            BufferError?.Invoke(this,
-                "Keine Buffer-Segmente vorhanden — ffmpeg läuft wahrscheinlich nicht. Schau ins Log unter %LOCALAPPDATA%\\WKI_Clipper\\wki_clipper.log");
+            BufferInfo?.Invoke(this, "Speichern läuft bereits — kurz warten.");
             return null;
         }
-
-        var pick = segments.TakeLast(neededSegments).ToList();
-
-        var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
-        Directory.CreateDirectory(clipsDir);
-        var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
-
-        var listPath = Path.Combine(_bufferDir, "_concat_list.txt");
-        await File.WriteAllLinesAsync(
-            listPath,
-            pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")
-        );
-
-        var args = FFmpegCommandBuilder.BuildConcat(listPath, outputPath);
-
-        _concatFfmpeg?.Dispose();
-        _concatFfmpeg = new FFmpegService();
-        var tcs = new TaskCompletionSource<int>();
-        _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
-        _concatFfmpeg.Start(args);
-        var exitCode = await tcs.Task;
-        try { File.Delete(listPath); } catch { }
-
-        if (exitCode == 0 && File.Exists(outputPath))
+        try
         {
-            ReplaySaved?.Invoke(this, outputPath);
-            return outputPath;
+            if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
+            {
+                BufferInfo?.Invoke(this, "Buffer läuft gerade nicht (evtl. Neustart) — gleich nochmal probieren.");
+                return null;
+            }
+
+            int targetSec = _settings.Current.ReplayBuffer.DurationSeconds;
+            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+            int neededSegments = (int)Math.Ceiling((double)targetSec / segSec);
+
+            // Sorted oldest→newest by mtime. Drop the newest file (the segment
+            // ffmpeg is currently writing — it has no moov atom yet and would
+            // break the concat). Take the last N complete segments across
+            // generations. Guard by size so a just-created tiny file is skipped.
+            var segments = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
+                .Select(p => new FileInfo(p))
+                .Where(fi => fi.Length > 1024)
+                .OrderBy(fi => fi.LastWriteTimeUtc)
+                .ToList();
+
+            // The last (newest) file is the one being written — exclude it.
+            if (segments.Count > 1)
+                segments.RemoveAt(segments.Count - 1);
+
+            if (segments.Count == 0)
+            {
+                BufferInfo?.Invoke(this,
+                    "Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.");
+                return null;
+            }
+
+            var pick = segments.TakeLast(neededSegments).ToList();
+
+            var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
+            Directory.CreateDirectory(clipsDir);
+            var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
+
+            var listPath = Path.Combine(_bufferDir, "_concat_list.txt");
+            await File.WriteAllLinesAsync(
+                listPath,
+                pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")
+            ).ConfigureAwait(false);
+
+            var args = FFmpegCommandBuilder.BuildConcat(listPath, outputPath);
+
+            _concatFfmpeg?.Dispose();
+            _concatFfmpeg = new FFmpegService();
+            var tcs = new TaskCompletionSource<int>();
+            _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
+            _concatFfmpeg.Start(args);
+
+            // Bound the wait so a hung concat can't block every future save.
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+            try { File.Delete(listPath); } catch { }
+
+            if (completed != tcs.Task)
+            {
+                try { _concatFfmpeg?.Dispose(); } catch { }
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                BufferError?.Invoke(this, "Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.");
+                return null;
+            }
+
+            int exitCode = await tcs.Task.ConfigureAwait(false);
+            if (exitCode == 0 && File.Exists(outputPath))
+            {
+                ReplaySaved?.Invoke(this, outputPath);
+                return outputPath;
+            }
+            else
+            {
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                BufferError?.Invoke(this, $"Clip-Erstellung fehlgeschlagen (concat code {exitCode}).");
+                return null;
+            }
         }
-        else
+        finally
         {
-            BufferError?.Invoke(this, $"concat ffmpeg failed (code {exitCode})");
-            return null;
+            Interlocked.Exchange(ref _saving, 0);
         }
     }
 
@@ -251,18 +399,18 @@ public sealed class ReplayBufferService : IDisposable
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                    await Task.Delay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+                    PruneOldSegments();
                     long total = 0;
                     foreach (var f in Directory.EnumerateFiles(_bufferDir, "seg_*.mp4"))
                     {
                         try { total += new FileInfo(f).Length; } catch { }
                     }
-                    // Anything over 2 GiB means segment wrap-around isn't working.
+                    // Over 2 GiB even after pruning means something is wrong — restart.
                     if (total > 2L * 1024 * 1024 * 1024)
                     {
                         BufferError?.Invoke(this, "buffer exceeded 2 GiB — restarting");
-                        await StopAsync();
-                        Start();
+                        await RestartIfRunningAsync().ConfigureAwait(false);
                         return;
                     }
                 }
@@ -270,6 +418,34 @@ public sealed class ReplayBufferService : IDisposable
                 catch { /* ignore */ }
             }
         }, token);
+    }
+
+    /// <summary>
+    /// Keeps the newest segments (enough to cover the buffer window plus the
+    /// currently-filling generation) and deletes older ones. This is what bounds
+    /// disk usage now that restarts no longer wipe the directory.
+    /// </summary>
+    private void PruneOldSegments()
+    {
+        if (string.IsNullOrEmpty(_bufferDir)) return;
+        try
+        {
+            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+            int durSec = Math.Max(segSec, _settings.Current.ReplayBuffer.DurationSeconds);
+            int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
+            // Keep the window we might save plus a full extra generation of slack.
+            int keep = (int)Math.Ceiling((double)durSec / segSec) + wrap + 2;
+
+            var files = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
+                .Select(p => new FileInfo(p))
+                .OrderByDescending(fi => fi.LastWriteTimeUtc)
+                .ToList();
+            foreach (var fi in files.Skip(keep))
+            {
+                try { fi.Delete(); } catch { }
+            }
+        }
+        catch { }
     }
 
     private static void ClearBufferDir(string dir)
@@ -286,6 +462,7 @@ public sealed class ReplayBufferService : IDisposable
 
     public void Dispose()
     {
+        CancelDebounce();
         _watchdogCts?.Cancel();
         _ffmpeg?.Dispose();
         _concatFfmpeg?.Dispose();

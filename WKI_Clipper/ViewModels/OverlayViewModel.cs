@@ -43,17 +43,20 @@ public partial class OverlayViewModel : ObservableObject
             RecordingStatusText = "Aufnahme läuft → " + Path.GetFileName(p);
             LastEvent = $"Recording gestartet: {Path.GetFileName(p)}";
         };
-        _host.ManualRecording.RecordingStopped += (_, p) =>
+        _host.ManualRecording.RecordingStopped += (_, result) =>
         {
             IsRecording = false;
-            RecordingStatusText = "Bereit";
-            LastEvent = $"Recording gespeichert: {Path.GetFileName(p)}";
-            ReloadClips();
-        };
-        _host.ManualRecording.RecordingError += (_, msg) =>
-        {
-            IsRecording = false;
-            RecordingStatusText = "Fehler: " + msg;
+            if (result.Success)
+            {
+                RecordingStatusText = "Bereit";
+                LastEvent = $"Aufnahme gespeichert: {Path.GetFileName(result.Path)}";
+                ReloadClips();
+            }
+            else
+            {
+                RecordingStatusText = "Fehler: " + (result.Error ?? "Aufnahme fehlgeschlagen");
+                LastEvent = "Aufnahme fehlgeschlagen";
+            }
         };
 
         _host.ReplayBuffer.BufferStateChanged += (_, running) =>
