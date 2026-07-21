@@ -242,7 +242,8 @@ public sealed class ReplayBufferService : IDisposable
                 try { await Task.Delay(300, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
                 if (token.IsCancellationRequested) return;
-                await RestartIfRunningAsync().ConfigureAwait(false);
+                try { await RestartIfRunningAsync().ConfigureAwait(false); }
+                catch (Exception ex) { Logger.Error("Debounced buffer restart failed", ex); }
             });
         }
     }

@@ -272,6 +272,8 @@ public partial class CaptureView : UserControl
 
     private void Refresh()
     {
+        // Skip the (process-enumerating) work while the overlay is hidden.
+        if (!IsVisible) return;
         var host = App.Host;
         if (host is null || _targetText is null) return;
 

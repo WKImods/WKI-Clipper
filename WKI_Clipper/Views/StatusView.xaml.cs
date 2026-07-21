@@ -93,6 +93,7 @@ public partial class StatusView : UserControl
 
     private void Refresh()
     {
+        if (!IsVisible) return;
         var host = App.Host;
         if (host is null) return;
         var s = host.Settings.Current;
