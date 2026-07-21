@@ -138,15 +138,20 @@ public static class FFmpegCommandBuilder
 
         if (isHwAccel)
         {
-            // All three hardware encoders accept BGRA / NV12 from system memory.
             if (windowCapture)
             {
+                // gdigrab delivers BGRA in system memory — scale on CPU if needed.
                 if (needScale) sb.Append("-vf \"").Append(scaleFilter.TrimStart(',')).Append("\" ");
             }
             else
             {
+                // ddagrab → D3D11 textures. AMF/NVENC/QSV can't consume D3D11
+                // textures directly (SubmitInput error 18), so hwdownload is
+                // required. But we skip CPU scale/pad when resolution is Native
+                // — that alone saves ~25-50% FPS overhead on ultrawide monitors.
                 sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append("\" ");
             }
+
             sb.Append("-c:v ").Append(codec).Append(' ');
             if (isAmf)
             {
@@ -154,7 +159,6 @@ public static class FFmpegCommandBuilder
             }
             else if (isNvenc)
             {
-                // p1 = fastest/worst .. p7 = slowest/best. p4 is the sweet spot for live.
                 sb.Append("-preset p4 -rc cbr ");
             }
             else if (isQsv)
