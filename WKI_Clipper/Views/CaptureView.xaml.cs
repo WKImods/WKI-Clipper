@@ -37,6 +37,7 @@ public partial class CaptureView : UserControl
     private RadioButton? _autoRadio, _windowRadio, _monitorRadio;
     private StackPanel? _windowPanel, _monitorPanel, _autoPanel;
     private ComboBox? _windowBox, _monitorBox;
+    private TextBlock? _autoLiveText;
 
     public CaptureView()
     {
@@ -106,8 +107,16 @@ public partial class CaptureView : UserControl
         modeStack.Children.Add(_windowRadio);
         modeStack.Children.Add(_monitorRadio);
 
-        // Auto panel: just an explanatory note.
+        // Auto panel: live "what would be captured right now" + explanatory note.
         _autoPanel = new StackPanel { Margin = new Thickness(24, 6, 0, 0) };
+        _autoLiveText = new TextBlock
+        {
+            Foreground = (Brush)FindResource("TextBrush"),
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 6),
+            TextWrapping = TextWrapping.Wrap
+        };
+        _autoPanel.Children.Add(_autoLiveText);
         _autoPanel.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"),
@@ -287,6 +296,17 @@ public partial class CaptureView : UserControl
 
         _targetText.Text = (bufferPlan?.VideoLabel) ?? preview.VideoLabel;
         _audioText!.Text = "Ton: " + ((bufferPlan?.AudioLabel) ?? preview.AudioLabel);
+
+        // Live line in the Automatik panel: what a capture started RIGHT NOW
+        // would grab (the resolver already excludes this overlay itself, so this
+        // shows the window/monitor behind it).
+        if (_autoLiveText != null)
+        {
+            string mon = $"Monitor {preview.MonitorIndex + 1} ({preview.MonitorWidth}×{preview.MonitorHeight})";
+            _autoLiveText.Text = preview.TargetProcess != null
+                ? $"Jetzt im Vordergrund: {preview.TargetProcess} → {mon}"
+                : $"Jetzt im Vordergrund: {mon}";
+        }
 
         // In Auto mode the pinned F9 target can differ from what's in the
         // foreground right now (which is what a fresh Ctrl+F9 would grab). Be
