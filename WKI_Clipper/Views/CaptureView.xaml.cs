@@ -308,10 +308,17 @@ public partial class CaptureView : UserControl
                 : $"Jetzt im Vordergrund: {mon}";
         }
 
-        // In Auto mode the pinned F9 target can differ from what's in the
-        // foreground right now (which is what a fresh Ctrl+F9 would grab). Be
-        // honest about that instead of pretending both are identical.
-        if (bufferPlan is { } bp && bp.VideoLabel != preview.VideoLabel)
+        // Auto mode: Strg+F9 is a freecam screen recording (follows windows on
+        // the monitor) while F9 stays pinned — show that, it's the key
+        // behavioural difference. Other modes: warn only if the fresh resolve
+        // diverges from the pinned buffer plan.
+        if (host.Settings.Current.Capture.Mode == CaptureMode.Auto)
+        {
+            var rec = CaptureTargetResolver.ResolveForManualRecording(host.Settings.Current.Capture, host.Settings.Current);
+            _noteText!.Text = $"Strg+F9 (Aufnahme): {rec.VideoLabel} · {rec.AudioLabel}";
+            _noteText.Visibility = Visibility.Visible;
+        }
+        else if (bufferPlan is { } bp && bp.VideoLabel != preview.VideoLabel)
         {
             _noteText!.Text = $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {preview.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.";
             _noteText.Visibility = Visibility.Visible;

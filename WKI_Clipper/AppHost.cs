@@ -108,7 +108,9 @@ public sealed class AppHost : IDisposable
     private void OnCaptureTargetChanged()
     {
         ReplayBuffer.RequestRetarget();
-        if (ManualRecording.IsRecording)
+        // Only pinned-mode recordings follow the game's audio; an Auto-mode
+        // recording is a freecam screen recording with all sounds — leave it.
+        if (ManualRecording.IsRecording && Settings.Current.Capture.Mode != CaptureMode.Auto)
         {
             var plan = CaptureTargetResolver.Resolve(Settings.Current.Capture, Settings.Current);
             ManualRecording.RetargetAudio(plan.SysMode, plan.AudioPid);

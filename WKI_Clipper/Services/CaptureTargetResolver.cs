@@ -131,6 +131,25 @@ public static class CaptureTargetResolver
             sysMode, audioPid, appName, hwnd, videoLabel, audioLabel, useWgc);
     }
 
+    /// <summary>
+    /// Plan for a MANUAL recording (Strg+F9). In Auto mode the recording is a
+    /// freecam screen recording: it captures the pinned target's MONITOR — the
+    /// video follows every window the user focuses there — and hears everything
+    /// (a moving video with single-app audio would be inconsistent). Window and
+    /// Monitor modes behave exactly like <see cref="Resolve"/> (Window = pinned,
+    /// occlusion-proof WGC).
+    /// </summary>
+    public static CapturePlan ResolveForManualRecording(CaptureProfile profile, AppSettings settings)
+    {
+        var plan = Resolve(profile, settings);
+        if (profile.Mode != CaptureMode.Auto) return plan;
+
+        var sysMode = settings.Audio.RecordSystemSound ? SystemAudioMode.AllAudio : SystemAudioMode.None;
+        string video = $"Freecam: Monitor {plan.MonitorIndex + 1} ({plan.MonitorWidth}×{plan.MonitorHeight}) — folgt deinen Fenstern";
+        string audio = BuildAudioLabel(sysMode, null, settings);
+        return plan with { UseWgc = false, SysMode = sysMode, AudioPid = null, VideoLabel = video, AudioLabel = audio };
+    }
+
     // -------- app (window/pid) resolution --------
 
     private static (IntPtr hwnd, int? pid, string? name) ResolveApp(CaptureProfile profile) => profile.Mode switch
