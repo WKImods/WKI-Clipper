@@ -2,35 +2,35 @@ using System;
 using System.Diagnostics;
 using WKI_Clipper.Models;
 using WKI_Clipper.Native;
-using Screen = System.Windows.Forms.Screen;
 
 namespace WKI_Clipper.Services;
 
 /// <summary>
 /// Event-based foreground tracking (SetWinEventHook, no polling) for the AUTO
-/// capture mode. Decides when the pinned auto-target is stale and requests a
-/// re-pin:
-///  - nothing real is pinned yet (or the pinned process died) and a real app
-///    comes to the foreground, or
-///  - a NEWLY LAUNCHED app (started after the current pin) takes the foreground
-///    AND is (near-)fullscreen — i.e. "the game just started".
-/// Plain alt-tab between long-running apps (e.g. game → Discord) never re-pins:
-/// the clip stays on the game (explicit user requirement). Launching a small
-/// helper app mid-game doesn't steal the pin either (fullscreen check).
+/// capture mode — the "freecam": whatever real app window the user focuses
+/// becomes the capture target. A short dwell (~1.5 s) confirms the focus is
+/// deliberate so rapid alt-tab cycling doesn't churn the pipeline. Shell/system
+/// windows and our own overlay never become targets.
+///
+/// Running captures are unaffected by design: a Ctrl+F9 recording keeps its own
+/// pinned WGC session, and F9 clips only ever contain the currently pinned
+/// window (per-generation identity filtering in the buffer).
 ///
 /// Must be started on a thread with a message pump (the WPF UI thread) —
 /// WINEVENT_OUTOFCONTEXT delivers callbacks via that thread's queue.
 /// </summary>
 public sealed class ForegroundTracker : IDisposable
 {
+    private const int DwellMs = 1500;
+
     private readonly SettingsService _settings;
     private IntPtr _hook;
     // Field keeps the delegate alive — the native hook holds no GC reference.
     private User32.WinEventDelegate? _callback;
     private int? _pinnedPid;
-    private DateTime _pinnedAtUtc = DateTime.UtcNow;
+    private int _candidateSeq;
 
-    /// <summary>A better auto-target appeared — consumer should re-pin (restart the buffer). Arg: process name.</summary>
+    /// <summary>The auto-target changed — consumer should re-pin the buffer. Arg: process name.</summary>
     public event Action<string>? RetargetRequested;
 
     public ForegroundTracker(SettingsService settings)
@@ -64,59 +64,37 @@ public sealed class ForegroundTracker : IDisposable
             if (User32.GetWindowTextLength(hwnd) == 0) return;
 
             string? name;
-            DateTime startedUtc;
             try
             {
                 using var p = Process.GetProcessById(pid);
                 name = p.ProcessName;
-                startedUtc = SafeStartUtc(p);
             }
             catch { return; }
 
             if (!CaptureTargetResolver.IsCouplableApp(name)) return; // shell/system
             if (_pinnedPid == pid) return;                           // already the target
 
-            bool pinnedAlive = false;
-            if (_pinnedPid is int pp)
+            // Freecam with dwell: confirm the focus survives DwellMs before
+            // re-pinning, so alt-tab cycling doesn't churn the capture pipeline.
+            int seq = ++_candidateSeq;
+            _ = System.Threading.Tasks.Task.Run(async () =>
             {
-                try { using var cur = Process.GetProcessById(pp); pinnedAlive = !cur.HasExited; }
-                catch { /* exited */ }
-            }
+                await System.Threading.Tasks.Task.Delay(DwellMs).ConfigureAwait(false);
+                if (seq != _candidateSeq) return;                         // newer candidate took over
+                if (_settings.Current.Capture.Mode != CaptureMode.Auto) return;
+                if (User32.GetForegroundWindow() != hwnd) return;         // focus moved on
+                if (!User32.IsWindow(hwnd)) return;
+                if (_pinnedPid == pid) return;
 
-            bool newlyLaunched = startedUtc > _pinnedAtUtc;
-            bool shouldRepin = !pinnedAlive || (newlyLaunched && IsNearFullscreen(hwnd));
-            if (!shouldRepin) return;
-
-            _pinnedPid = pid;
-            _pinnedAtUtc = DateTime.UtcNow;
-            Logger.Info($"ForegroundTracker: re-pin auto target → {name} (PID {pid}, newlyLaunched={newlyLaunched}, pinnedAlive={pinnedAlive})");
-            RetargetRequested?.Invoke(name!);
+                _pinnedPid = pid;
+                Logger.Info($"ForegroundTracker: Freecam re-pin → {name} (PID {pid})");
+                RetargetRequested?.Invoke(name!);
+            });
         }
         catch (Exception ex)
         {
             Logger.Error("ForegroundTracker callback failed", ex);
         }
-    }
-
-    /// <summary>Window covers ≥90% of its monitor (fullscreen/borderless/maximized).</summary>
-    private static bool IsNearFullscreen(IntPtr hwnd)
-    {
-        try
-        {
-            if (!User32.GetWindowRect(hwnd, out var r)) return false;
-            var screen = Screen.FromHandle(hwnd);
-            long monitorArea = (long)screen.Bounds.Width * screen.Bounds.Height;
-            long windowArea = (long)r.Width * r.Height;
-            return monitorArea > 0 && windowArea >= monitorArea * 9 / 10;
-        }
-        catch { return false; }
-    }
-
-    private static DateTime SafeStartUtc(Process p)
-    {
-        // Process.StartTime is LOCAL time — normalize before comparing with UtcNow.
-        try { return p.StartTime.ToUniversalTime(); }
-        catch { return DateTime.MinValue; }
     }
 
     public void Dispose()

@@ -42,6 +42,12 @@ public sealed class ReplayBufferService : IDisposable
     // this session, so stragglers from a previous run (e.g. locked files a cold
     // ClearBufferDir couldn't delete) can never be spliced into a clip.
     private DateTime _sessionStartUtc = DateTime.MinValue;
+    // Video identity per generation (window+size or monitor+size). F9 only ever
+    // concatenates segments of the CURRENT identity — a freecam window switch can
+    // never splice two windows/resolutions into one clip, and after a quick
+    // A→B→A detour the earlier A-segments are still usable.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _genIdentity = new();
+    private string? _currentIdentity;
     // Trailing-debounce for coalescing restart bursts.
     private readonly object _debounceLock = new();
     private CancellationTokenSource? _restartDebounceCts;
@@ -95,6 +101,7 @@ public sealed class ReplayBufferService : IDisposable
             ClearBufferDir(_bufferDir);
             _generation = 0;
             _sessionStartUtc = DateTime.UtcNow;
+            _genIdentity.Clear();
         }
         else
         {
@@ -172,6 +179,14 @@ public sealed class ReplayBufferService : IDisposable
                 videoArgs = null;
             }
         }
+
+        // Record this generation's video identity — F9 only concatenates segments
+        // of the SAME identity (same window+size or monitor+size).
+        string identity = _wgc != null && videoArgs != null
+            ? $"wgc:{plan.Hwnd}:{_wgc.Width}x{_wgc.Height}"
+            : $"mon:{plan.MonitorIndex}:{plan.MonitorWidth}x{plan.MonitorHeight}";
+        _genIdentity[_generation] = identity;
+        _currentIdentity = identity;
 
         var args = FFmpegCommandBuilder.Build(_settings.Current, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
@@ -423,7 +438,9 @@ public sealed class ReplayBufferService : IDisposable
         {
             complete = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
-                .Count(fi => fi.Length > 1024 && fi.LastWriteTimeUtc >= _sessionStartUtc);
+                .Count(fi => fi.Length > 1024
+                             && fi.LastWriteTimeUtc >= _sessionStartUtc
+                             && IsCurrentIdentity(fi.Name));
         }
         catch { return 0; }
         // Exclude the one segment currently being written.
@@ -462,7 +479,9 @@ public sealed class ReplayBufferService : IDisposable
             // generations. Guard by size so a just-created tiny file is skipped.
             var segments = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
-                .Where(fi => fi.Length > 1024 && fi.LastWriteTimeUtc >= _sessionStartUtc)
+                .Where(fi => fi.Length > 1024
+                             && fi.LastWriteTimeUtc >= _sessionStartUtc
+                             && IsCurrentIdentity(fi.Name))
                 .OrderBy(fi => fi.LastWriteTimeUtc)
                 .ToList();
 
@@ -585,6 +604,21 @@ public sealed class ReplayBufferService : IDisposable
             }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// True when the segment file belongs to a generation with the CURRENT video
+    /// identity (same window+size / monitor+size). Filenames are seg_{gen}_{NN}.mp4.
+    /// </summary>
+    private bool IsCurrentIdentity(string fileName)
+    {
+        var id = _currentIdentity;
+        if (id is null) return true;
+        var parts = Path.GetFileNameWithoutExtension(fileName).Split('_');
+        return parts.Length == 3
+               && int.TryParse(parts[1], out int gen)
+               && _genIdentity.TryGetValue(gen, out var genId)
+               && genId == id;
     }
 
     private static void ClearBufferDir(string dir)

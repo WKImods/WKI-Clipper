@@ -89,21 +89,21 @@ public sealed class AppHost : IDisposable
         Foreground = new ForegroundTracker(Settings);
         Foreground.RetargetRequested += name =>
         {
-            Logger.Info($"Auto-Retarget → {name}: re-pinning capture");
-            OnCaptureTargetChanged();
-            if (Settings.Current.Behavior.ShowToastNotifications)
-                ToastService.Show(ToastKind.Info,
-                    "Ziel erkannt",
-                    $"{name} — Aufnahme richtet sich darauf aus");
+            // Freecam: the BUFFER follows the focused window. A running Ctrl+F9
+            // recording is deliberately untouched (it stays on its own window,
+            // video AND audio). No toast — window switches are frequent; the
+            // Aufnahme-Tab live head shows the new target.
+            Logger.Info($"Freecam-Retarget → {name}");
+            ReplayBuffer.RequestRetarget();
         };
         Foreground.Start();
     }
 
     /// <summary>
-    /// The capture target changed (game started/stopped, foreground re-pin).
-    /// Buffer: debounced retarget — audio swaps in place when the monitor is
-    /// unchanged, else a history-preserving warm restart. A RUNNING manual
-    /// recording follows immediately with an in-place audio swap too.
+    /// The WATCHED game (Window mode) started or stopped. Buffer: debounced
+    /// retarget — audio swaps in place when the video target is unchanged, else
+    /// a history-preserving warm restart. A RUNNING manual recording gets its
+    /// audio re-routed to the game too (its video pin is unaffected).
     /// </summary>
     private void OnCaptureTargetChanged()
     {

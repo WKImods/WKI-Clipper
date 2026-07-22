@@ -121,7 +121,7 @@ public partial class CaptureView : UserControl
         {
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
-            Text = "Richtet die Aufnahme automatisch aus: Startet ein Spiel (neues Vollbild-Programm im Vordergrund), wird darauf gepinnt — auch wenn der Clipper schon vorher lief. Alt-Tab zu bereits laufenden Programmen (z.B. Discord) ändert das Ziel nicht, der Clip bleibt beim Spiel.\n\nFür ein festes Stammspiel ist der Fenster-Modus die strikteste Wahl (pinnt ausschließlich auf dieses Programm)."
+            Text = "Freecam: Das Ziel folgt automatisch dem Fenster, das du anklickst (nach ~1,5 s Verweilzeit). Klickst du auf Arma, steht hier Arma — ohne manuelles Umstellen.\n\nLaufende Aufnahmen sind davon unberührt: Eine gestartete Strg+F9-Aufnahme bleibt bei ihrem Fenster, und ein F9-Clip enthält immer nur das aktuell gepinnte Fenster (nie zwei gemischt).\n\nFür ein festes Stammspiel, das NIE wechseln soll (auch nicht beim Fokuswechsel), nutze den Fenster-Modus."
         });
 
         // Window panel: shared window picker.
