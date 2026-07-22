@@ -11,13 +11,14 @@ namespace WKI_Clipper.Views;
 
 public partial class HotkeysView : UserControl
 {
-    private static readonly (string action, string label)[] Actions =
+    private static (string action, string label)[] Actions =>
+    new[]
     {
-        (HotkeyActions.SaveReplay,      "Letzte Sekunden speichern"),
-        (HotkeyActions.Screenshot,      "Screenshot vom aktiven Fenster"),
-        (HotkeyActions.ToggleRecording, "Recording Start/Stop"),
-        (HotkeyActions.ToggleOverlay,   "Overlay öffnen/schließen"),
-        (HotkeyActions.ToggleBuffer,    "Replay-Buffer pause/resume"),
+        (HotkeyActions.SaveReplay,      L.T("Letzte Sekunden speichern", "Save last seconds")),
+        (HotkeyActions.Screenshot,      L.T("Screenshot vom aktiven Fenster", "Screenshot of the active window")),
+        (HotkeyActions.ToggleRecording, L.T("Recording Start/Stop", "Recording start/stop")),
+        (HotkeyActions.ToggleOverlay,   L.T("Overlay öffnen/schließen", "Open/close overlay")),
+        (HotkeyActions.ToggleBuffer,    L.T("Replay-Buffer pause/resume", "Replay buffer pause/resume")),
     };
 
     public HotkeysView()
@@ -35,6 +36,9 @@ public partial class HotkeysView : UserControl
             Logger.Error("HotkeysView loaded but App.Host is null");
             return;
         }
+
+        SubheadingText.Text = L.T("Klicke auf einen Button, drücke die neue Tastenkombi. Esc bricht ab.",
+                                  "Click a button, then press the new key combo. Esc cancels.");
 
         foreach (var (action, label) in Actions)
         {
@@ -81,7 +85,7 @@ public partial class HotkeysView : UserControl
         // Clear button
         var clearBtn = new Button
         {
-            Content = "Löschen",
+            Content = L.T("Löschen", "Clear"),
             Padding = new Thickness(10, 6, 10, 6),
             VerticalAlignment = VerticalAlignment.Center,
             Background = (Brush)FindResource("PanelBrush"),
@@ -113,7 +117,7 @@ public partial class HotkeysView : UserControl
             };
             host.Settings.Save();
             host.Hotkeys.RegisterAll();
-            captureBtn.Content = "— (nicht gebunden)";
+            captureBtn.Content = L.T("— (nicht gebunden)", "— (not bound)");
             Logger.Info($"Hotkey cleared: {action}");
         };
 
@@ -126,7 +130,7 @@ public partial class HotkeysView : UserControl
         var accentBg  = (Brush)FindResource("AccentBrush");
         var prevContent = btn.Content;
 
-        btn.Content = "Drücke Tastenkombi…  (Esc abbrechen)";
+        btn.Content = L.T("Drücke Tastenkombi…  (Esc abbrechen)", "Press a key combo…  (Esc to cancel)");
         btn.Background = accentBg;
         btn.Focus();
         Keyboard.Focus(btn);
@@ -204,7 +208,7 @@ public partial class HotkeysView : UserControl
     {
         if (host.Settings.Current.Hotkeys.TryGetValue(action, out var b) && b.Key != 0)
             return HotkeyEntryViewModel.Describe(b);
-        return "— (nicht gebunden)";
+        return L.T("— (nicht gebunden)", "— (not bound)");
     }
 
     private static bool IsModifierKey(Key k) => k is

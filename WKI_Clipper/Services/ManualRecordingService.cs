@@ -160,8 +160,10 @@ public sealed class ManualRecordingService : IDisposable
                     try { if (File.Exists(path)) File.Delete(path); } catch { }
                 }
                 string err = userStopped
-                    ? "Aufnahme unvollständig — die Datei ist defekt und wurde verworfen."
-                    : $"Aufnahme fehlgeschlagen (ffmpeg code {code}). Schau ins Log.";
+                    ? L.T("Aufnahme unvollständig — die Datei ist defekt und wurde verworfen.",
+                          "Recording incomplete — the file is broken and was discarded.")
+                    : L.T($"Aufnahme fehlgeschlagen (ffmpeg code {code}). Schau ins Log.",
+                          $"Recording failed (ffmpeg code {code}). Check the log.");
                 RecordingStopped?.Invoke(this, new RecordingResult(path, false, err));
             }
         };

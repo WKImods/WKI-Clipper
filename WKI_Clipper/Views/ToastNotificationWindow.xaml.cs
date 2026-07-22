@@ -30,6 +30,7 @@ public partial class ToastNotificationWindow : Window
         TitleText.Text = title;
         BodyText.Text = body;
         FilePath = filePath;
+        HintText.Text = Services.L.T("Klicken zum Öffnen", "Click to open");
         HintText.Visibility = string.IsNullOrEmpty(filePath) ? Visibility.Collapsed : Visibility.Visible;
 
         // Accent stripe color per kind

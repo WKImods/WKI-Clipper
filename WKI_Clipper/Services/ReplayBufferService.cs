@@ -139,7 +139,7 @@ public sealed class ReplayBufferService : IDisposable
             else
             {
                 Logger.Warn("ReplayBuffer: audio pipe failed to start, continuing with video only. " + _audio.LastError);
-                BufferError?.Invoke(this, "Audio init fehlgeschlagen — " + (_audio.LastError ?? "unbekannt"));
+                BufferError?.Invoke(this, L.T("Audio init fehlgeschlagen — ", "Audio init failed — ") + (_audio.LastError ?? L.T("unbekannt", "unknown")));
                 _audio.Dispose();
                 _audio = null;
             }
@@ -247,7 +247,8 @@ public sealed class ReplayBufferService : IDisposable
                 // and the process handle isn't held until GC. (Re-check we're
                 // still the current instance to avoid nulling a fresh restart.)
                 if (_ffmpeg == ownFfmpeg) _ffmpeg = null;
-                BufferError?.Invoke(this, $"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.");
+                BufferError?.Invoke(this, L.T($"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.",
+                                              $"Buffer stopped unexpectedly (ffmpeg code {code}) — check the log."));
             }
         };
 
@@ -458,14 +459,15 @@ public sealed class ReplayBufferService : IDisposable
         // the running concat (which would corrupt the first clip).
         if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
-            BufferInfo?.Invoke(this, "Speichern läuft bereits — kurz warten.");
+            BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
             return null;
         }
         try
         {
             if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
             {
-                BufferInfo?.Invoke(this, "Buffer läuft gerade nicht (evtl. Neustart) — gleich nochmal probieren.");
+                BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht (evtl. Neustart) — gleich nochmal probieren.",
+                                             "Buffer isn't running right now (possibly restarting) — try again in a moment."));
                 return null;
             }
 
@@ -492,7 +494,8 @@ public sealed class ReplayBufferService : IDisposable
             if (segments.Count == 0)
             {
                 BufferInfo?.Invoke(this,
-                    "Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.");
+                    L.T("Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.",
+                        "Buffer just restarted — not enough material yet. Try again shortly."));
                 return null;
             }
 
@@ -524,7 +527,8 @@ public sealed class ReplayBufferService : IDisposable
             {
                 try { _concatFfmpeg?.Dispose(); } catch { }
                 try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
-                BufferError?.Invoke(this, "Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.");
+                BufferError?.Invoke(this, L.T("Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.",
+                                              "Clip creation took too long and was aborted."));
                 return null;
             }
 
@@ -537,7 +541,8 @@ public sealed class ReplayBufferService : IDisposable
             else
             {
                 try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
-                BufferError?.Invoke(this, $"Clip-Erstellung fehlgeschlagen (concat code {exitCode}).");
+                BufferError?.Invoke(this, L.T($"Clip-Erstellung fehlgeschlagen (concat code {exitCode}).",
+                                              $"Clip creation failed (concat code {exitCode})."));
                 return null;
             }
         }

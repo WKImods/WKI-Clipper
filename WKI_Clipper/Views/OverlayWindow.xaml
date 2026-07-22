@@ -25,45 +25,45 @@
                                FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
                     <TextBlock Text="v0.1.0" Margin="20,0,0,20" Style="{StaticResource MutedStyle}" />
 
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabCapture" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Aufnahme"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Capture}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Capture" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabStatus" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Status"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Status}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Status" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabClips" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Clips"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Clips}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Clips" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabAudio" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Audio"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Audio}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Audio" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabVideo" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Video"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Video}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Video" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabHotkeys" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Hotkeys"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Hotkeys}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Hotkeys" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabPaths" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Pfade"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=Paths}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="Paths" />
-                    <RadioButton Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
+                    <RadioButton x:Name="TabAbout" Style="{StaticResource TabButtonStyle}" GroupName="Tabs"
                                  Content="Über"
                                  IsChecked="{Binding CurrentTab, Converter={x:Static views:TabConverter.Instance}, ConverterParameter=About}"
                                  Command="{Binding SelectTabCommand}" CommandParameter="About" />
 
                     <Border Height="1" Background="#333" Margin="20,16,20,12" />
 
-                    <Button Margin="16,4" Content="Settings speichern"
+                    <Button x:Name="SaveSettingsBtn" Margin="16,4" Content="Settings speichern"
                             Style="{StaticResource AccentButton}"
                             Command="{Binding SaveSettingsCommand}" />
-                    <Button Margin="16,4" Content="Clips-Ordner"
+                    <Button x:Name="ClipsFolderBtn" Margin="16,4" Content="Clips-Ordner"
                             Command="{Binding OpenClipsFolderCommand}" />
                 </StackPanel>
             </Border>

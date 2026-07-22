@@ -10,7 +10,7 @@
                  ItemsControl/DataTemplate fragility. -->
             <StackPanel x:Name="VideoRows" />
 
-            <TextBlock Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Replay-Buffer" />
+            <TextBlock x:Name="BufferHeading" Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Replay-Buffer" />
             <StackPanel x:Name="BufferRows" />
         </StackPanel>
     </ScrollViewer>

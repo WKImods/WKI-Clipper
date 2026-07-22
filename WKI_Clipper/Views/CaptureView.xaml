@@ -3,8 +3,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel>
-            <TextBlock Style="{StaticResource HeadingStyle}" Text="Aufnahme" />
-            <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
+            <TextBlock x:Name="HeadingText" Style="{StaticResource HeadingStyle}" Text="Aufnahme" />
+            <TextBlock x:Name="SubheadingText" Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
                        Text="Was geclippt wird — gilt für F9-Clip und Strg+F9-Aufnahme gleichermaßen. Änderungen wirken sofort." />
 
             <StackPanel x:Name="RowsContainer" />

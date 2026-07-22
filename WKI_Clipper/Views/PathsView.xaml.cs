@@ -14,14 +14,18 @@ public partial class PathsView : UserControl
 {
     private enum PathKind { Clips, Screenshots, Buffer }
 
-    private static readonly (PathKind kind, string label, string description)[] Definitions =
+    private static (PathKind kind, string label, string description)[] Definitions =>
+    new[]
     {
-        (PathKind.Clips,       "Clips-Ordner",
-            "Hier landen alle gespeicherten Replays und manuellen Aufnahmen."),
-        (PathKind.Screenshots, "Screenshots-Ordner",
-            "Hier landen PNG-Screenshots vom aktiven Fenster."),
-        (PathKind.Buffer,      "Buffer-Ordner (temporär)",
-            "Live-Segmente des Replay-Buffers. Wird beim App-Start geleert."),
+        (PathKind.Clips,       L.T("Clips-Ordner", "Clips folder"),
+            L.T("Hier landen alle gespeicherten Replays und manuellen Aufnahmen.",
+                "All saved replays and manual recordings end up here.")),
+        (PathKind.Screenshots, L.T("Screenshots-Ordner", "Screenshots folder"),
+            L.T("Hier landen PNG-Screenshots vom aktiven Fenster.",
+                "PNG screenshots of the active window end up here.")),
+        (PathKind.Buffer,      L.T("Buffer-Ordner (temporär)", "Buffer folder (temporary)"),
+            L.T("Live-Segmente des Replay-Buffers. Wird beim App-Start geleert.",
+                "Live segments of the replay buffer. Cleared at app start.")),
     };
 
     public PathsView()
@@ -35,6 +39,15 @@ public partial class PathsView : UserControl
         if (RowsContainer.Children.Count > 0) return;
         var host = App.Host;
         if (host is null) return;
+
+        HeadingText.Text = L.T("Pfade", "Paths");
+        SubheadingText.Text = L.T("Klick Durchsuchen für Folder-Picker. Klick Öffnen für Explorer. ↺ setzt auf Standard zurück.",
+                                  "Click Browse for a folder picker. Click Open for Explorer. ↺ resets to the default.");
+        EnvVarNote.Text = L.T("Umgebungsvariablen wie %USERPROFILE% oder %LOCALAPPDATA% werden automatisch expandiert.",
+                              "Environment variables like %USERPROFILE% or %LOCALAPPDATA% are expanded automatically.");
+        OpenSettingsJsonBtn.Content = L.T("settings.json in Notepad öffnen", "Open settings.json in Notepad");
+        OpenSettingsDirBtn.Content = L.T("Settings-Ordner öffnen", "Open settings folder");
+        ResetAllBtn.Content = L.T("Alle Einstellungen zurücksetzen", "Reset all settings");
 
         foreach (var def in Definitions)
         {
@@ -57,8 +70,9 @@ public partial class PathsView : UserControl
         ResetAllBtn.Click += (_, _) =>
         {
             var result = MessageBox.Show(
-                "Wirklich alle Einstellungen auf Standard zurücksetzen?\n\nDie App muss danach neu gestartet werden.",
-                "Einstellungen zurücksetzen",
+                L.T("Wirklich alle Einstellungen auf Standard zurücksetzen?\n\nDie App muss danach neu gestartet werden.",
+                    "Really reset all settings to defaults?\n\nThe app will restart afterwards."),
+                L.T("Einstellungen zurücksetzen", "Reset settings"),
                 MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result != MessageBoxResult.Yes) return;
 
@@ -66,7 +80,7 @@ public partial class PathsView : UserControl
             {
                 if (File.Exists(host.Settings.SettingsFilePath))
                     File.Delete(host.Settings.SettingsFilePath);
-                MessageBox.Show("Settings gelöscht. App startet neu.", "OK", MessageBoxButton.OK);
+                MessageBox.Show(L.T("Settings gelöscht. App startet neu.", "Settings deleted. App is restarting."), "OK", MessageBoxButton.OK);
                 var exe = Process.GetCurrentProcess().MainModule?.FileName;
                 if (exe != null) Process.Start(exe);
                 Application.Current.Shutdown();
@@ -106,11 +120,11 @@ public partial class PathsView : UserControl
         Grid.SetColumn(box, 1);
         grid.Children.Add(box);
 
-        var browseBtn = MakeButton("Durchsuchen…", host);
+        var browseBtn = MakeButton(L.T("Durchsuchen…", "Browse…"), host);
         Grid.SetColumn(browseBtn, 2);
         grid.Children.Add(browseBtn);
 
-        var openBtn = MakeButton("Öffnen", host);
+        var openBtn = MakeButton(L.T("Öffnen", "Open"), host);
         openBtn.Margin = new Thickness(6, 0, 0, 0);
         Grid.SetColumn(openBtn, 3);
         grid.Children.Add(openBtn);
@@ -118,7 +132,7 @@ public partial class PathsView : UserControl
         var resetBtn = MakeButton("↺", host);
         resetBtn.Margin = new Thickness(6, 0, 0, 0);
         resetBtn.MinWidth = 36;
-        resetBtn.ToolTip = "Auf Standardpfad zurücksetzen";
+        resetBtn.ToolTip = L.T("Auf Standardpfad zurücksetzen", "Reset to default path");
         Grid.SetColumn(resetBtn, 4);
         grid.Children.Add(resetBtn);
 
@@ -134,7 +148,7 @@ public partial class PathsView : UserControl
         {
             using var dlg = new WinForms.FolderBrowserDialog
             {
-                Description = label + " wählen",
+                Description = L.T(label + " wählen", "Choose " + label),
                 UseDescriptionForTitle = true,
                 SelectedPath = Expand(box.Text),
                 ShowNewFolderButton = true
@@ -203,23 +217,23 @@ public partial class PathsView : UserControl
             if (Directory.Exists(expanded))
             {
                 dot.Fill = new SolidColorBrush(Color.FromRgb(0x4A, 0xD8, 0x6A));
-                dot.ToolTip = "OK — Ordner existiert";
+                dot.ToolTip = L.T("OK — Ordner existiert", "OK — folder exists");
             }
             else if (PathLikelyValid(expanded))
             {
                 dot.Fill = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40));
-                dot.ToolTip = "Ordner existiert noch nicht — wird beim Speichern erstellt";
+                dot.ToolTip = L.T("Ordner existiert noch nicht — wird beim Speichern erstellt", "Folder doesn't exist yet — created on save");
             }
             else
             {
                 dot.Fill = new SolidColorBrush(Color.FromRgb(0xE0, 0x4E, 0x4E));
-                dot.ToolTip = "Pfad ungültig";
+                dot.ToolTip = L.T("Pfad ungültig", "Invalid path");
             }
         }
         catch
         {
             dot.Fill = new SolidColorBrush(Color.FromRgb(0xE0, 0x4E, 0x4E));
-            dot.ToolTip = "Pfad ungültig";
+            dot.ToolTip = L.T("Pfad ungültig", "Invalid path");
         }
     }
 

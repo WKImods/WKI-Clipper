@@ -52,18 +52,26 @@ public partial class StatusView : UserControl
 
     private void BuildSections()
     {
+        SubheadingText.Text = L.T("Was die App gerade macht und wie sie konfiguriert ist. Aktualisiert sich live.",
+                                  "What the app is doing and how it is configured. Updates live.");
+        ActionsHeading.Text = L.T("Aktionen", "Actions");
+        ToggleRecBtn.Content = L.T("Recording starten/stoppen", "Start/stop recording");
+        ToggleBufBtn.Content = L.T("Buffer ein/aus", "Buffer on/off");
+        SaveReplayBtn.Content = L.T("Letzte N s speichern", "Save last N s");
+        ScreenshotBtn.Content = L.T("Screenshot", "Screenshot");
+
         // === Recording row ===
         _recordingDot = MakeDot();
         _recordingText = MakeRowText();
-        InfoContainer.Children.Add(MakeCard("Aufnahme-Status",
-            "Zeigt ob gerade manuell aufgenommen wird (Strg+F9).",
+        InfoContainer.Children.Add(MakeCard(L.T("Aufnahme-Status", "Recording status"),
+            L.T("Zeigt ob gerade manuell aufgenommen wird (Strg+F9).", "Shows whether a manual recording is running (Ctrl+F9)."),
             MakeIconRow(_recordingDot, _recordingText)));
 
         // === Buffer row ===
         _bufferDot = MakeDot();
         _bufferText = MakeRowText();
-        InfoContainer.Children.Add(MakeCard("Replay-Buffer",
-            "Läuft im Hintergrund mit, F9 speichert die letzten N Sekunden.",
+        InfoContainer.Children.Add(MakeCard(L.T("Replay-Buffer", "Replay buffer"),
+            L.T("Läuft im Hintergrund mit, F9 speichert die letzten N Sekunden.", "Runs in the background; F9 saves the last N seconds."),
             MakeIconRow(_bufferDot, _bufferText)));
 
         // === Audio + Video config ===
@@ -73,9 +81,9 @@ public partial class StatusView : UserControl
         var cfgStack = new StackPanel();
         cfgStack.Children.Add(MakeLabeledRow("Audio",          _audioText));
         cfgStack.Children.Add(MakeLabeledRow("Video",          _videoText));
-        cfgStack.Children.Add(MakeLabeledRow("Aufnahme-Quelle", _captureSrcText));
-        InfoContainer.Children.Add(MakeCard("Aktive Konfiguration",
-            "Was Buffer + Recording gerade benutzen würden.",
+        cfgStack.Children.Add(MakeLabeledRow(L.T("Aufnahme-Quelle", "Capture source"), _captureSrcText));
+        InfoContainer.Children.Add(MakeCard(L.T("Aktive Konfiguration", "Active configuration"),
+            L.T("Was Buffer + Recording gerade benutzen würden.", "What buffer + recording would currently use."),
             cfgStack));
 
         // === System info ===
@@ -84,10 +92,10 @@ public partial class StatusView : UserControl
         _diskSpaceText = MakeRowText();
         var sysStack = new StackPanel();
         sysStack.Children.Add(MakeLabeledRow("FFmpeg",          _ffmpegText));
-        sysStack.Children.Add(MakeLabeledRow("Clips-Ordner",    _clipsPathText));
-        sysStack.Children.Add(MakeLabeledRow("Freier Speicher", _diskSpaceText));
+        sysStack.Children.Add(MakeLabeledRow(L.T("Clips-Ordner", "Clips folder"), _clipsPathText));
+        sysStack.Children.Add(MakeLabeledRow(L.T("Freier Speicher", "Free space"), _diskSpaceText));
         InfoContainer.Children.Add(MakeCard("System",
-            "Wo Dateien landen und wie viel Platz noch da ist.",
+            L.T("Wo Dateien landen und wie viel Platz noch da ist.", "Where files end up and how much space is left."),
             sysStack));
     }
 
@@ -108,24 +116,26 @@ public partial class StatusView : UserControl
             var name = host.ManualRecording.CurrentOutputPath != null
                 ? System.IO.Path.GetFileName(host.ManualRecording.CurrentOutputPath)
                 : "";
-            _recordingText!.Text = $"Aufnahme läuft  ·  {dur}  ·  {name}";
+            _recordingText!.Text = L.T($"Aufnahme läuft  ·  {dur}  ·  {name}", $"Recording  ·  {dur}  ·  {name}");
         }
         else
         {
             _recordingDot!.Fill = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
-            _recordingText!.Text = "Bereit. Strg+F9 zum Starten.";
+            _recordingText!.Text = L.T("Bereit. Strg+F9 zum Starten.", "Ready. Press Ctrl+F9 to start.");
         }
 
         // Buffer state
         if (host.ReplayBuffer.IsRunning)
         {
             _bufferDot!.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0x6A, 0x2C));
-            _bufferText!.Text = $"Buffer aktiv  ·  letzte {s.ReplayBuffer.DurationSeconds} s im Speicher  ·  F9 speichert";
+            int avail = host.ReplayBuffer.AvailableSeconds();
+            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} s bereit  ·  F9 speichert",
+                                    $"Buffer active  ·  {avail} s ready  ·  F9 saves");
         }
         else
         {
             _bufferDot!.Fill = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
-            _bufferText!.Text = "Buffer aus. Strg+F10 schaltet ihn ein.";
+            _bufferText!.Text = L.T("Buffer aus. Strg+F10 schaltet ihn ein.", "Buffer off. Ctrl+F10 turns it on.");
         }
 
         // Effective capture plan (same resolver F9/Ctrl+F9 use). Buffer's pinned
@@ -134,7 +144,7 @@ public partial class StatusView : UserControl
                    ?? CaptureTargetResolver.Resolve(s.Capture, s);
 
         // Audio (effective route, not just the checkboxes)
-        _audioText!.Text = $"{plan.AudioLabel}  ·  Offset {s.Audio.OffsetMilliseconds} ms";
+        _audioText!.Text = $"{plan.AudioLabel}  ·  {L.T("Offset", "Offset")} {s.Audio.OffsetMilliseconds} ms";
 
         // Video
         var resName = s.Video.Resolution switch
@@ -156,8 +166,8 @@ public partial class StatusView : UserControl
 
         // FFmpeg
         _ffmpegText!.Text = host.FFmpeg.IsAvailable()
-            ? System.IO.Path.GetFileName(host.FFmpeg.FFmpegPath) + "  ·  " + host.AvailableCodecs.Count + " Encoder verfügbar"
-            : "NICHT GEFUNDEN — winget install Gyan.FFmpeg";
+            ? System.IO.Path.GetFileName(host.FFmpeg.FFmpegPath) + "  ·  " + host.AvailableCodecs.Count + L.T(" Encoder verfügbar", " encoders available")
+            : L.T("NICHT GEFUNDEN — winget install Gyan.FFmpeg", "NOT FOUND — winget install Gyan.FFmpeg");
 
         // Clips path + disk space
         var clipsDir = SettingsService.ExpandPath(s.Output.ClipsFolder);
@@ -171,7 +181,7 @@ public partial class StatusView : UserControl
                 if (drive.IsReady)
                 {
                     _diskSpaceText!.Text = FormatBytes(drive.AvailableFreeSpace)
-                        + "  /  " + FormatBytes(drive.TotalSize) + " auf " + drive.Name;
+                        + "  /  " + FormatBytes(drive.TotalSize) + L.T(" auf ", " on ") + drive.Name;
                     return;
                 }
             }

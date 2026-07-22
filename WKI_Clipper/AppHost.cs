@@ -32,6 +32,8 @@ public sealed class AppHost : IDisposable
     {
         Settings = new SettingsService();
         Settings.Load();
+        L.Init(Settings.Current);
+        Settings.SettingsChanged += (_, s) => L.Init(s);
 
         FFmpeg = new FFmpegService();
         Hotkeys = new HotkeyService(Settings);
@@ -147,8 +149,8 @@ public sealed class AppHost : IDisposable
                 OnCaptureTargetChanged();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
-                        "Ziel erkannt",
-                        $"{gameName} — Aufnahme richtet sich darauf aus");
+                        L.T("Ziel erkannt", "Target detected"),
+                        L.T($"{gameName} — Aufnahme richtet sich darauf aus", $"{gameName} — capture is aligning to it"));
             };
             GameWatcher.ProcessLost += () =>
             {
@@ -156,8 +158,8 @@ public sealed class AppHost : IDisposable
                 OnCaptureTargetChanged();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
-                        "Ziel beendet",
-                        $"{gameName} — Aufnahme neu ausgerichtet");
+                        L.T("Ziel beendet", "Target closed"),
+                        L.T($"{gameName} — Aufnahme neu ausgerichtet", $"{gameName} — capture re-aligned"));
             };
             // Start() does an immediate synchronous check before starting the poll loop
             GameWatcher.Start();

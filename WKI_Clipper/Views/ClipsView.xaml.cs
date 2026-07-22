@@ -30,6 +30,11 @@ public partial class ClipsView : UserControl
 
         if (FilterRow.Children.Count == 0)
         {
+            RefreshBtn.Content = L.T("Aktualisieren", "Refresh");
+            OpenClipsFolderBtn.Content = L.T("Clips-Ordner", "Clips folder");
+            OpenShotsFolderBtn.Content = L.T("Screenshots-Ordner", "Screenshots folder");
+            EmptyHint.Text = L.T("Keine Dateien gefunden. Drück F9 für nen Clip oder F10 für nen Screenshot.",
+                                 "No files found. Press F9 for a clip or F10 for a screenshot.");
             BuildFilterButtons();
             RefreshBtn.Click += (_, _) => Reload(host);
             OpenClipsFolderBtn.Click += (_, _) => OpenFolder(SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder));
@@ -45,7 +50,7 @@ public partial class ClipsView : UserControl
         {
             var label = f switch
             {
-                Filter.All         => "Alle",
+                Filter.All         => L.T("Alle", "All"),
                 Filter.Clips       => "Clips (F9)",
                 Filter.Recordings  => "Recordings",
                 Filter.Screenshots => "Screenshots",
@@ -203,7 +208,7 @@ public partial class ClipsView : UserControl
         // Open button
         var openBtn = new System.Windows.Controls.Button
         {
-            Content = "Öffnen",
+            Content = L.T("Öffnen", "Open"),
             Padding = new Thickness(10, 5, 10, 5),
             Margin = new Thickness(0, 0, 6, 0)
         };
@@ -214,7 +219,7 @@ public partial class ClipsView : UserControl
         // Show in Explorer
         var explorerBtn = new System.Windows.Controls.Button
         {
-            Content = "Im Ordner zeigen",
+            Content = L.T("Im Ordner zeigen", "Show in folder"),
             Padding = new Thickness(10, 5, 10, 5)
         };
         explorerBtn.Click += (_, _) => ShowInExplorer(it.FilePath);

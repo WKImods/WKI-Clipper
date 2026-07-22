@@ -41,7 +41,8 @@ public partial class App : Application
         if (!createdNew)
         {
             Logger.Warn("Another instance is already running. Exiting.");
-            MessageBox.Show("WKI Clipper läuft bereits. Schau ins Tray.", "WKI Clipper",
+            // Runs before settings/L are initialized → show both languages.
+            MessageBox.Show("WKI Clipper läuft bereits (siehe Tray).\nWKI Clipper is already running (see tray).", "WKI Clipper",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown();
             return;
@@ -58,8 +59,9 @@ public partial class App : Application
             Host.Hotkeys.HotkeyRegistrationFailed += (_, action) =>
             {
                 Logger.Error($"Hotkey registration failed for action: {action} (already taken by another app?)");
-                ToastService.Show(Views.ToastKind.Warning, "Hotkey-Konflikt",
-                    "Aktion '" + action + "' ist bereits durch eine andere App belegt.",
+                ToastService.Show(Views.ToastKind.Warning, L.T("Hotkey-Konflikt", "Hotkey conflict"),
+                    L.T("Aktion '" + action + "' ist bereits durch eine andere App belegt.",
+                        "Action '" + action + "' is already taken by another app."),
                     durationSeconds: 6.0);
             };
 
@@ -73,22 +75,23 @@ public partial class App : Application
             Host.ReplayBuffer.ReplaySaved += (_, path) =>
             {
                 ToastService.Show(Views.ToastKind.Clip,
-                    $"Clip gespeichert ({Host.Settings.Current.ReplayBuffer.DurationSeconds} s)",
+                    L.T($"Clip gespeichert ({Host.Settings.Current.ReplayBuffer.DurationSeconds} s)",
+                        $"Clip saved ({Host.Settings.Current.ReplayBuffer.DurationSeconds} s)"),
                     System.IO.Path.GetFileName(path),
                     path);
             };
             Host.ReplayBuffer.BufferError += (_, msg) =>
             {
-                ToastService.Show(Views.ToastKind.Warning, "Buffer-Fehler", msg, durationSeconds: 6.0);
+                ToastService.Show(Views.ToastKind.Warning, L.T("Buffer-Fehler", "Buffer error"), msg, durationSeconds: 6.0);
             };
             Host.ReplayBuffer.BufferInfo += (_, msg) =>
             {
-                ToastService.Show(Views.ToastKind.Info, "Replay-Buffer", msg, durationSeconds: 3.5);
+                ToastService.Show(Views.ToastKind.Info, L.T("Replay-Buffer", "Replay buffer"), msg, durationSeconds: 3.5);
             };
             Host.ManualRecording.RecordingStarted += (_, path) =>
             {
                 TrayHost.UpdateState(TrayState.Recording, System.IO.Path.GetFileNameWithoutExtension(path));
-                ToastService.Show(Views.ToastKind.Recording, "Aufnahme gestartet",
+                ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gestartet", "Recording started"),
                     System.IO.Path.GetFileName(path), durationSeconds: 2.5);
             };
             Host.ManualRecording.RecordingStopped += (_, result) =>
@@ -97,11 +100,11 @@ public partial class App : Application
                 TrayHost.UpdateState(Host.ReplayBuffer.IsRunning ? TrayState.BufferActive : TrayState.Idle,
                     Host.ReplayBuffer.IsRunning ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
                 if (result.Success)
-                    ToastService.Show(Views.ToastKind.Recording, "Aufnahme gespeichert",
+                    ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gespeichert", "Recording saved"),
                         System.IO.Path.GetFileName(result.Path), result.Path);
                 else
-                    ToastService.Show(Views.ToastKind.Warning, "Aufnahme fehlgeschlagen",
-                        result.Error ?? "Unbekannter Fehler.", durationSeconds: 6.0);
+                    ToastService.Show(Views.ToastKind.Warning, L.T("Aufnahme fehlgeschlagen", "Recording failed"),
+                        result.Error ?? L.T("Unbekannter Fehler.", "Unknown error."), durationSeconds: 6.0);
             };
             Host.Screenshots.ScreenshotSaved += (_, path) =>
             {

@@ -31,6 +31,49 @@ public partial class AboutView : UserControl
         var host = App.Host;
         if (host is null) return;
 
+        HeadingText.Text = L.T("Über WKI Clipper", "About WKI Clipper");
+
+        // ---- Language / Sprache ----
+        var langStack = new StackPanel();
+        var langBox = new System.Windows.Controls.ComboBox { MinWidth = 220 };
+        langBox.Items.Add("Deutsch");
+        langBox.Items.Add("English");
+        langBox.SelectedIndex = host.Settings.Current.Behavior.Language == Models.AppLanguage.English ? 1 : 0;
+        var langNote = new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"),
+            Margin = new Thickness(0, 6, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+            Text = L.T("Wird nach einem App-Neustart vollständig übernommen.",
+                       "Fully applied after an app restart.")
+        };
+        var restartBtn = new System.Windows.Controls.Button
+        {
+            Content = L.T("Jetzt neu starten", "Restart now"),
+            Padding = new Thickness(10, 4, 10, 4),
+            Margin = new Thickness(0, 8, 0, 0),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            Visibility = Visibility.Collapsed
+        };
+        restartBtn.Click += (_, _) =>
+        {
+            var exe = Process.GetCurrentProcess().MainModule?.FileName;
+            if (exe != null) Process.Start(exe);
+            Application.Current.Shutdown();
+        };
+        langBox.SelectionChanged += (_, _) =>
+        {
+            var newLang = langBox.SelectedIndex == 1 ? Models.AppLanguage.English : Models.AppLanguage.Deutsch;
+            if (newLang == host.Settings.Current.Behavior.Language) return;
+            host.Settings.Current.Behavior.Language = newLang;
+            host.Settings.Save();
+            restartBtn.Visibility = Visibility.Visible;
+        };
+        langStack.Children.Add(langBox);
+        langStack.Children.Add(langNote);
+        langStack.Children.Add(restartBtn);
+        InfoContainer.Children.Add(SectionCard(L.T("Sprache / Language", "Language / Sprache"), langStack));
+
         // App info
         InfoContainer.Children.Add(Card(
             "App",
@@ -45,16 +88,17 @@ public partial class AboutView : UserControl
         // System info
         var primary = Screen.PrimaryScreen;
         var screenInfo = primary != null
-            ? $"{primary.Bounds.Width} × {primary.Bounds.Height} (primär), insgesamt {Screen.AllScreens.Length} Monitor(e)"
-            : "(unbekannt)";
+            ? L.T($"{primary.Bounds.Width} × {primary.Bounds.Height} (primär), insgesamt {Screen.AllScreens.Length} Monitor(e)",
+                  $"{primary.Bounds.Width} × {primary.Bounds.Height} (primary), {Screen.AllScreens.Length} monitor(s) total")
+            : L.T("(unbekannt)", "(unknown)");
 
         InfoContainer.Children.Add(Card(
             "System",
             new (string, string)[]
             {
                 ("Windows",     Environment.OSVersion.VersionString),
-                ("Bildschirme", screenInfo),
-                ("CPU",         Environment.ProcessorCount + " logische Kerne"),
+                (L.T("Bildschirme", "Displays"), screenInfo),
+                ("CPU",         Environment.ProcessorCount + L.T(" logische Kerne", " logical cores")),
             }));
 
         // FFmpeg status
@@ -70,7 +114,7 @@ public partial class AboutView : UserControl
 
         var ffmpegPathBtn = new System.Windows.Controls.Button
         {
-            Content = "FFmpeg-Ordner öffnen",
+            Content = L.T("FFmpeg-Ordner öffnen", "Open FFmpeg folder"),
             Padding = new Thickness(10, 4, 10, 4),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left
         };
@@ -88,7 +132,7 @@ public partial class AboutView : UserControl
         var actionsStack = new StackPanel();
         _autoStartBox = new System.Windows.Controls.CheckBox
         {
-            Content = "Mit Windows starten (Tray-Modus)",
+            Content = L.T("Mit Windows starten (Tray-Modus)", "Start with Windows (tray mode)"),
             IsChecked = _autoStart.IsEnabled(),
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 12)
@@ -99,7 +143,7 @@ public partial class AboutView : UserControl
 
         var toastBox = new System.Windows.Controls.CheckBox
         {
-            Content = "Tray-Benachrichtigungen anzeigen",
+            Content = L.T("Tray-Benachrichtigungen anzeigen", "Show tray notifications"),
             IsChecked = host.Settings.Current.Behavior.ShowToastNotifications,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 12)
@@ -118,7 +162,7 @@ public partial class AboutView : UserControl
 
         var bufBox = new System.Windows.Controls.CheckBox
         {
-            Content = "Replay-Buffer beim App-Start automatisch starten",
+            Content = L.T("Replay-Buffer beim App-Start automatisch starten", "Start replay buffer automatically with the app"),
             IsChecked = host.Settings.Current.Behavior.StartBufferOnLaunch,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 12)
@@ -138,7 +182,7 @@ public partial class AboutView : UserControl
         var btnRow = new WrapPanel();
         var openLogBtn = new System.Windows.Controls.Button
         {
-            Content = "Log öffnen", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 8, 0)
+            Content = L.T("Log öffnen", "Open log"), Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 8, 0)
         };
         openLogBtn.Click += (_, _) =>
         {
@@ -148,7 +192,7 @@ public partial class AboutView : UserControl
 
         var openSettingsDirBtn = new System.Windows.Controls.Button
         {
-            Content = "Settings-Ordner öffnen", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 8, 0)
+            Content = L.T("Settings-Ordner öffnen", "Open settings folder"), Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 8, 0)
         };
         openSettingsDirBtn.Click += (_, _) =>
         {
@@ -158,7 +202,7 @@ public partial class AboutView : UserControl
 
         var exitBtn = new System.Windows.Controls.Button
         {
-            Content = "App beenden",
+            Content = L.T("App beenden", "Quit app"),
             Padding = new Thickness(10, 4, 10, 4),
             Background = (Brush)FindResource("DangerBrush"),
             Foreground = (Brush)System.Windows.Media.Brushes.White
@@ -168,7 +212,7 @@ public partial class AboutView : UserControl
 
         actionsStack.Children.Add(btnRow);
 
-        InfoContainer.Children.Add(SectionCard("Einstellungen & Aktionen", actionsStack));
+        InfoContainer.Children.Add(SectionCard(L.T("Einstellungen & Aktionen", "Settings & actions"), actionsStack));
     }
 
     private void UpdateFFmpegStatus(AppHost host)
@@ -176,11 +220,12 @@ public partial class AboutView : UserControl
         if (_ffmpegStatus is null) return;
         if (!host.FFmpeg.IsAvailable())
         {
-            _ffmpegStatus.Text = "FFmpeg nicht gefunden! Installiere via:  winget install Gyan.FFmpeg";
+            _ffmpegStatus.Text = L.T("FFmpeg nicht gefunden! Installiere via:  winget install Gyan.FFmpeg",
+                                     "FFmpeg not found! Install via:  winget install Gyan.FFmpeg");
             _ffmpegStatus.Foreground = (Brush)FindResource("DangerBrush");
             return;
         }
-        _ffmpegStatus.Text = $"FFmpeg: {host.FFmpeg.FFmpegPath}\n\nVerfügbare Codecs:\n  " +
+        _ffmpegStatus.Text = $"FFmpeg: {host.FFmpeg.FFmpegPath}\n\n{L.T("Verfügbare Codecs:", "Available codecs:")}\n  " +
             string.Join("\n  ", host.AvailableCodecs.Select(c => "• " + c.Label + "  ›  " + c.FFmpegName));
     }
 

@@ -4,18 +4,18 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel>
             <TextBlock Style="{StaticResource HeadingStyle}" Text="Status" />
-            <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
+            <TextBlock x:Name="SubheadingText" Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
                        Text="Was die App gerade macht und wie sie konfiguriert ist. Aktualisiert sich live." />
 
             <StackPanel x:Name="InfoContainer" />
 
-            <TextBlock Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Aktionen" />
+            <TextBlock x:Name="ActionsHeading" Style="{StaticResource HeadingStyle}" Margin="0,28,0,8" Text="Aktionen" />
             <UniformGrid Columns="2" Rows="2">
-                <Button Margin="4" Content="Recording starten/stoppen" Command="{Binding ToggleRecordingCommand}" />
-                <Button Margin="4" Content="Buffer ein/aus" Command="{Binding ToggleBufferCommand}" />
-                <Button Margin="4" Content="Letzte N s speichern" Command="{Binding SaveReplayCommand}"
+                <Button x:Name="ToggleRecBtn" Margin="4" Content="Recording starten/stoppen" Command="{Binding ToggleRecordingCommand}" />
+                <Button x:Name="ToggleBufBtn" Margin="4" Content="Buffer ein/aus" Command="{Binding ToggleBufferCommand}" />
+                <Button x:Name="SaveReplayBtn" Margin="4" Content="Letzte N s speichern" Command="{Binding SaveReplayCommand}"
                         Style="{StaticResource AccentButton}" />
-                <Button Margin="4" Content="Screenshot" Command="{Binding TakeScreenshotCommand}" />
+                <Button x:Name="ScreenshotBtn" Margin="4" Content="Screenshot" Command="{Binding TakeScreenshotCommand}" />
             </UniformGrid>
         </StackPanel>
     </ScrollViewer>

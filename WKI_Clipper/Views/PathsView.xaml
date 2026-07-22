@@ -3,15 +3,15 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel>
-            <TextBlock Style="{StaticResource HeadingStyle}" Text="Pfade" />
-            <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
+            <TextBlock x:Name="HeadingText" Style="{StaticResource HeadingStyle}" Text="Pfade" />
+            <TextBlock x:Name="SubheadingText" Style="{StaticResource MutedStyle}" Margin="0,0,0,16"
                        Text="Klick Durchsuchen für Folder-Picker. Klick Öffnen für Explorer. ↺ setzt auf Standard zurück." />
 
             <StackPanel x:Name="RowsContainer" />
 
             <Border Background="#22FFFFFF" CornerRadius="4" Padding="12" Margin="0,24,0,0">
                 <StackPanel>
-                    <TextBlock Style="{StaticResource MutedStyle}" Margin="0,0,0,8"
+                    <TextBlock x:Name="EnvVarNote" Style="{StaticResource MutedStyle}" Margin="0,0,0,8"
                                Text="Umgebungsvariablen wie %USERPROFILE% oder %LOCALAPPDATA% werden automatisch expandiert." />
                     <WrapPanel>
                         <Button x:Name="OpenSettingsJsonBtn" Content="settings.json in Notepad öffnen" Margin="0,0,8,0" />

@@ -37,7 +37,7 @@ internal static class TrayHost
 
         _trayIcon = new WinForms.NotifyIcon
         {
-            Text = "WKI Clipper — Bereit",
+            Text = L.T("WKI Clipper — Bereit", "WKI Clipper — Ready"),
             ContextMenuStrip = cms,
             Visible = true,
             Icon = GetIcon(TrayState.Idle)
@@ -65,9 +65,9 @@ internal static class TrayHost
         try { _trayIcon.Icon = GetIcon(state); } catch { }
         _trayIcon.Text = state switch
         {
-            TrayState.Idle         => detail is null ? "WKI Clipper — Bereit" : "WKI Clipper — " + detail,
-            TrayState.BufferActive => detail is null ? "WKI Clipper — Buffer aktiv" : "WKI Clipper — Buffer aktiv (" + detail + ")",
-            TrayState.Recording    => detail is null ? "WKI Clipper — Recording läuft" : "WKI Clipper — Recording: " + detail,
+            TrayState.Idle         => detail is null ? L.T("WKI Clipper — Bereit", "WKI Clipper — Ready") : "WKI Clipper — " + detail,
+            TrayState.BufferActive => detail is null ? L.T("WKI Clipper — Buffer aktiv", "WKI Clipper — Buffer active") : L.T("WKI Clipper — Buffer aktiv (", "WKI Clipper — Buffer active (") + detail + ")",
+            TrayState.Recording    => detail is null ? L.T("WKI Clipper — Recording läuft", "WKI Clipper — Recording") : "WKI Clipper — Recording: " + detail,
             _                      => "WKI Clipper"
         };
         // NotifyIcon.Text max 63 chars
@@ -161,17 +161,17 @@ internal static class TrayHost
     {
         var cms = new WinForms.ContextMenuStrip();
 
-        var openItem = new WinForms.ToolStripMenuItem("Overlay öffnen  (Strg+Alt+G)") { Font = new Font(cms.Font, System.Drawing.FontStyle.Bold) };
+        var openItem = new WinForms.ToolStripMenuItem(L.T("Overlay öffnen  (Strg+Alt+G)", "Open overlay  (Ctrl+Alt+G)")) { Font = new Font(cms.Font, System.Drawing.FontStyle.Bold) };
         openItem.Click += (_, _) => ShowOverlay();
         cms.Items.Add(openItem);
 
         cms.Items.Add(new WinForms.ToolStripSeparator());
 
-        var bufferItem = new WinForms.ToolStripMenuItem("Replay-Buffer ein/aus");
+        var bufferItem = new WinForms.ToolStripMenuItem(L.T("Replay-Buffer ein/aus", "Replay buffer on/off"));
         bufferItem.Click += async (_, _) => { if (_host != null) await _host.ReplayBuffer.ToggleAsync(); };
         cms.Items.Add(bufferItem);
 
-        var recItem = new WinForms.ToolStripMenuItem("Recording starten/stoppen");
+        var recItem = new WinForms.ToolStripMenuItem(L.T("Recording starten/stoppen", "Start/stop recording"));
         recItem.Click += async (_, _) => { if (_host != null) await _host.ManualRecording.ToggleAsync(); };
         cms.Items.Add(recItem);
 
@@ -179,13 +179,13 @@ internal static class TrayHost
         shotItem.Click += async (_, _) => { if (_host != null) await _host.Screenshots.CaptureActiveWindowAsync(); };
         cms.Items.Add(shotItem);
 
-        var saveReplayItem = new WinForms.ToolStripMenuItem("Letzte N Sekunden speichern");
+        var saveReplayItem = new WinForms.ToolStripMenuItem(L.T("Letzte N Sekunden speichern", "Save last N seconds"));
         saveReplayItem.Click += async (_, _) => { if (_host != null) await _host.ReplayBuffer.SaveLastAsync(); };
         cms.Items.Add(saveReplayItem);
 
         cms.Items.Add(new WinForms.ToolStripSeparator());
 
-        var openClipsItem = new WinForms.ToolStripMenuItem("Clips-Ordner öffnen");
+        var openClipsItem = new WinForms.ToolStripMenuItem(L.T("Clips-Ordner öffnen", "Open clips folder"));
         openClipsItem.Click += (_, _) =>
         {
             if (_host is null) return;
@@ -194,7 +194,7 @@ internal static class TrayHost
         };
         cms.Items.Add(openClipsItem);
 
-        var openLogItem = new WinForms.ToolStripMenuItem("Log öffnen");
+        var openLogItem = new WinForms.ToolStripMenuItem(L.T("Log öffnen", "Open log"));
         openLogItem.Click += (_, _) =>
         {
             try { Process.Start(new ProcessStartInfo("notepad.exe", "\"" + Logger.Path + "\"") { UseShellExecute = true }); } catch { }
@@ -203,7 +203,7 @@ internal static class TrayHost
 
         cms.Items.Add(new WinForms.ToolStripSeparator());
 
-        var exitItem = new WinForms.ToolStripMenuItem("Beenden");
+        var exitItem = new WinForms.ToolStripMenuItem(L.T("Beenden", "Quit"));
         exitItem.Click += (_, _) =>
         {
             if (_trayIcon != null) { _trayIcon.Visible = false; _trayIcon.Dispose(); _trayIcon = null; }

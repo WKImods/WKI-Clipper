@@ -267,12 +267,14 @@ public static class CaptureTargetResolver
     private static string BuildVideoLabel(CaptureProfile profile, int idx, Screen screen, string? appName, IntPtr hwnd, bool useWgc)
     {
         string mon = $"Monitor {idx + 1} ({screen.Bounds.Width}×{screen.Bounds.Height})";
+        string auto = L.T("Automatik: ", "Automatic: ");
         if (useWgc && appName != null)
         {
             // Per-window WGC: the window itself is captured, occlusion-proof.
+            string wgcPart = L.T(" — Fenster (verdeckungssicher)", " — window (occlusion-proof)");
             return profile.Mode == CaptureMode.Auto
-                ? $"Automatik: {appName} — Fenster (verdeckungssicher)"
-                : $"{appName} — Fenster (verdeckungssicher)";
+                ? $"{auto}{appName}{wgcPart}"
+                : $"{appName}{wgcPart}";
         }
         return profile.Mode switch
         {
@@ -280,23 +282,23 @@ public static class CaptureTargetResolver
             CaptureMode.Window => appName != null && hwnd != IntPtr.Zero
                 ? $"{appName} → {mon}"
                 : appName != null
-                    ? $"{appName} (kein Fenster) → {mon}"
-                    : $"Kein Fenster gewählt → {mon}",
+                    ? $"{appName} {L.T("(kein Fenster)", "(no window)")} → {mon}"
+                    : $"{L.T("Kein Fenster gewählt", "No window chosen")} → {mon}",
             _ => appName != null
-                ? $"Automatik: {appName} → {mon}"
-                : $"Automatik: {mon}"
+                ? $"{auto}{appName} → {mon}"
+                : $"{auto}{mon}"
         };
     }
 
     private static string BuildAudioLabel(SystemAudioMode sysMode, string? audioName, AppSettings settings)
     {
         bool mic = settings.Audio.RecordMicrophone;
-        string micPart = mic ? " + Mikro" : "";
+        string micPart = mic ? L.T(" + Mikro", " + mic") : "";
         return sysMode switch
         {
-            SystemAudioMode.Process => $"Nur {audioName ?? "Spiel"}{micPart}",
-            SystemAudioMode.AllAudio => $"Alle Sounds{micPart}",
-            _ => mic ? "Nur Mikro" : "Kein Ton"
+            SystemAudioMode.Process => L.T($"Nur {audioName ?? "Spiel"}", $"Only {audioName ?? "game"}") + micPart,
+            SystemAudioMode.AllAudio => L.T("Alle Sounds", "All sounds") + micPart,
+            _ => mic ? L.T("Nur Mikro", "Mic only") : L.T("Kein Ton", "No audio")
         };
     }
 

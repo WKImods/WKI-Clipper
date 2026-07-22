@@ -19,8 +19,8 @@ public partial class OverlayViewModel : ObservableObject
     [ObservableProperty] private string _currentTab = "Capture";
     [ObservableProperty] private bool _isRecording;
     [ObservableProperty] private bool _isBufferRunning;
-    [ObservableProperty] private string _bufferStatusText = "Buffer aus";
-    [ObservableProperty] private string _recordingStatusText = "Bereit";
+    [ObservableProperty] private string _bufferStatusText = L.T("Buffer aus", "Buffer off");
+    [ObservableProperty] private string _recordingStatusText = L.T("Bereit", "Ready");
     [ObservableProperty] private string _lastEvent = "";
     [ObservableProperty] private string _audioStatusText = "";
 
@@ -40,22 +40,22 @@ public partial class OverlayViewModel : ObservableObject
         _host.ManualRecording.RecordingStarted += (_, p) =>
         {
             IsRecording = true;
-            RecordingStatusText = "Aufnahme läuft → " + Path.GetFileName(p);
-            LastEvent = $"Recording gestartet: {Path.GetFileName(p)}";
+            RecordingStatusText = L.T("Aufnahme läuft → ", "Recording → ") + Path.GetFileName(p);
+            LastEvent = L.T($"Aufnahme gestartet: {Path.GetFileName(p)}", $"Recording started: {Path.GetFileName(p)}");
         };
         _host.ManualRecording.RecordingStopped += (_, result) =>
         {
             IsRecording = false;
             if (result.Success)
             {
-                RecordingStatusText = "Bereit";
-                LastEvent = $"Aufnahme gespeichert: {Path.GetFileName(result.Path)}";
+                RecordingStatusText = L.T("Bereit", "Ready");
+                LastEvent = L.T($"Aufnahme gespeichert: {Path.GetFileName(result.Path)}", $"Recording saved: {Path.GetFileName(result.Path)}");
                 ReloadClips();
             }
             else
             {
-                RecordingStatusText = "Fehler: " + (result.Error ?? "Aufnahme fehlgeschlagen");
-                LastEvent = "Aufnahme fehlgeschlagen";
+                RecordingStatusText = L.T("Fehler: ", "Error: ") + (result.Error ?? L.T("Aufnahme fehlgeschlagen", "Recording failed"));
+                LastEvent = L.T("Aufnahme fehlgeschlagen", "Recording failed");
             }
         };
 
@@ -64,17 +64,17 @@ public partial class OverlayViewModel : ObservableObject
             IsBufferRunning = running;
             UpdateAudioStatus();
             BufferStatusText = running
-                ? $"Buffer aktiv ({Settings.ReplayBuffer.DurationSeconds} s)"
-                : "Buffer aus";
+                ? L.T($"Buffer aktiv ({Settings.ReplayBuffer.DurationSeconds} s)", $"Buffer active ({Settings.ReplayBuffer.DurationSeconds} s)")
+                : L.T("Buffer aus", "Buffer off");
         };
         _host.ReplayBuffer.ReplaySaved += (_, p) =>
         {
-            LastEvent = $"Clip gespeichert: {Path.GetFileName(p)}";
+            LastEvent = L.T($"Clip gespeichert: {Path.GetFileName(p)}", $"Clip saved: {Path.GetFileName(p)}");
             ReloadClips();
         };
         _host.ReplayBuffer.BufferError += (_, msg) =>
         {
-            BufferStatusText = "Fehler: " + msg;
+            BufferStatusText = L.T("Fehler: ", "Error: ") + msg;
         };
 
         _host.Screenshots.ScreenshotSaved += (_, p) =>
@@ -94,7 +94,7 @@ public partial class OverlayViewModel : ObservableObject
         var parts = new System.Collections.Generic.List<string>();
         if (a.RecordMicrophone) parts.Add("Mic");
         if (a.RecordSystemSound) parts.Add("System");
-        AudioStatusText = parts.Count == 0 ? "Audio: aus" : "Audio: " + string.Join(" + ", parts);
+        AudioStatusText = parts.Count == 0 ? L.T("Audio: aus", "Audio: off") : "Audio: " + string.Join(" + ", parts);
     }
 
     [RelayCommand]
@@ -131,7 +131,7 @@ public partial class OverlayViewModel : ObservableObject
     {
         _host.Settings.Save();
         _host.Hotkeys.RegisterAll();
-        LastEvent = "Settings gespeichert";
+        LastEvent = L.T("Settings gespeichert", "Settings saved");
     }
 
     [RelayCommand]

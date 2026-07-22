@@ -50,6 +50,10 @@ public partial class AudioSettingsView : UserControl
         var host = App.Host;
         if (host is null) return;
 
+        SubheadingText.Text = L.T(
+            "Mikrofon + System-Sound werden direkt via WASAPI in der App gecapturet — kein Stereo-Mix oder VB-CABLE nötig.",
+            "Microphone + system sound are captured in-app via WASAPI — no Stereo Mix or VB-CABLE needed.");
+
         _enumerator = new MMDeviceEnumerator();
 
         RowsContainer.Children.Add(BuildMicCard(host));
@@ -67,7 +71,7 @@ public partial class AudioSettingsView : UserControl
         // Header
         stack.Children.Add(new TextBlock
         {
-            Text = "Spiel-Audio",
+            Text = L.T("Spiel-Audio", "Game audio"),
             FontWeight = System.Windows.FontWeights.SemiBold,
             FontSize = 14,
             Foreground = (Brush)FindResource("TextBrush"),
@@ -77,14 +81,14 @@ public partial class AudioSettingsView : UserControl
         // Radio: AllAudio vs GameOnly
         var radioAll = new System.Windows.Controls.RadioButton
         {
-            Content = "Alle Sounds aufnehmen",
+            Content = L.T("Alle Sounds aufnehmen", "Capture all sounds"),
             IsChecked = host.Settings.Current.Audio.SystemCaptureMode == Models.AudioCaptureMode.AllAudio,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 4)
         };
         var radioGame = new System.Windows.Controls.RadioButton
         {
-            Content = "Nur Spiel-Audio aufnehmen",
+            Content = L.T("Nur Spiel-Audio aufnehmen", "Capture game audio only"),
             IsChecked = host.Settings.Current.Audio.SystemCaptureMode == Models.AudioCaptureMode.GameOnly,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 8)
@@ -109,7 +113,7 @@ public partial class AudioSettingsView : UserControl
 
         var refreshBtn = new System.Windows.Controls.Button
         {
-            Content = "Aktualisieren",
+            Content = L.T("Aktualisieren", "Refresh"),
             Padding = new Thickness(8, 4, 8, 4),
             Margin = new Thickness(8, 0, 0, 0)
         };
@@ -120,7 +124,7 @@ public partial class AudioSettingsView : UserControl
         DockPanel.SetDock(refreshBtn, Dock.Right);
         processRow.Children.Add(refreshBtn);
         processRow.Children.Add(processBox);
-        pickerPanel.Children.Add(BuildLabeledRow("Prozess", processRow));
+        pickerPanel.Children.Add(BuildLabeledRow(L.T("Prozess", "Process"), processRow));
 
         // Status text
         var statusText = new TextBlock
@@ -137,7 +141,8 @@ public partial class AudioSettingsView : UserControl
         // Explanation
         var hint = new TextBlock
         {
-            Text = "Im Modus \"Nur Spiel-Audio\" wird nur der Sound des ausgewaehlten Prozesses aufgenommen. Discord, Browser und andere Apps sind automatisch stumm im Clip. Der Buffer startet automatisch neu wenn das Spiel erkannt wird.",
+            Text = L.T("Im Modus \"Nur Spiel-Audio\" wird nur der Sound des ausgewaehlten Prozesses aufgenommen. Discord, Browser und andere Apps sind automatisch stumm im Clip. Gilt als Fallback, wenn im Aufnahme-Tab die Ton-Kopplung aus ist oder kein Ziel auflösbar ist.",
+                       "In \"game audio only\" mode, only the selected process's sound is captured. Discord, browsers and other apps are automatically silent in the clip. Acts as the fallback when audio coupling in the Capture tab is off or no target can be resolved."),
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0)
@@ -187,7 +192,7 @@ public partial class AudioSettingsView : UserControl
         box.Items.Clear();
 
         // First entry: auto-detect
-        var autoEntry = new ProcessListEntry("Automatisch (Vordergrundfenster)", null, true);
+        var autoEntry = new ProcessListEntry(L.T("Automatisch (Vordergrundfenster)", "Automatic (foreground window)"), null, true);
         box.Items.Add(autoEntry);
 
         // All processes with a main window
@@ -230,7 +235,7 @@ public partial class AudioSettingsView : UserControl
             if (!found)
             {
                 // Process not running — add a placeholder
-                var placeholder = new ProcessListEntry($"{currentName} (nicht aktiv)", currentName, false);
+                var placeholder = new ProcessListEntry($"{currentName} ({L.T("nicht aktiv", "not running")})", currentName, false);
                 box.Items.Add(placeholder);
                 box.SelectedIndex = box.Items.Count - 1;
             }
@@ -244,16 +249,18 @@ public partial class AudioSettingsView : UserControl
             statusText.Text = "";
             return;
         }
-        var name = host.Settings.Current.Audio.GameProcessName ?? "Vordergrundfenster";
+        var name = host.Settings.Current.Audio.GameProcessName ?? L.T("Vordergrundfenster", "foreground window");
         var pid = host.GameWatcher?.CurrentPid;
         if (pid.HasValue)
         {
-            statusText.Text = $"Aktiv: {name} (PID {pid}) — nur Game-Audio wird aufgenommen";
+            statusText.Text = L.T($"Aktiv: {name} (PID {pid}) — nur Game-Audio wird aufgenommen",
+                                  $"Active: {name} (PID {pid}) — only game audio is captured");
             statusText.Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0xD8, 0x6A));
         }
         else
         {
-            statusText.Text = $"{name} nicht gestartet — aktuell werden alle Sounds aufgenommen";
+            statusText.Text = L.T($"{name} nicht gestartet — aktuell werden alle Sounds aufgenommen",
+                                  $"{name} not running — currently all sounds are captured");
             statusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40));
         }
     }
@@ -268,7 +275,7 @@ public partial class AudioSettingsView : UserControl
         var stack = new StackPanel();
         stack.Children.Add(new TextBlock
         {
-            Text = "Audio-Synchronisation",
+            Text = L.T("Audio-Synchronisation", "Audio synchronization"),
             FontWeight = System.Windows.FontWeights.SemiBold,
             FontSize = 14,
             Foreground = (Brush)FindResource("TextBrush"),
@@ -276,7 +283,8 @@ public partial class AudioSettingsView : UserControl
         });
         stack.Children.Add(new TextBlock
         {
-            Text = "Negativer Wert = Audio kommt früher. WASAPI-Capture hat typisch ~150 ms Lag gegenüber dem Video. Wenn Audio im Clip zu spät kommt: weiter ins Negative. Wenn zu früh: Richtung 0 oder positiv.",
+            Text = L.T("Negativer Wert = Audio kommt früher. WASAPI-Capture hat typisch ~150 ms Lag gegenüber dem Video. Wenn Audio im Clip zu spät kommt: weiter ins Negative. Wenn zu früh: Richtung 0 oder positiv.",
+                       "Negative value = audio plays earlier. WASAPI capture typically lags the video by ~150 ms. If clip audio arrives late: go more negative. If too early: towards 0 or positive."),
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12)
@@ -313,7 +321,7 @@ public partial class AudioSettingsView : UserControl
 
         var resetBtn = new System.Windows.Controls.Button
         {
-            Content = "Auf Standard (-150 ms) zurücksetzen",
+            Content = L.T("Auf Standard (-150 ms) zurücksetzen", "Reset to default (-150 ms)"),
             Padding = new Thickness(10, 6, 10, 6),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
             Margin = new Thickness(0, 12, 0, 0)
@@ -372,7 +380,7 @@ public partial class AudioSettingsView : UserControl
         if (dev is null || !enabled)
         {
             meter.Width = 0;
-            if (text != null) text.Text = enabled ? "kein Gerät" : "aus";
+            if (text != null) text.Text = enabled ? L.T("kein Gerät", "no device") : L.T("aus", "off");
             return;
         }
         try
@@ -413,7 +421,7 @@ public partial class AudioSettingsView : UserControl
 
         var title = new TextBlock
         {
-            Text = "Mikrofon",
+            Text = L.T("Mikrofon", "Microphone"),
             FontWeight = System.Windows.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 0, 0, 0),
@@ -425,7 +433,7 @@ public partial class AudioSettingsView : UserControl
 
         _micEnable = new System.Windows.Controls.CheckBox
         {
-            Content = "aufnehmen",
+            Content = L.T("aufnehmen", "record"),
             IsChecked = host.Settings.Current.Audio.RecordMicrophone,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             Foreground = (Brush)FindResource("TextBrush")
@@ -460,12 +468,12 @@ public partial class AudioSettingsView : UserControl
                 host.ReplayBuffer.RequestRestart();
             }
         };
-        stack.Children.Add(BuildLabeledRow("Gerät", _micBox));
+        stack.Children.Add(BuildLabeledRow(L.T("Gerät", "Device"), _micBox));
 
         var (meter, label) = BuildMeterRow();
         _micMeter = meter;
         _micMeterText = label;
-        stack.Children.Add(BuildLabeledRow("Pegel", BuildMeterPanel(meter, label, () => RunTest(host, isMic: true))));
+        stack.Children.Add(BuildLabeledRow(L.T("Pegel", "Level"), BuildMeterPanel(meter, label, () => RunTest(host, isMic: true))));
 
         // Mic gain slider (0.0 .. 4.0 = -∞ dB .. +12 dB)
         var (gainSlider, gainText) = BuildGainRow(host.Settings.Current.Audio.MicVolume, v =>
@@ -474,7 +482,7 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Save();
             host.ReplayBuffer.RequestRestart();
         });
-        stack.Children.Add(BuildLabeledRow("Verstärkung", BuildGainPanel(gainSlider, gainText)));
+        stack.Children.Add(BuildLabeledRow(L.T("Verstärkung", "Gain"), BuildGainPanel(gainSlider, gainText)));
 
         UpdateStatusDot(_micStatusDot, host.Settings.Current.Audio.RecordMicrophone, true);
         return Card(stack);
@@ -491,7 +499,7 @@ public partial class AudioSettingsView : UserControl
 
         var title = new TextBlock
         {
-            Text = "System-Sound",
+            Text = L.T("System-Sound", "System sound"),
             FontWeight = System.Windows.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 0, 0, 0),
@@ -503,7 +511,7 @@ public partial class AudioSettingsView : UserControl
 
         _sysEnable = new System.Windows.Controls.CheckBox
         {
-            Content = "aufnehmen",
+            Content = L.T("aufnehmen", "record"),
             IsChecked = host.Settings.Current.Audio.RecordSystemSound,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             Foreground = (Brush)FindResource("TextBrush")
@@ -538,12 +546,12 @@ public partial class AudioSettingsView : UserControl
                 host.ReplayBuffer.RequestRestart();
             }
         };
-        stack.Children.Add(BuildLabeledRow("Gerät", _sysBox));
+        stack.Children.Add(BuildLabeledRow(L.T("Gerät", "Device"), _sysBox));
 
         var (meter, label) = BuildMeterRow();
         _sysMeter = meter;
         _sysMeterText = label;
-        stack.Children.Add(BuildLabeledRow("Pegel", BuildMeterPanel(meter, label, () => RunTest(host, isMic: false))));
+        stack.Children.Add(BuildLabeledRow(L.T("Pegel", "Level"), BuildMeterPanel(meter, label, () => RunTest(host, isMic: false))));
 
         var (gainSlider, gainText) = BuildGainRow(host.Settings.Current.Audio.SystemVolume, v =>
         {
@@ -551,7 +559,7 @@ public partial class AudioSettingsView : UserControl
             host.Settings.Save();
             host.ReplayBuffer.RequestRestart();
         });
-        stack.Children.Add(BuildLabeledRow("Verstärkung", BuildGainPanel(gainSlider, gainText)));
+        stack.Children.Add(BuildLabeledRow(L.T("Verstärkung", "Gain"), BuildGainPanel(gainSlider, gainText)));
 
         UpdateStatusDot(_sysStatusDot, host.Settings.Current.Audio.RecordSystemSound, true);
         return Card(stack);
@@ -593,7 +601,7 @@ public partial class AudioSettingsView : UserControl
 
     private static string FormatGain(double v)
     {
-        if (v <= 0.001) return "stumm";
+        if (v <= 0.001) return L.T("stumm", "muted");
         var db = 20.0 * Math.Log10(v);
         return $"{v:F2}×  ·  {(db >= 0 ? "+" : "")}{db:F1} dB";
     }
@@ -641,7 +649,7 @@ public partial class AudioSettingsView : UserControl
 
         var testBtn = new System.Windows.Controls.Button
         {
-            Content = "Test (3 s)",
+            Content = L.T("Test (3 s)", "Test (3 s)"),
             Padding = new Thickness(10, 4, 10, 4),
             Margin = new Thickness(12, 0, 0, 0),
             Cursor = Cursors.Hand
@@ -727,7 +735,7 @@ public partial class AudioSettingsView : UserControl
                 var info = host.AudioDevices.ListMicrophones()
                     .FirstOrDefault(d => d.Id == host.Settings.Current.Audio.MicDeviceId)
                     ?? host.AudioDevices.GetDefaultMicrophone();
-                if (info is null) { MessageBox.Show("Kein Mikrofon gefunden."); return; }
+                if (info is null) { MessageBox.Show(L.T("Kein Mikrofon gefunden.", "No microphone found.")); return; }
                 device = enumerator.GetDevice(info.Id);
                 capture = new WasapiCapture(device);
             }
@@ -736,7 +744,7 @@ public partial class AudioSettingsView : UserControl
                 var info = host.AudioDevices.ListRenderDevices()
                     .FirstOrDefault(d => d.Id == host.Settings.Current.Audio.SystemDeviceId)
                     ?? host.AudioDevices.GetDefaultRenderDevice();
-                if (info is null) { MessageBox.Show("Kein Wiedergabegerät gefunden."); return; }
+                if (info is null) { MessageBox.Show(L.T("Kein Wiedergabegerät gefunden.", "No playback device found.")); return; }
                 device = enumerator.GetDevice(info.Id);
                 capture = new WasapiLoopbackCapture(device);
             }
@@ -761,7 +769,7 @@ public partial class AudioSettingsView : UserControl
         catch (Exception ex)
         {
             Logger.Error("Audio test failed", ex);
-            MessageBox.Show("Test fehlgeschlagen: " + ex.Message, "WKI Clipper",
+            MessageBox.Show(L.T("Test fehlgeschlagen: ", "Test failed: ") + ex.Message, "WKI Clipper",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

@@ -68,6 +68,11 @@ public partial class CaptureView : UserControl
         var host = App.Host;
         if (host is null) return;
 
+        HeadingText.Text = L.T("Aufnahme", "Capture");
+        SubheadingText.Text = L.T(
+            "Was geclippt wird — gilt für F9-Clip und Strg+F9-Aufnahme gleichermaßen. Änderungen wirken sofort.",
+            "What gets clipped — applies to both the F9 clip and the Ctrl+F9 recording. Changes take effect immediately.");
+
         // ---- Live "what gets captured" head ----
         _targetText = new TextBlock
         {
@@ -88,14 +93,16 @@ public partial class CaptureView : UserControl
         headStack.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("BorderBrush"), Margin = new Thickness(0, 12, 0, 12) });
         headStack.Children.Add(MakeIconRow(_bufferDot, _bufferText));
         headStack.Children.Add(MakeIconRow(_recDot, _recText));
-        RowsContainer.Children.Add(MakeCard("Was wird aufgenommen?",
-            "Gilt für F9-Clip und Strg+F9-Aufnahme.", headStack));
+        RowsContainer.Children.Add(MakeCard(
+            L.T("Was wird aufgenommen?", "What gets captured?"),
+            L.T("Gilt für F9-Clip und Strg+F9-Aufnahme.", "Applies to the F9 clip and the Ctrl+F9 recording."),
+            headStack));
 
         // ---- Target mode ----
         var modeStack = new StackPanel();
-        _autoRadio = MakeRadio("Automatik (Spiel im Vordergrund)");
-        _windowRadio = MakeRadio("Bestimmtes Fenster");
-        _monitorRadio = MakeRadio("Ganzer Monitor");
+        _autoRadio = MakeRadio(L.T("Automatik (Spiel im Vordergrund)", "Automatic (foreground game)"));
+        _windowRadio = MakeRadio(L.T("Bestimmtes Fenster", "Specific window"));
+        _monitorRadio = MakeRadio(L.T("Ganzer Monitor", "Whole monitor"));
         var mode = host.Settings.Current.Capture.Mode;
         _autoRadio.IsChecked = mode == CaptureMode.Auto;
         _windowRadio.IsChecked = mode == CaptureMode.Window;
@@ -121,7 +128,9 @@ public partial class CaptureView : UserControl
         {
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
-            Text = "Freecam: Das Ziel folgt automatisch dem Fenster, das du anklickst (nach ~1,5 s Verweilzeit). Klickst du auf Arma, steht hier Arma — ohne manuelles Umstellen.\n\nLaufende Aufnahmen sind davon unberührt: Eine gestartete Strg+F9-Aufnahme bleibt bei ihrem Fenster, und ein F9-Clip enthält immer nur das aktuell gepinnte Fenster (nie zwei gemischt).\n\nFür ein festes Stammspiel, das NIE wechseln soll (auch nicht beim Fokuswechsel), nutze den Fenster-Modus."
+            Text = L.T(
+                "Freecam: Das Ziel folgt automatisch dem Fenster, das du anklickst (nach ~1,5 s Verweilzeit). Klickst du auf Arma, steht hier Arma — ohne manuelles Umstellen.\n\nLaufende Aufnahmen sind davon unberührt: Eine gestartete Strg+F9-Aufnahme bleibt bei ihrem Fenster, und ein F9-Clip enthält immer nur das aktuell gepinnte Fenster (nie zwei gemischt).\n\nFür ein festes Stammspiel, das NIE wechseln soll (auch nicht beim Fokuswechsel), nutze den Fenster-Modus.",
+                "Freecam: the target automatically follows the window you click (after ~1.5 s dwell). Click into Arma and it reads Arma — no manual switching.\n\nRunning captures are untouched: a started Ctrl+F9 recording stays on its window, and an F9 clip only ever contains the currently pinned window (never two mixed).\n\nFor one main game that must NEVER switch (not even on focus change), use Window mode.")
         });
 
         // Window panel: shared window picker.
@@ -140,14 +149,15 @@ public partial class CaptureView : UserControl
                 Refresh();
             }
         };
-        var refreshBtn = new Button { Content = "Fensterliste aktualisieren", Margin = new Thickness(0, 0, 0, 0) };
+        var refreshBtn = new Button { Content = L.T("Fensterliste aktualisieren", "Refresh window list"), Margin = new Thickness(0, 0, 0, 0) };
         refreshBtn.Click += (_, _) => RefreshWindowList();
         _windowPanel.Children.Add(_windowBox);
         _windowPanel.Children.Add(refreshBtn);
         _windowPanel.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
-            Text = "Nimmt den Monitor des gewählten Programms auf und bleibt darauf, sobald es läuft — ideal für dein Hauptspiel."
+            Text = L.T("Pinnt ausschließlich auf das gewählte Programm, sobald es läuft — ideal für dein Hauptspiel.",
+                       "Pins exclusively to the chosen program as soon as it runs — ideal for your main game.")
         });
 
         // Monitor panel: monitor dropdown.
@@ -169,18 +179,19 @@ public partial class CaptureView : UserControl
         _monitorPanel.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
-            Text = "Nimmt einen ganzen Bildschirm auf — für Tutorials o.ä., bei denen alles auf dem Monitor drauf sein soll."
+            Text = L.T("Nimmt einen ganzen Bildschirm auf — für Tutorials o.ä., bei denen alles auf dem Monitor drauf sein soll.",
+                       "Captures an entire screen — for tutorials etc. where everything on the monitor should be included.")
         });
 
         modeStack.Children.Add(_autoPanel);
         modeStack.Children.Add(_windowPanel);
         modeStack.Children.Add(_monitorPanel);
-        RowsContainer.Children.Add(MakeCard("Ziel", "Was aufgenommen wird.", modeStack));
+        RowsContainer.Children.Add(MakeCard(L.T("Ziel", "Target"), L.T("Was aufgenommen wird.", "What gets recorded."), modeStack));
 
         // ---- Audio coupling ----
         var coupleBox = new CheckBox
         {
-            Content = "Ton vom selben Ziel aufnehmen (empfohlen)",
+            Content = L.T("Ton vom selben Ziel aufnehmen (empfohlen)", "Capture audio from the same target (recommended)"),
             IsChecked = host.Settings.Current.Capture.CoupleAudio,
             Foreground = (Brush)FindResource("TextBrush")
         };
@@ -191,21 +202,22 @@ public partial class CaptureView : UserControl
         audioStack.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
-            Text = "An: es wird nur der Ton des aufgenommenen Programms mitgeschnitten (Discord & Co. bleiben draußen). Aus: es gelten die Einstellungen im Audio-Tab. Mikro wird separat im Audio-Tab geregelt."
+            Text = L.T("An: es wird nur der Ton des aufgenommenen Programms mitgeschnitten (Discord & Co. bleiben draußen). Aus: es gelten die Einstellungen im Audio-Tab. Mikro wird separat im Audio-Tab geregelt.",
+                       "On: only the recorded program's audio is captured (Discord & co. stay out). Off: the Audio tab settings apply. The microphone is configured separately in the Audio tab.")
         });
-        RowsContainer.Children.Add(MakeCard("Ton", "Woher der Clip-Ton kommt.", audioStack));
+        RowsContainer.Children.Add(MakeCard(L.T("Ton", "Audio"), L.T("Woher der Clip-Ton kommt.", "Where the clip audio comes from."), audioStack));
 
         // ---- Actions ----
         var actions = new UniformGrid { Columns = 2, Rows = 2, Margin = new Thickness(0, 2, 0, 0) };
-        actions.Children.Add(MakeActionButton("Clip speichern  (F9)", accent: true, hideFirst: false, async h => await h.ReplayBuffer.SaveLastAsync()));
-        actions.Children.Add(MakeActionButton("Aufnahme  (Strg+F9)", accent: false, hideFirst: true, async h =>
+        actions.Children.Add(MakeActionButton(L.T("Clip speichern  (F9)", "Save clip  (F9)"), accent: true, hideFirst: false, async h => await h.ReplayBuffer.SaveLastAsync()));
+        actions.Children.Add(MakeActionButton(L.T("Aufnahme  (Strg+F9)", "Recording  (Ctrl+F9)"), accent: false, hideFirst: true, async h =>
         {
             if (!h.ManualRecording.IsRecording) await h.ManualRecording.ToggleAsync();
             else await h.ManualRecording.ToggleAsync();
         }));
-        actions.Children.Add(MakeActionButton("Screenshot  (F10)", accent: false, hideFirst: true, async h => await h.Screenshots.CaptureActiveWindowAsync()));
-        actions.Children.Add(MakeActionButton("Buffer ein/aus  (Strg+F10)", accent: false, hideFirst: false, async h => await h.ReplayBuffer.ToggleAsync()));
-        RowsContainer.Children.Add(MakeCard("Aktionen", "Per Klick oder Hotkey.", actions));
+        actions.Children.Add(MakeActionButton(L.T("Screenshot  (F10)", "Screenshot  (F10)"), accent: false, hideFirst: true, async h => await h.Screenshots.CaptureActiveWindowAsync()));
+        actions.Children.Add(MakeActionButton(L.T("Buffer ein/aus  (Strg+F10)", "Buffer on/off  (Ctrl+F10)"), accent: false, hideFirst: false, async h => await h.ReplayBuffer.ToggleAsync()));
+        RowsContainer.Children.Add(MakeCard(L.T("Aktionen", "Actions"), L.T("Per Klick oder Hotkey.", "Via click or hotkey."), actions));
     }
 
     private void SetMode(CaptureMode mode)
@@ -253,7 +265,7 @@ public partial class CaptureView : UserControl
         }
         if (toSelect == null && !string.IsNullOrEmpty(saved))
         {
-            var placeholder = new WindowChoice(saved, $"{saved}  (nicht aktiv)");
+            var placeholder = new WindowChoice(saved, $"{saved}  ({L.T("nicht aktiv", "not running")})");
             _windowBox.Items.Add(placeholder);
             toSelect = placeholder;
         }
@@ -272,7 +284,7 @@ public partial class CaptureView : UserControl
         for (int i = 0; i < screens.Length; i++)
         {
             var s = screens[i];
-            string label = $"Monitor {i + 1}  ({s.Bounds.Width}×{s.Bounds.Height}){(s.Primary ? "  · primär" : "")}";
+            string label = $"Monitor {i + 1}  ({s.Bounds.Width}×{s.Bounds.Height}){(s.Primary ? L.T("  · primär", "  · primary") : "")}";
             var choice = new MonitorChoice(s.DeviceName, label);
             _monitorBox.Items.Add(choice);
             if (s.DeviceName == saved) toSelect = choice;
@@ -295,7 +307,7 @@ public partial class CaptureView : UserControl
         var bufferPlan = host.ReplayBuffer.CurrentPlan;
 
         _targetText.Text = (bufferPlan?.VideoLabel) ?? preview.VideoLabel;
-        _audioText!.Text = "Ton: " + ((bufferPlan?.AudioLabel) ?? preview.AudioLabel);
+        _audioText!.Text = L.T("Ton: ", "Audio: ") + ((bufferPlan?.AudioLabel) ?? preview.AudioLabel);
 
         // Live line in the Automatik panel: what a capture started RIGHT NOW
         // would grab (the resolver already excludes this overlay itself, so this
@@ -303,9 +315,10 @@ public partial class CaptureView : UserControl
         if (_autoLiveText != null)
         {
             string mon = $"Monitor {preview.MonitorIndex + 1} ({preview.MonitorWidth}×{preview.MonitorHeight})";
+            string prefix = L.T("Jetzt im Vordergrund: ", "Currently in foreground: ");
             _autoLiveText.Text = preview.TargetProcess != null
-                ? $"Jetzt im Vordergrund: {preview.TargetProcess} → {mon}"
-                : $"Jetzt im Vordergrund: {mon}";
+                ? $"{prefix}{preview.TargetProcess} → {mon}"
+                : $"{prefix}{mon}";
         }
 
         // Both F9 and Strg+F9 use the pinned target; a divergence only exists
@@ -313,7 +326,9 @@ public partial class CaptureView : UserControl
         // honest about it then.
         if (bufferPlan is { } bp && bp.VideoLabel != preview.VideoLabel)
         {
-            _noteText!.Text = $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {preview.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.";
+            _noteText!.Text = L.T(
+                $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {preview.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.",
+                $"Note: Ctrl+F9 would currently capture instead: {preview.VideoLabel}. F9 stays on the pinned target above.");
             _noteText.Visibility = Visibility.Visible;
         }
         else
@@ -325,19 +340,19 @@ public partial class CaptureView : UserControl
         {
             _bufferDot!.Fill = new SolidColorBrush(Green);
             int avail = host.ReplayBuffer.AvailableSeconds();
-            _bufferText!.Text = $"Buffer aktiv · {avail} s bereit für F9";
+            _bufferText!.Text = L.T($"Buffer aktiv · {avail} s bereit für F9", $"Buffer active · {avail} s ready for F9");
         }
         else
         {
             _bufferDot!.Fill = new SolidColorBrush(Grey);
-            _bufferText!.Text = "Buffer aus · Strg+F10 startet ihn";
+            _bufferText!.Text = L.T("Buffer aus · Strg+F10 startet ihn", "Buffer off · Ctrl+F10 starts it");
         }
 
         if (host.ManualRecording.IsRecording)
         {
             _recDot!.Fill = new SolidColorBrush(Color.FromRgb(0xE0, 0x4E, 0x4E));
             var dur = host.ManualRecording.StartedAt is { } s ? (DateTime.Now - s).ToString(@"mm\:ss") : "00:00";
-            _recText!.Text = $"Aufnahme läuft · {dur}";
+            _recText!.Text = L.T($"Aufnahme läuft · {dur}", $"Recording · {dur}");
             _recDot.Visibility = Visibility.Visible;
             _recText.Visibility = Visibility.Visible;
         }

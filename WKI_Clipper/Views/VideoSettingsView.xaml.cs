@@ -34,11 +34,14 @@ public partial class VideoSettingsView : UserControl
         var host = App.Host;
         if (host is null) return;
 
+        BufferHeading.Text = L.T("Replay-Buffer", "Replay buffer");
+
         // Capture target (which monitor/window + audio) now lives in the Aufnahme
         // tab; this tab only covers how it is encoded.
         VideoRows.Children.Add(new TextBlock
         {
-            Text = "Was aufgenommen wird (Monitor/Fenster) legst du im Tab „Aufnahme“ fest. Hier geht es nur um die Encoding-Qualität.",
+            Text = L.T("Was aufgenommen wird (Monitor/Fenster) legst du im Tab „Aufnahme“ fest. Hier geht es nur um die Encoding-Qualität.",
+                       "What gets captured (monitor/window) is set in the Capture tab. This tab only covers encoding quality."),
             Style = (Style)FindResource("MutedStyle"),
             Margin = new Thickness(0, 0, 0, 14),
             TextWrapping = TextWrapping.Wrap
@@ -60,7 +63,7 @@ public partial class VideoSettingsView : UserControl
         };
         _resolutionHint = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0) };
         UpdateResolutionHint();
-        VideoRows.Children.Add(LabeledRow("Auflösung", _resolutionBox, _resolutionHint));
+        VideoRows.Children.Add(LabeledRow(L.T("Auflösung", "Resolution"), _resolutionBox, _resolutionHint));
 
         // Framerate
         var fpsBox = new System.Windows.Controls.ComboBox { MinWidth = 220 };
@@ -80,7 +83,7 @@ public partial class VideoSettingsView : UserControl
             host.Settings.Save();
             host.ReplayBuffer.RequestRestart();
         };
-        VideoRows.Children.Add(LabeledRow("Framerate", fpsBox));
+        VideoRows.Children.Add(LabeledRow(L.T("Framerate", "Frame rate"), fpsBox));
 
         // Codec
         _codecBox = new System.Windows.Controls.ComboBox { MinWidth = 280 };
@@ -101,18 +104,19 @@ public partial class VideoSettingsView : UserControl
         VideoRows.Children.Add(LabeledRow("Codec", _codecBox,
             new TextBlock
             {
-                Text = "Wenn keine AMD-GPU-Encoder gelistet sind, läuft Codec-Detection noch — kurz warten und Settings-Tab wechseln.",
+                Text = L.T("Wenn keine AMD-GPU-Encoder gelistet sind, läuft Codec-Detection noch — kurz warten und Settings-Tab wechseln.",
+                           "If no AMD GPU encoders are listed, codec detection is still running — wait a moment and switch tabs."),
                 Style = (Style)FindResource("MutedStyle"),
                 Margin = new Thickness(0, 4, 0, 0)
             }));
 
         // Quality preset
         _qualityBox = new System.Windows.Controls.ComboBox { MinWidth = 220 };
-        _qualityBox.Items.Add("Niedrig");
-        _qualityBox.Items.Add("Mittel  (empfohlen)");
-        _qualityBox.Items.Add("Hoch");
-        _qualityBox.Items.Add("Sehr hoch");
-        _qualityBox.Items.Add("Manuell (Bitrate-Eingabe)");
+        _qualityBox.Items.Add(L.T("Niedrig", "Low"));
+        _qualityBox.Items.Add(L.T("Mittel  (empfohlen)", "Medium  (recommended)"));
+        _qualityBox.Items.Add(L.T("Hoch", "High"));
+        _qualityBox.Items.Add(L.T("Sehr hoch", "Very high"));
+        _qualityBox.Items.Add(L.T("Manuell (Bitrate-Eingabe)", "Manual (bitrate input)"));
         _qualityBox.SelectedIndex = (int)host.Settings.Current.Video.Quality;
         _qualityBox.SelectionChanged += (_, _) =>
         {
@@ -126,7 +130,7 @@ public partial class VideoSettingsView : UserControl
             host.ReplayBuffer.RequestRestart();
         };
         _bitrateHint = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0) };
-        VideoRows.Children.Add(LabeledRow("Qualität", _qualityBox, _bitrateHint));
+        VideoRows.Children.Add(LabeledRow(L.T("Qualität", "Quality"), _qualityBox, _bitrateHint));
 
         // Custom bitrate (only enabled when Quality == Custom)
         _customBitrateBox = new TextBox
@@ -145,7 +149,7 @@ public partial class VideoSettingsView : UserControl
             }
             UpdateBitrateHint(host);
         };
-        VideoRows.Children.Add(LabeledRow("Bitrate (bps)", _customBitrateBox));
+        VideoRows.Children.Add(LabeledRow(L.T("Bitrate (bps)", "Bitrate (bps)"), _customBitrateBox));
 
         UpdateBitrateHint(host);
 
@@ -166,7 +170,7 @@ public partial class VideoSettingsView : UserControl
         // Buffer rows
         var bufferEnabled = new System.Windows.Controls.CheckBox
         {
-            Content = "Buffer aktiv (auto-Start beim App-Start)",
+            Content = L.T("Buffer aktiv (auto-Start beim App-Start)", "Buffer active (auto-start with the app)"),
             IsChecked = host.Settings.Current.ReplayBuffer.Enabled,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 8)
@@ -187,7 +191,7 @@ public partial class VideoSettingsView : UserControl
 
         var bufferValues = new[] { 15, 30, 45, 60, 90, 120, 180 };
         var bufferDur = new System.Windows.Controls.ComboBox { MinWidth = 220 };
-        foreach (var s in bufferValues) bufferDur.Items.Add($"{s} Sekunden");
+        foreach (var s in bufferValues) bufferDur.Items.Add(L.T($"{s} Sekunden", $"{s} seconds"));
         var initialIdx = Array.IndexOf(bufferValues, host.Settings.Current.ReplayBuffer.DurationSeconds);
         bufferDur.SelectedIndex = initialIdx >= 0 ? initialIdx : 3; // default 60s
         bufferDur.SelectionChanged += (_, _) =>
@@ -199,10 +203,11 @@ public partial class VideoSettingsView : UserControl
                 host.ReplayBuffer.RequestRestart();
             }
         };
-        BufferRows.Children.Add(LabeledRow("Buffer-Länge", bufferDur,
+        BufferRows.Children.Add(LabeledRow(L.T("Buffer-Länge", "Buffer length"), bufferDur,
             new TextBlock
             {
-                Text = "Bestimmt wie viele Sekunden der Replay-Hotkey speichert.",
+                Text = L.T("Bestimmt wie viele Sekunden der Replay-Hotkey speichert.",
+                           "Determines how many seconds the replay hotkey saves."),
                 Style = (Style)FindResource("MutedStyle"),
                 Margin = new Thickness(0, 4, 0, 0)
             }));
@@ -218,7 +223,7 @@ public partial class VideoSettingsView : UserControl
             _codecBox.Items.Clear();
             var codecs = host.AvailableCodecs.Count > 0
                 ? host.AvailableCodecs
-                : new[] { new CodecInfo(current, "(läuft Detection…) " + current) };
+                : new[] { new CodecInfo(current, L.T("(läuft Detection…) ", "(detecting…) ") + current) };
             int select = 0;
             for (int i = 0; i < codecs.Count; i++)
             {
@@ -238,7 +243,9 @@ public partial class VideoSettingsView : UserControl
         {
             var s = Screen.PrimaryScreen;
             if (s != null)
-                _resolutionHint.Text = $"Display: {s.Bounds.Width} × {s.Bounds.Height}  ({Screen.AllScreens.Length} Monitor(e) erkannt)";
+                _resolutionHint.Text = L.T(
+                    $"Display: {s.Bounds.Width} × {s.Bounds.Height}  ({Screen.AllScreens.Length} Monitor(e) erkannt)",
+                    $"Display: {s.Bounds.Width} × {s.Bounds.Height}  ({Screen.AllScreens.Length} monitor(s) detected)");
         }
         catch { _resolutionHint.Text = ""; }
     }
@@ -249,12 +256,13 @@ public partial class VideoSettingsView : UserControl
         var v = host.Settings.Current.Video;
         if (v.Quality == QualityPreset.Custom)
         {
-            _bitrateHint.Text = $"Manuell: {v.Bitrate / 1_000_000} Mbps";
+            _bitrateHint.Text = L.T($"Manuell: {v.Bitrate / 1_000_000} Mbps", $"Manual: {v.Bitrate / 1_000_000} Mbps");
         }
         else
         {
             var bps = QualityPresets.ComputeBitrate(v.Quality, v.Resolution);
-            _bitrateHint.Text = $"Effektive Bitrate: {bps / 1_000_000} Mbps (errechnet aus Qualität × Auflösung)";
+            _bitrateHint.Text = L.T($"Effektive Bitrate: {bps / 1_000_000} Mbps (errechnet aus Qualität × Auflösung)",
+                                    $"Effective bitrate: {bps / 1_000_000} Mbps (derived from quality × resolution)");
         }
     }
 
@@ -276,7 +284,7 @@ public partial class VideoSettingsView : UserControl
 
     private static string LabelForResolution(ResolutionPreset r) => r switch
     {
-        ResolutionPreset.Native => "Native (automatisch)",
+        ResolutionPreset.Native => L.T("Native (automatisch)", "Native (automatic)"),
         ResolutionPreset.FullHD => "Full HD  (1920 × 1080)",
         ResolutionPreset.WQHD   => "WQHD  (2560 × 1440)",
         ResolutionPreset.UHD    => "4K UHD  (3840 × 2160)",

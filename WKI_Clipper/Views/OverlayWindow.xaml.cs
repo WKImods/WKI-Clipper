@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Data;
 using System.Windows.Forms;
 using System.Windows.Input;
+using WKI_Clipper.Services;
 using WKI_Clipper.ViewModels;
 
 namespace WKI_Clipper.Views;
@@ -17,6 +18,18 @@ public partial class OverlayWindow : Window
         ViewModel = new OverlayViewModel(host);
         DataContext = ViewModel;
         InitializeComponent();
+
+        // Localized sidebar (XAML holds the German defaults).
+        TabCapture.Content = L.T("Aufnahme", "Capture");
+        TabStatus.Content = L.T("Status", "Status");
+        TabClips.Content = L.T("Clips", "Clips");
+        TabAudio.Content = L.T("Audio", "Audio");
+        TabVideo.Content = L.T("Video", "Video");
+        TabHotkeys.Content = L.T("Hotkeys", "Hotkeys");
+        TabPaths.Content = L.T("Pfade", "Paths");
+        TabAbout.Content = L.T("Über", "About");
+        SaveSettingsBtn.Content = L.T("Settings speichern", "Save settings");
+        ClipsFolderBtn.Content = L.T("Clips-Ordner", "Clips folder");
     }
 
     public void ShowOnActiveMonitor()

@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <DockPanel LastChildFill="True">
         <TextBlock DockPanel.Dock="Top" Style="{StaticResource HeadingStyle}" Text="Hotkeys" />
-        <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedStyle}" Margin="0,0,0,12"
+        <TextBlock x:Name="SubheadingText" DockPanel.Dock="Top" Style="{StaticResource MutedStyle}" Margin="0,0,0,12"
                    Text="Klicke auf einen Button, drücke die neue Tastenkombi. Esc bricht ab." />
 
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">

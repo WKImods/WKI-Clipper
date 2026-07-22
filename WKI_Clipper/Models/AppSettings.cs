@@ -202,8 +202,12 @@ public sealed class OutputSettings
     public string FilenameTemplate { get; set; } = "Clip_{date}_{time}";
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AppLanguage { Deutsch, English }
+
 public sealed class BehaviorSettings
 {
+    public AppLanguage Language { get; set; } = AppLanguage.Deutsch;
     public bool StartWithWindows { get; set; } = false;
     public bool StartBufferOnLaunch { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
