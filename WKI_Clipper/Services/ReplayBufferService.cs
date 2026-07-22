@@ -240,13 +240,26 @@ public sealed class ReplayBufferService : IDisposable
 
     /// <summary>
     /// Coalesces settings-driven restart requests: many rapid calls (sliders,
-    /// codec-list refresh, game events) collapse into a single restart ~300 ms
-    /// after the last request, instead of a restart storm.
+    /// codec-list refresh) collapse into a single FULL restart ~300 ms after the
+    /// last request, instead of a restart storm.
     /// </summary>
-    public void RequestRestart()
+    public void RequestRestart() => RequestWork(fullRestart: true);
+
+    /// <summary>
+    /// Target changed (game started/stopped, foreground re-pin): debounced like
+    /// RequestRestart, but if the video monitor is unchanged only the AUDIO
+    /// source is swapped in place — zero video interruption, zero history loss.
+    /// A pending full-restart request always escalates (never downgraded).
+    /// </summary>
+    public void RequestRetarget() => RequestWork(fullRestart: false);
+
+    private bool _pendingFullRestart;
+
+    private void RequestWork(bool fullRestart)
     {
         lock (_debounceLock)
         {
+            if (fullRestart) _pendingFullRestart = true;
             _restartDebounceCts?.Cancel();
             _restartDebounceCts?.Dispose();
             var cts = new CancellationTokenSource();
@@ -257,10 +270,51 @@ public sealed class ReplayBufferService : IDisposable
                 try { await Task.Delay(300, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
                 if (token.IsCancellationRequested) return;
-                try { await RestartIfRunningAsync().ConfigureAwait(false); }
-                catch (Exception ex) { Logger.Error("Debounced buffer restart failed", ex); }
+                bool full;
+                lock (_debounceLock)
+                {
+                    full = _pendingFullRestart;
+                    _pendingFullRestart = false;
+                }
+                try
+                {
+                    if (full) await RestartIfRunningAsync().ConfigureAwait(false);
+                    else await RetargetAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex) { Logger.Error("Debounced buffer restart/retarget failed", ex); }
             });
         }
+    }
+
+    /// <summary>
+    /// Re-resolves the capture plan. If only the audio target changed (same
+    /// monitor) the audio source is swapped in place; otherwise falls back to a
+    /// full warm restart (history-preserving) to move the video to the new monitor.
+    /// </summary>
+    public async Task RetargetAsync()
+    {
+        bool needFullRestart = false;
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning) return;
+            var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+            if (CurrentPlan is { } prev && prev.MonitorIndex == plan.MonitorIndex && _audio != null)
+            {
+                if (_audio.SwapSystemSource(plan.SysMode, plan.AudioPid))
+                {
+                    CurrentPlan = plan;
+                    Logger.Info($"ReplayBuffer: retargeted audio in place → video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (kein Video-Neustart, Historie intakt)");
+                    return;
+                }
+            }
+            // Monitor changed, no audio pipe, or swap failed → full warm restart.
+            needFullRestart = true;
+        }
+        finally { _lifecycleLock.Release(); }
+
+        if (needFullRestart)
+            await RestartIfRunningAsync().ConfigureAwait(false);
     }
 
     private void CancelDebounce()

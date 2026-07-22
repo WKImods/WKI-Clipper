@@ -89,14 +89,30 @@ public sealed class AppHost : IDisposable
         Foreground = new ForegroundTracker(Settings);
         Foreground.RetargetRequested += name =>
         {
-            Logger.Info($"Auto-Retarget → {name}: re-pinning buffer");
-            ReplayBuffer.RequestRestart();
+            Logger.Info($"Auto-Retarget → {name}: re-pinning capture");
+            OnCaptureTargetChanged();
             if (Settings.Current.Behavior.ShowToastNotifications)
                 ToastService.Show(ToastKind.Info,
                     "Ziel erkannt",
                     $"{name} — Aufnahme richtet sich darauf aus");
         };
         Foreground.Start();
+    }
+
+    /// <summary>
+    /// The capture target changed (game started/stopped, foreground re-pin).
+    /// Buffer: debounced retarget — audio swaps in place when the monitor is
+    /// unchanged, else a history-preserving warm restart. A RUNNING manual
+    /// recording follows immediately with an in-place audio swap too.
+    /// </summary>
+    private void OnCaptureTargetChanged()
+    {
+        ReplayBuffer.RequestRetarget();
+        if (ManualRecording.IsRecording)
+        {
+            var plan = CaptureTargetResolver.Resolve(Settings.Current.Capture, Settings.Current);
+            ManualRecording.RetargetAudio(plan.SysMode, plan.AudioPid);
+        }
     }
 
     /// <summary>
@@ -126,7 +142,7 @@ public sealed class AppHost : IDisposable
             GameWatcher.ProcessFound += pid =>
             {
                 Logger.Info($"Target process found: {gameName} (PID {pid}) — re-pinning capture");
-                ReplayBuffer.RequestRestart();
+                OnCaptureTargetChanged();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
                         "Ziel erkannt",
@@ -135,7 +151,7 @@ public sealed class AppHost : IDisposable
             GameWatcher.ProcessLost += () =>
             {
                 Logger.Info("Target process lost — re-resolving capture");
-                ReplayBuffer.RequestRestart();
+                OnCaptureTargetChanged();
                 if (Settings.Current.Behavior.ShowToastNotifications)
                     ToastService.Show(ToastKind.Info,
                         "Ziel beendet",

@@ -113,47 +113,18 @@ public sealed class AudioPipeService : IDisposable
         if (_wantSys)
         {
             Logger.Info($"AudioPipe: sysMode={_sysMode}, gamePid={_gamePid?.ToString() ?? "null"}");
-            try
+            var created = CreateSystemCapture(_sysMode, _gamePid);
+            if (created is { } c)
             {
-                if (_sysMode == SystemAudioMode.Process && _gamePid.HasValue)
+                lock (_srcLock)
                 {
-                    // Process-specific loopback — only the game's audio
-                    var plc = new ProcessLoopbackCapture((uint)_gamePid.Value);
-                    _sysCapture = plc;
-                    Logger.Info($"Using ProcessLoopbackCapture for PID {_gamePid.Value}");
+                    _sysCapture = c.capture;
+                    _sysBuf = c.buf;
                 }
-                else
-                {
-                    // Standard loopback — all system audio
-                    var sysDev = FindRender(enumerator, _sysDeviceName)
-                                ?? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                    _sysCapture = new WasapiLoopbackCapture(sysDev);
-                    Logger.Info($"Audio system loopback started: {sysDev.FriendlyName} | {_sysCapture.WaveFormat} | vol={_sysVolume:F2}");
-                }
-
-                _sysBuf = new BufferedWaveProvider(_sysCapture.WaveFormat)
-                {
-                    BufferLength = 1 << 21,
-                    DiscardOnBufferOverflow = true,
-                    ReadFully = false
-                };
-                _sysCapture.DataAvailable += (_, e) =>
-                {
-                    if (e.BytesRecorded > 0)
-                    {
-                        _sysBuf.AddSamples(e.Buffer, 0, e.BytesRecorded);
-                        Interlocked.Add(ref _sysBytesIn, e.BytesRecorded);
-                    }
-                };
-                _sysCapture.StartRecording();
                 SystemActive = true;
             }
-            catch (Exception ex)
+            else
             {
-                Logger.Error("System audio capture init failed", ex);
-                LastError = "System: " + ex.Message;
-                _sysCapture?.Dispose(); _sysCapture = null;
-                _sysBuf = null;
                 SystemActive = false;
             }
         }
@@ -263,34 +234,38 @@ public sealed class AudioPipeService : IDisposable
 
             var lastTrimCheck = DateTime.UtcNow;
 
-            // When both sources are active, the system loopback is the
-            // primary clock source. Its WdlResamplingSampleProvider (96→48 kHz)
-            // sometimes returns fewer samples than TICK_SAMPLES in one go
-            // because of internal filter state. If the mic provider (no
-            // resampler) is allowed to return MORE samples via Math.Max, it
-            // force-pads the system portion with silence and overproduces
-            // output — the sys buffer accumulates, the drift trim fires
-            // constantly (every 500 ms!), and the discarded audio is audible
-            // as stutter. Fix: read mic in lockstep with sys so the output
-            // rate is driven by the system provider alone.
-            bool hasPrimary = _sysProvider != null;
-
             while (!ct.IsCancellationRequested && _server.IsConnected)
             {
-                int sysRead = _sysProvider?.Read(sysFloatBuf, 0, TICK_SAMPLES) ?? 0;
+                // Snapshot the providers each tick — SwapSystemSource can replace
+                // them at any time; one 10 ms tick on the outgoing pair is
+                // inaudible. hasPrimary is therefore dynamic too (a swap can add
+                // or remove the system source mid-run).
+                ISampleProvider? sysP, micP;
+                lock (_srcLock) { sysP = _sysProvider; micP = _micProvider; }
+
+                // When both sources are active, the system loopback is the
+                // primary clock source. Its WdlResamplingSampleProvider (96→48 kHz)
+                // sometimes returns fewer samples than TICK_SAMPLES in one go
+                // because of internal filter state. If the mic provider (no
+                // resampler) were allowed to return MORE samples via Math.Max, it
+                // would force-pad the system portion with silence and overproduce
+                // output. Fix: read mic in lockstep with sys.
+                bool hasPrimary = sysP != null;
+
+                int sysRead = sysP?.Read(sysFloatBuf, 0, TICK_SAMPLES) ?? 0;
                 int micRead = 0;
 
-                if (_micProvider != null)
+                if (micP != null)
                 {
                     if (hasPrimary && sysRead > 0)
                     {
                         // Mic reads at most what sys produced — stays in lockstep.
-                        micRead = _micProvider.Read(micFloatBuf, 0, sysRead);
+                        micRead = micP.Read(micFloatBuf, 0, sysRead);
                     }
                     else if (!hasPrimary)
                     {
                         // Mic-only mode: mic drives the timeline itself.
-                        micRead = _micProvider.Read(micFloatBuf, 0, TICK_SAMPLES);
+                        micRead = micP.Read(micFloatBuf, 0, TICK_SAMPLES);
                     }
                     // When hasPrimary && sysRead==0: skip mic too — wait for
                     // the primary source just like the single-source path does.
@@ -323,8 +298,10 @@ public sealed class AudioPipeService : IDisposable
                 if ((DateTime.UtcNow - lastTrimCheck).TotalSeconds >= 0.5)
                 {
                     lastTrimCheck = DateTime.UtcNow;
-                    TrimIfStale(_sysBuf, "sys");
-                    TrimIfStale(_micBuf, "mic");
+                    BufferedWaveProvider? sb, mb;
+                    lock (_srcLock) { sb = _sysBuf; mb = _micBuf; }
+                    TrimIfStale(sb, "sys");
+                    TrimIfStale(mb, "mic");
                 }
                 // Stats every 5 seconds (slower than the trim check).
                 if ((DateTime.UtcNow - _lastStatsLog).TotalSeconds >= 5)
@@ -368,6 +345,9 @@ public sealed class AudioPipeService : IDisposable
 
     private ISampleProvider? _sysProvider;
     private ISampleProvider? _micProvider;
+    // Guards the (capture, buf, provider) triple against in-place source swaps
+    // while the writer thread reads them.
+    private readonly object _srcLock = new();
 
     /// <summary>
     /// Initialises sys and mic sample provider chains. We DELIBERATELY do not
@@ -378,20 +358,126 @@ public sealed class AudioPipeService : IDisposable
     /// </summary>
     private void BuildProviders()
     {
-        if (_sysBuf != null)
+        lock (_srcLock)
         {
-            ISampleProvider sp = ToTargetFormat(_sysBuf);
-            if (Math.Abs(_sysVolume - 1.0f) > 0.001f)
-                sp = new VolumeSampleProvider(sp) { Volume = _sysVolume };
-            _sysProvider = sp;
+            if (_sysBuf != null)
+                _sysProvider = BuildSysProviderFor(_sysBuf);
+            if (_micBuf != null)
+            {
+                ISampleProvider sp = ToTargetFormat(_micBuf);
+                if (Math.Abs(_micVolume - 1.0f) > 0.001f)
+                    sp = new VolumeSampleProvider(sp) { Volume = _micVolume };
+                _micProvider = sp;
+            }
         }
-        if (_micBuf != null)
+    }
+
+    private ISampleProvider BuildSysProviderFor(BufferedWaveProvider buf)
+    {
+        ISampleProvider sp = ToTargetFormat(buf);
+        if (Math.Abs(_sysVolume - 1.0f) > 0.001f)
+            sp = new VolumeSampleProvider(sp) { Volume = _sysVolume };
+        return sp;
+    }
+
+    /// <summary>
+    /// Creates + starts a system-audio capture (process loopback or full render
+    /// loopback) together with its own buffer. The DataAvailable closure captures
+    /// the LOCAL buffer — after a swap an old capture must never write into the
+    /// new source's buffer.
+    /// </summary>
+    private (IWaveIn capture, BufferedWaveProvider buf)? CreateSystemCapture(SystemAudioMode mode, int? pid)
+    {
+        try
         {
-            ISampleProvider sp = ToTargetFormat(_micBuf);
-            if (Math.Abs(_micVolume - 1.0f) > 0.001f)
-                sp = new VolumeSampleProvider(sp) { Volume = _micVolume };
-            _micProvider = sp;
+            IWaveIn cap;
+            if (mode == SystemAudioMode.Process && pid.HasValue)
+            {
+                cap = new ProcessLoopbackCapture((uint)pid.Value);
+                Logger.Info($"AudioPipe: using ProcessLoopbackCapture for PID {pid.Value}");
+            }
+            else
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                var sysDev = FindRender(enumerator, _sysDeviceName)
+                            ?? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                cap = new WasapiLoopbackCapture(sysDev);
+                Logger.Info($"AudioPipe: system loopback on {sysDev.FriendlyName} | {cap.WaveFormat} | vol={_sysVolume:F2}");
+            }
+
+            var buf = new BufferedWaveProvider(cap.WaveFormat)
+            {
+                BufferLength = 1 << 21,
+                DiscardOnBufferOverflow = true,
+                ReadFully = false
+            };
+            cap.DataAvailable += (_, e) =>
+            {
+                if (e.BytesRecorded > 0)
+                {
+                    buf.AddSamples(e.Buffer, 0, e.BytesRecorded);
+                    Interlocked.Add(ref _sysBytesIn, e.BytesRecorded);
+                }
+            };
+            cap.StartRecording();
+            return (cap, buf);
         }
+        catch (Exception ex)
+        {
+            Logger.Error("System audio capture init failed", ex);
+            LastError = "System: " + ex.Message;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Swaps the SYSTEM audio source in place while the pipe + ffmpeg keep
+    /// running. Possible because the pipe name and the s16le/48kHz/stereo output
+    /// format are invariant — every source is normalized in the writer. Used when
+    /// the capture target's process changes but the video monitor doesn't:
+    /// zero video interruption, zero replay-history loss.
+    /// </summary>
+    public bool SwapSystemSource(SystemAudioMode mode, int? pid)
+    {
+        if (!IsRunning) return false;
+
+        if (mode == SystemAudioMode.None)
+        {
+            var removed = _sysCapture;
+            lock (_srcLock)
+            {
+                _sysCapture = null;
+                _sysBuf = null;
+                _sysProvider = null;
+            }
+            try { removed?.StopRecording(); } catch { }
+            try { removed?.Dispose(); } catch { }
+            SystemActive = false;
+            Logger.Info("AudioPipe: system source removed (swap → None)");
+            return true;
+        }
+
+        // Build + start the NEW source first; only then retire the old one, so a
+        // failed swap degrades gracefully to the previous source.
+        var created = CreateSystemCapture(mode, pid);
+        if (created is not { } c)
+        {
+            Logger.Warn("AudioPipe: source swap failed — keeping previous system source");
+            return false;
+        }
+
+        var old = _sysCapture;
+        lock (_srcLock)
+        {
+            _sysCapture = c.capture;
+            _sysBuf = c.buf;
+            _sysProvider = BuildSysProviderFor(c.buf);
+        }
+        try { old?.StopRecording(); } catch { }
+        try { old?.Dispose(); } catch { }
+        SystemActive = true;
+        Logger.Info($"AudioPipe: system source swapped in place → mode={mode}, pid={pid?.ToString() ?? "null"}");
+        return true;
     }
 
 

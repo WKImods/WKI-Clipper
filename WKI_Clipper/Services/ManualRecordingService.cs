@@ -137,6 +137,17 @@ public sealed class ManualRecordingService : IDisposable
         else Start();
     }
 
+    /// <summary>
+    /// Swap the RUNNING recording's system-audio source in place (e.g. the game
+    /// launched mid-recording) — video keeps rolling untouched.
+    /// </summary>
+    public void RetargetAudio(SystemAudioMode mode, int? pid)
+    {
+        if (!IsRecording) return;
+        if (_audio?.SwapSystemSource(mode, pid) == true)
+            Logger.Info($"ManualRecording: audio retargeted in place → mode={mode}, pid={pid?.ToString() ?? "null"}");
+    }
+
     public void Dispose()
     {
         _ffmpeg?.Dispose();
