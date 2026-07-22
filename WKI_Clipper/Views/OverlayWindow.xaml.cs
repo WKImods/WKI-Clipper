@@ -19,6 +19,10 @@ public partial class OverlayWindow : Window
         DataContext = ViewModel;
         InitializeComponent();
 
+        // Version from assembly — never goes stale on release bumps.
+        var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        VersionText.Text = v is null ? "" : $"v{v.Major}.{v.Minor}.{v.Build}";
+
         // Localized sidebar (XAML holds the German defaults).
         TabCapture.Content = L.T("Aufnahme", "Capture");
         TabStatus.Content = L.T("Status", "Status");

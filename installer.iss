@@ -3,7 +3,7 @@
 ; Prerequisite: run dotnet publish first (see build.ps1)
 
 #define AppName      "WKI Clipper"
-#define AppVersion   "0.1.2"
+#define AppVersion   "0.2.0"
 #define AppPublisher "WKI"
 #define AppExeName   "WKI_Clipper.exe"
 #define AppId        "{B5F3D2A1-8C4E-4F9B-A2D6-1E5C8A3F7D2C}"
