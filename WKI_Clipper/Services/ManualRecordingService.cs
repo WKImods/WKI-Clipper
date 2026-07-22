@@ -36,10 +36,10 @@ public sealed class ManualRecordingService : IDisposable
         var filename = $"Rec_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
         var path = Path.Combine(clipsDir, filename);
 
-        // Recording-specific plan: Auto mode = freecam screen recording (monitor
-        // video that follows window switches + all sounds); Window/Monitor modes
-        // behave like the buffer.
-        var plan = CaptureTargetResolver.ResolveForManualRecording(_settings.Current.Capture, _settings.Current);
+        // Same resolver as the buffer: in Auto mode the recording pins the window
+        // that is active at Strg+F9 (occlusion-proof WGC) and STAYS on it until
+        // the recording is stopped — switching windows afterwards changes nothing.
+        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
         Logger.Info($"ManualRecording target: video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
         // Start the audio pipe FIRST so the named pipe exists before ffmpeg opens
