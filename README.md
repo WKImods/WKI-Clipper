@@ -1,54 +1,68 @@
 # WKI Clipper
 
-Schlanker Replay-Clipper und Screen-Recorder fuer Windows. Drei Hotkeys, kein Schnickschnack.
+Lightweight replay clipper and screen recorder for Windows. A handful of hotkeys, no bloat.
 
 ## Features
 
-| Hotkey | Aktion |
+| Hotkey | Action |
 |--------|--------|
-| `F9` | Letzte 30/60 s als MP4 speichern (Instant Replay) |
-| `F10` | Screenshot vom aktiven Fenster (PNG) |
-| `Strg+F9` | Manuelles Recording Start/Stop |
-| `Strg+F10` | Replay-Buffer pausieren/fortsetzen |
-| `Strg+Alt+G` | Overlay oeffnen/schliessen |
+| `F9` | Save the last 15–180 s as MP4 (instant replay) |
+| `F10` | Screenshot of the active window (PNG) |
+| `Ctrl+F9` | Start/stop manual recording |
+| `Ctrl+F10` | Pause/resume the replay buffer |
+| `Ctrl+Alt+G` | Open/close the overlay |
 
-## Warum?
+## Capture modes
 
-- **Xbox Game Bar nimmt das Mikro auf, auch wenn es deaktiviert ist.** Hier nicht. Audio-Toggles greifen bevor der Encoder ueberhaupt laeuft.
-- **Keine Logins, keine Telemetry, keine Cloud, keine Auto-Updates.**
-- **Leichtgewichtig.** Eine EXE im Tray, fertig.
+| Mode | Behavior |
+|------|----------|
+| **Automatic** | Tracks the app in the foreground. `F9` and `Ctrl+F9` pin the window that is active when triggered — switching to Discord afterwards does not change what gets captured. |
+| **Specific window** | Occlusion-proof window capture via Windows Graphics Capture (WGC). The clip stays on the chosen window even when it is covered by other windows. |
+| **Full monitor** | Captures an entire display (Desktop Duplication) — for tutorials and full-screen walkthroughs. |
+
+Audio can be coupled to the video target: with "game-only" audio enabled, the clip contains only the captured app plus your microphone — no Discord, no browser.
+
+## Why?
+
+- **Xbox Game Bar records the microphone even when it is disabled.** Not here. Audio toggles take effect before the encoder even runs.
+- **No logins, no telemetry, no cloud, no auto-updates.**
+- **Lightweight.** One EXE in the tray, done.
+
+## Language
+
+The UI is fully bilingual (German/English). Switch it in the About tab → "Sprache / Language" (restart applies it everywhere).
 
 ## Audio
 
-System-Sound und Mikrofon werden In-Process ueber WASAPI aufgenommen (NAudio). Kein Stereomix, kein VB-Cable, keine Umwege. Beides einzeln an/abschaltbar in den Settings.
+System sound and microphone are captured in-process via WASAPI (NAudio). No Stereo Mix, no VB-Cable, no workarounds. Game-only audio uses the WASAPI process loopback API to capture a single process tree at the OS level. Every source can be toggled individually in the settings.
 
-## Unterstuetzte Codecs
+## Supported codecs
 
-| Codec | GPU | Hinweis |
-|-------|-----|---------|
+| Codec | GPU | Note |
+|-------|-----|------|
 | `h264_amf` | AMD (RX 6000/7000/9000) | Default |
-| `hevc_amf` | AMD | Kleinere Dateien |
+| `hevc_amf` | AMD | Smaller files |
 | `h264_nvenc` | NVIDIA | GeForce GTX 900+ |
 | `hevc_nvenc` | NVIDIA | |
 | `h264_qsv` | Intel | Intel Arc / iGPU |
-| `libx264` | CPU | Fallback, laeuft ueberall |
+| `libx264` | CPU | Fallback, runs everywhere |
 
-Codec in den Settings (Tab "Video") oder direkt in `settings.json` aendern.
+Available codecs are detected at startup with a real test encode; change them in the Video tab or directly in `settings.json`.
 
 ## Installation
 
-### Installer (empfohlen)
+### Installer (recommended)
 
-Setup-EXE von [Releases](https://github.com/WKImods/WKI-Clipper/releases) herunterladen und ausfuehren. Enthaelt alles:
-- Self-contained .NET 8 Runtime (kein separates Install noetig)
-- FFmpeg mit allen Hardware-Encodern (AMF/NVENC/QSV)
-- Start-Menu-Eintrag, optionaler Desktop-Shortcut und Autostart
+Download the setup EXE from [Releases](https://github.com/WKImods/WKI-Clipper/releases) and run it. It contains everything:
+- Self-contained .NET 8 runtime (no separate install required)
+- FFmpeg with all hardware encoders (AMF/NVENC/QSV)
+- Start menu entry, optional desktop shortcut and autostart
 
-Per-User Install, kein Admin noetig. Uninstaller raeumt auf, User-Daten (Clips, Settings) bleiben.
+Per-user install, no admin required. The uninstaller cleans up; user data (clips, settings) is kept.
 
-### Selber bauen
+### Build it yourself
 
-Voraussetzungen: .NET 8 SDK, FFmpeg (z.B. `winget install Gyan.FFmpeg`), Inno Setup 6.
+Prerequisites: .NET 8 SDK, FFmpeg (e.g. `winget install Gyan.FFmpeg`), Inno Setup 6.
 
 ```powershell
 git clone https://github.com/WKImods/WKI-Clipper.git
@@ -56,34 +70,40 @@ cd WKI-Clipper
 .\build.ps1
 ```
 
-Erzeugt `installer_output\WKI_Clipper_Setup_X.X.X.exe`.
+Produces `installer_output\WKI_Clipper_Setup_X.X.X.exe`.
 
-Dev-Build ohne Installer:
+Dev build without the installer:
 ```powershell
 dotnet build WKI_Clipper.sln -c Debug
-.\WKI_Clipper\bin\Debug\net8.0-windows10.0.19041.0\WKI_Clipper.exe
+.\WKI_Clipper\bin\Debug\net8.0-windows10.0.22621.0\WKI_Clipper.exe
 ```
 
 ## Settings
 
-`%APPDATA%\WKI_Clipper\settings.json` — wird beim ersten Start angelegt, direkt editierbar.
+`%APPDATA%\WKI_Clipper\settings.json` — created on first start, directly editable. Everything is also configurable in the overlay UI (including press-to-bind hotkey rebinding in the Hotkeys tab).
 
 ```jsonc
 {
+  "Capture": {
+    "Mode": "Auto",               // Auto | Window | Monitor
+    "TargetProcessName": null,    // window mode: process to capture
+    "CoupleAudio": true           // audio follows the video target
+  },
   "Audio": {
-    "RecordMicrophone": false,
+    "RecordMicrophone": true,
     "RecordSystemSound": true
   },
   "Video": {
     "Resolution": "Native",       // FullHD | WQHD | UHD | Native
     "Framerate": 60,
-    "Codec": "h264_amf",
-    "Bitrate": 25000000
+    "Codec": "h264_amf"
   },
   "ReplayBuffer": {
     "Enabled": true,
-    "DurationSeconds": 60,
-    "SegmentDurationSeconds": 5
+    "DurationSeconds": 60
+  },
+  "Behavior": {
+    "Language": "Deutsch"         // Deutsch | English
   },
   "Output": {
     "ClipsFolder": "%USERPROFILE%\\Videos\\WKI_Clipper\\Clips",
@@ -92,28 +112,32 @@ dotnet build WKI_Clipper.sln -c Debug
 }
 ```
 
-## Architektur
+## Architecture
 
 ```
 WKI_Clipper.exe (.NET 8 / WPF)
-  +-- HotkeyService          Win32 RegisterHotKey
-  +-- AudioPipeService        WASAPI Loopback + Mic -> Mix -> Named Pipe
+  +-- HotkeyService           Win32 RegisterHotKey
+  +-- CaptureTargetResolver   single source of truth: what gets captured, with which audio
+  +-- WgcWindowCapture        occlusion-proof window capture (WGC + D3D11)
+  +-- VideoPipeService        raw BGRA frames -> named pipe -> FFmpeg (CFR pacing)
+  +-- ForegroundTracker       SetWinEventHook-based foreground tracking (Auto mode)
+  +-- AudioPipeService        WASAPI loopback + mic -> mix -> named pipe
+  +-- ProcessLoopbackCapture  game-only audio (WASAPI process loopback)
   +-- ReplayBufferService     FFmpeg segmented recording (rolling ring buffer)
   +-- ManualRecordingService  FFmpeg single-file recording
   +-- ScreenshotService       PrintWindow / ddagrab fallback
   +-- SettingsService         JSON config in %APPDATA%
-  +-- OverlayWindow           WPF Overlay (Settings, Clips, Status)
+  +-- OverlayWindow           WPF overlay (capture, settings, clips, status)
 ```
 
-Video-Capture laeuft ueber `ddagrab` (Desktop Duplication API). Audio wird In-Process ueber NAudio (WASAPI) aufgenommen, gemischt und per Named Pipe an FFmpeg gefuettert.
+Window capture runs through Windows.Graphics.Capture (occlusion-proof, survives covered windows); full-monitor capture uses `ddagrab` (Desktop Duplication API). Audio is captured in-process via NAudio (WASAPI), mixed, and fed to FFmpeg through a named pipe.
 
-## Bekannte Limits
+## Known limits
 
-- **True Fullscreen (exklusiv)** kann von ddagrab nicht erfasst werden. Spiel auf "Borderless Window" stellen.
-- **Anti-Cheat:** Kein Hooking im Spielprozess — nur Desktop Duplication. Sollte mit BattlEye/EAC kein Problem sein, aber keine Garantie.
-- **Replay-Clip-Laenge** weicht wegen Segment-Grenzen um ca. 5 s ab.
-- **Hotkey-Rebinding** aktuell nur ueber `settings.json` (kein UI-Editor).
+- **Legacy exclusive fullscreen** cannot be captured per-window; the app detects this and falls back to capturing the game's monitor automatically. Borderless window works everywhere.
+- **Anti-cheat:** no hooking inside the game process — only WGC/Desktop Duplication. Should be fine with BattlEye/EAC, but no guarantee.
+- **Replay clip length** deviates by up to ~5 s due to segment boundaries.
 
-## Lizenz
+## License
 
-[MIT](LICENSE) — Mach damit was du willst.
+[MIT](LICENSE) — do whatever you want with it.
