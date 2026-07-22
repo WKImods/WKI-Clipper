@@ -10,6 +10,8 @@ public sealed class ManualRecordingService : IDisposable
     private readonly SettingsService _settings;
     private FFmpegService? _ffmpeg;
     private AudioPipeService? _audio;
+    private WgcWindowCapture? _wgc;
+    private VideoPipeService? _videoPipe;
 
     public string? CurrentOutputPath { get; private set; }
     public DateTime? StartedAt { get; private set; }
@@ -60,8 +62,42 @@ public sealed class ManualRecordingService : IDisposable
             }
         }
 
+        // Occlusion-proof WGC window capture when the plan targets a window;
+        // falls back to monitor ddagrab on any failure.
+        string? videoArgs = null;
+        if (plan.UseWgc)
+        {
+            try
+            {
+                _wgc = new WgcWindowCapture(plan.Hwnd);
+                _videoPipe = new VideoPipeService(_wgc, _settings.Current.Video.Framerate);
+                _videoPipe.Start();
+                videoArgs = _videoPipe.FFmpegInputArgs;
+
+                var ownWgcLocal = _wgc;
+                _wgc.TargetInvalidated += reason =>
+                {
+                    if (_wgc != ownWgcLocal) return;
+                    // Window closed/resized mid-recording: stop gracefully so the
+                    // file stays playable up to this point.
+                    Logger.Info($"ManualRecording: WGC-Ziel ungültig ({reason}) — Aufnahme wird sauber beendet");
+                    _ = StopAsync();
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("WGC init failed — falling back to monitor capture: " + ex.Message);
+                try { _videoPipe?.Dispose(); } catch { }
+                try { _wgc?.Dispose(); } catch { }
+                _videoPipe = null;
+                _wgc = null;
+                videoArgs = null;
+            }
+        }
+
         var args = FFmpegCommandBuilder.Build(_settings.Current, path,
-            segmentOutput: false, audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex);
+            segmentOutput: false, audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
+            videoInputArgs: videoArgs);
         Logger.Info("[rec-ffmpeg] CMD: " + args);
 
         _ffmpeg = new FFmpegService();
@@ -76,10 +112,12 @@ public sealed class ManualRecordingService : IDisposable
             if (!string.IsNullOrWhiteSpace(line)) Logger.Info("[rec-ffmpeg] " + line);
             FFmpegLog?.Invoke(this, line);
         };
-        // Capture the own instance so a stale exit (after a new recording began)
+        // Capture the own instances so a stale exit (after a new recording began)
         // can't fire events for the wrong session.
         var ownFfmpeg = _ffmpeg;
         var ownAudio = _audio;
+        var ownWgc = _wgc;
+        var ownVideoPipe = _videoPipe;
         _ffmpeg.Exited += (_, code) =>
         {
             if (_ffmpeg != ownFfmpeg) return;
@@ -88,6 +126,16 @@ public sealed class ManualRecordingService : IDisposable
             {
                 ownAudio?.Dispose();
                 _audio = null;
+            }
+            if (_videoPipe == ownVideoPipe)
+            {
+                ownVideoPipe?.Dispose();
+                _videoPipe = null;
+            }
+            if (_wgc == ownWgc)
+            {
+                ownWgc?.Dispose();
+                _wgc = null;
             }
 
             // A usable clip must exist and be non-trivial (a failed ffmpeg leaves
@@ -152,6 +200,8 @@ public sealed class ManualRecordingService : IDisposable
     {
         _ffmpeg?.Dispose();
         _audio?.Dispose();
+        _videoPipe?.Dispose();
+        _wgc?.Dispose();
     }
 }
 

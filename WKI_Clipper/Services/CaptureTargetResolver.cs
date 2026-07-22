@@ -31,7 +31,8 @@ public static class CaptureTargetResolver
         string? TargetProcess,
         IntPtr Hwnd,
         string VideoLabel,
-        string AudioLabel);
+        string AudioLabel,
+        bool UseWgc);
 
     private static int SelfPid => Environment.ProcessId;
 
@@ -115,11 +116,19 @@ public static class CaptureTargetResolver
             sysMode = settings.Audio.RecordSystemSound ? SystemAudioMode.AllAudio : SystemAudioMode.None;
         }
 
-        string videoLabel = BuildVideoLabel(profile, idx, screen, appName, hwnd);
+        // Occlusion-proof per-window capture: Auto/Window targets with a live
+        // window use WGC (the clip stays on the game even when another window
+        // covers it). Monitor mode and window-less targets stay on ddagrab.
+        bool useWgc = profile.Mode != CaptureMode.Monitor
+                      && hwnd != IntPtr.Zero
+                      && WgcWindowCapture.IsSupported
+                      && !WgcWindowCapture.IsBlocked(hwnd);
+
+        string videoLabel = BuildVideoLabel(profile, idx, screen, appName, hwnd, useWgc);
         string audioLabel = BuildAudioLabel(sysMode, audioName, settings);
 
         return new CapturePlan(idx, screen.DeviceName, screen.Bounds.Width, screen.Bounds.Height,
-            sysMode, audioPid, appName, hwnd, videoLabel, audioLabel);
+            sysMode, audioPid, appName, hwnd, videoLabel, audioLabel, useWgc);
     }
 
     // -------- app (window/pid) resolution --------
@@ -255,9 +264,16 @@ public static class CaptureTargetResolver
 
     // -------- labels for honest UI --------
 
-    private static string BuildVideoLabel(CaptureProfile profile, int idx, Screen screen, string? appName, IntPtr hwnd)
+    private static string BuildVideoLabel(CaptureProfile profile, int idx, Screen screen, string? appName, IntPtr hwnd, bool useWgc)
     {
         string mon = $"Monitor {idx + 1} ({screen.Bounds.Width}×{screen.Bounds.Height})";
+        if (useWgc && appName != null)
+        {
+            // Per-window WGC: the window itself is captured, occlusion-proof.
+            return profile.Mode == CaptureMode.Auto
+                ? $"Automatik: {appName} — Fenster (verdeckungssicher)"
+                : $"{appName} — Fenster (verdeckungssicher)";
+        }
         return profile.Mode switch
         {
             CaptureMode.Monitor => mon,

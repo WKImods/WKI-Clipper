@@ -25,13 +25,18 @@ public static class FFmpegCommandBuilder
     /// </param>
     /// <param name="monitorIndex">
     /// DXGI output index (ddagrab output_idx) of the monitor to capture, resolved
-    /// by <see cref="CaptureTargetResolver"/>. Phase 1 is always monitor-based:
-    /// even "window" targets capture the window's monitor, which is alt-tab-stable
-    /// and can grab exclusive fullscreen.
+    /// by <see cref="CaptureTargetResolver"/>. Used when no
+    /// <paramref name="videoInputArgs"/> is supplied.
+    /// </param>
+    /// <param name="videoInputArgs">
+    /// When non-null, the video comes from an external rawvideo named pipe
+    /// (occlusion-proof WGC window capture via <see cref="VideoPipeService"/>)
+    /// instead of ddagrab. Complete input fragment incl. -f/-pixel_format/
+    /// -video_size/-framerate/-i.
     /// </param>
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
         int segmentDurationSec = 5, int segmentWrap = 12, string? audioPipeArgs = null,
-        int monitorIndex = 0)
+        int monitorIndex = 0, string? videoInputArgs = null)
     {
         var sb = new StringBuilder();
         sb.Append("-hide_banner -loglevel warning -nostats ");
@@ -40,10 +45,19 @@ public static class FFmpegCommandBuilder
         // sitting in a 500 ms-1 s queue (which manifests as audio lag in clips).
         sb.Append("-fflags +nobuffer+flush_packets -flags low_delay ");
 
-        // DXGI Desktop Duplication of the chosen monitor. Captures at native
-        // resolution; any downscale happens in the -vf chain below.
-        sb.Append("-f lavfi -i \"ddagrab=output_idx=").Append(monitorIndex)
-          .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
+        bool rawInput = !string.IsNullOrWhiteSpace(videoInputArgs);
+        if (rawInput)
+        {
+            // WGC window frames, already BGRA in system memory.
+            sb.Append(videoInputArgs).Append(' ');
+        }
+        else
+        {
+            // DXGI Desktop Duplication of the chosen monitor. Captures at native
+            // resolution; any downscale happens in the -vf chain below.
+            sb.Append("-f lavfi -i \"ddagrab=output_idx=").Append(monitorIndex)
+              .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
+        }
 
         bool usePipe = !string.IsNullOrWhiteSpace(audioPipeArgs);
         int audioInputs = 0;
@@ -127,11 +141,18 @@ public static class FFmpegCommandBuilder
 
         if (isHwAccel)
         {
-            // ddagrab → D3D11 textures. AMF/NVENC/QSV can't consume D3D11 textures
-            // directly (SubmitInput error 18), so hwdownload is required. CPU
-            // scale/pad is skipped when resolution is Native — that alone saves
-            // ~25-50% FPS overhead on ultrawide monitors.
-            sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append("\" ");
+            if (rawInput)
+            {
+                // Rawvideo frames are already BGRA in system memory — no hwdownload.
+                if (needScale) sb.Append("-vf \"").Append(scaleFilter.TrimStart(',')).Append("\" ");
+            }
+            else
+            {
+                // ddagrab → D3D11 textures. AMF/NVENC/QSV can't consume D3D11
+                // textures directly (SubmitInput error 18), so hwdownload is
+                // required. CPU scale/pad is skipped when resolution is Native.
+                sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append("\" ");
+            }
 
             sb.Append("-c:v ").Append(codec).Append(' ');
             if (isAmf)
@@ -151,7 +172,10 @@ public static class FFmpegCommandBuilder
         else
         {
             // CPU encoder (libx264 / libx265)
-            sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append(",format=yuv420p\" ");
+            if (rawInput)
+                sb.Append("-vf \"").Append(needScale ? scaleFilter.TrimStart(',') + "," : "").Append("format=yuv420p\" ");
+            else
+                sb.Append("-vf \"hwdownload,format=bgra").Append(scaleFilter).Append(",format=yuv420p\" ");
             sb.Append("-c:v ").Append(codec).Append(' ');
             // tune zerolatency = no lookahead, no B-frames → no 670 ms encoder queue.
             sb.Append("-preset veryfast -tune zerolatency ");

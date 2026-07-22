@@ -27,6 +27,8 @@ public sealed class ReplayBufferService : IDisposable
     private FFmpegService? _ffmpeg;
     private FFmpegService? _concatFfmpeg;
     private AudioPipeService? _audio;
+    private WgcWindowCapture? _wgc;
+    private VideoPipeService? _videoPipe;
     private CancellationTokenSource? _watchdogCts;
     private string _bufferDir = "";
     private string _segmentPattern = "";
@@ -136,9 +138,45 @@ public sealed class ReplayBufferService : IDisposable
             }
         }
 
+        // Occlusion-proof WGC window capture when the plan targets a window —
+        // the clip stays on the game even when another window covers it. Any
+        // failure falls back to monitor ddagrab (plan.MonitorIndex).
+        string? videoArgs = null;
+        if (plan.UseWgc)
+        {
+            try
+            {
+                _wgc = new WgcWindowCapture(plan.Hwnd);
+                _videoPipe = new VideoPipeService(_wgc, _settings.Current.Video.Framerate);
+                _videoPipe.Start();
+                videoArgs = _videoPipe.FFmpegInputArgs;
+
+                var ownWgcLocal = _wgc;
+                _wgc.TargetInvalidated += reason =>
+                {
+                    if (_wgc != ownWgcLocal) return;
+                    // Window closed or resized (e.g. F5 → fullscreen): rawvideo
+                    // needs a fixed WxH, so re-resolve + restart (history-
+                    // preserving; falls back to monitor if the window is gone).
+                    Logger.Info($"ReplayBuffer: WGC-Ziel ungültig ({reason}) — richte neu aus");
+                    RequestRestart();
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("WGC init failed — falling back to monitor capture: " + ex.Message);
+                try { _videoPipe?.Dispose(); } catch { }
+                try { _wgc?.Dispose(); } catch { }
+                _videoPipe = null;
+                _wgc = null;
+                videoArgs = null;
+            }
+        }
+
         var args = FFmpegCommandBuilder.Build(_settings.Current, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
-            audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex);
+            audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
+            videoInputArgs: videoArgs);
         Logger.Info("[buffer-ffmpeg] CMD: " + args);
 
         _ffmpeg = new FFmpegService();
@@ -147,6 +185,10 @@ public sealed class ReplayBufferService : IDisposable
             BufferError?.Invoke(this, "ffmpeg.exe not found");
             _audio?.Dispose();
             _audio = null;
+            _videoPipe?.Dispose();
+            _videoPipe = null;
+            _wgc?.Dispose();
+            _wgc = null;
             return;
         }
         _ffmpeg.StdErrLine += (_, line) =>
@@ -154,10 +196,12 @@ public sealed class ReplayBufferService : IDisposable
             if (!string.IsNullOrWhiteSpace(line)) Logger.Info("[buffer-ffmpeg] " + line);
         };
         // Capture LOCAL references so this handler only reacts to ITS OWN
-        // ffmpeg/audio instances (an old ffmpeg dying after a restart must not
-        // dispose the brand-new audio pipe or fire a false error).
+        // ffmpeg/audio/wgc instances (an old ffmpeg dying after a restart must
+        // not dispose the brand-new pipeline or fire a false error).
         var ownFfmpeg = _ffmpeg;
         var ownAudio = _audio;
+        var ownWgc = _wgc;
+        var ownVideoPipe = _videoPipe;
         _ffmpeg.Exited += (_, code) =>
         {
             if (_ffmpeg != ownFfmpeg) return;
@@ -167,6 +211,16 @@ public sealed class ReplayBufferService : IDisposable
             {
                 ownAudio?.Dispose();
                 _audio = null;
+            }
+            if (_videoPipe == ownVideoPipe)
+            {
+                ownVideoPipe?.Dispose();
+                _videoPipe = null;
+            }
+            if (_wgc == ownWgc)
+            {
+                ownWgc?.Dispose();
+                _wgc = null;
             }
 
             // Any exit we did NOT request is unexpected — report it, regardless
@@ -205,7 +259,7 @@ public sealed class ReplayBufferService : IDisposable
         finally { _lifecycleLock.Release(); }
     }
 
-    // Assumes _lifecycleLock is held. Stops ffmpeg + audio; does NOT clear segments.
+    // Assumes _lifecycleLock is held. Stops ffmpeg + audio + wgc; does NOT clear segments.
     private async Task StopCoreAsync()
     {
         _watchdogCts?.Cancel();
@@ -215,6 +269,10 @@ public sealed class ReplayBufferService : IDisposable
         _ffmpeg = null;
         _audio?.Dispose();
         _audio = null;
+        _videoPipe?.Dispose();
+        _videoPipe = null;
+        _wgc?.Dispose();
+        _wgc = null;
         CurrentPlan = null;
         BufferStateChanged?.Invoke(this, false);
     }
@@ -299,7 +357,13 @@ public sealed class ReplayBufferService : IDisposable
         {
             if (!IsRunning) return;
             var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-            if (CurrentPlan is { } prev && prev.MonitorIndex == plan.MonitorIndex && _audio != null)
+            // "Video unchanged" = same monitor AND, for WGC window capture, the
+            // same window — a different hwnd needs a new video pipeline.
+            bool videoUnchanged = CurrentPlan is { } prev
+                && prev.MonitorIndex == plan.MonitorIndex
+                && prev.UseWgc == plan.UseWgc
+                && (!plan.UseWgc || prev.Hwnd == plan.Hwnd);
+            if (videoUnchanged && _audio != null)
             {
                 if (_audio.SwapSystemSource(plan.SysMode, plan.AudioPid))
                 {
@@ -541,5 +605,7 @@ public sealed class ReplayBufferService : IDisposable
         _watchdogCts?.Cancel();
         _ffmpeg?.Dispose();
         _concatFfmpeg?.Dispose();
+        _videoPipe?.Dispose();
+        _wgc?.Dispose();
     }
 }
