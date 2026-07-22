@@ -20,6 +20,7 @@ public sealed class AppHost : IDisposable
     public AudioDeviceService AudioDevices { get; }
     public FFmpegService FFmpeg { get; }
     public GameProcessWatcher? GameWatcher { get; private set; }
+    public ForegroundTracker? Foreground { get; private set; }
 
     /// <summary>
     /// Codecs the local ffmpeg.exe actually supports. Populated in Initialize.
@@ -81,6 +82,21 @@ public sealed class AppHost : IDisposable
         // Codec detection runs async; not blocking startup.
         _ = DetectCodecsAsync();
         StartGameWatcherIfNeeded();
+
+        // Event-based foreground tracking for the Auto mode (re-pins the buffer
+        // when a game launches). Must be created here: Initialize runs on the
+        // WPF UI thread, whose message pump delivers the WinEvent callbacks.
+        Foreground = new ForegroundTracker(Settings);
+        Foreground.RetargetRequested += name =>
+        {
+            Logger.Info($"Auto-Retarget → {name}: re-pinning buffer");
+            ReplayBuffer.RequestRestart();
+            if (Settings.Current.Behavior.ShowToastNotifications)
+                ToastService.Show(ToastKind.Info,
+                    "Ziel erkannt",
+                    $"{name} — Aufnahme richtet sich darauf aus");
+        };
+        Foreground.Start();
     }
 
     /// <summary>
@@ -183,6 +199,7 @@ public sealed class AppHost : IDisposable
 
     public void Dispose()
     {
+        Foreground?.Dispose();
         GameWatcher?.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();

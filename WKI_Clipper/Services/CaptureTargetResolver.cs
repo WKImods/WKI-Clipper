@@ -294,7 +294,8 @@ public static class CaptureTargetResolver
             "lockapp", "wki_clipper"
         };
 
-    private static bool IsCouplableApp(string? name)
+    /// <summary>True for real apps; false for shell/system processes (and us).</summary>
+    public static bool IsCouplableApp(string? name)
         => !string.IsNullOrEmpty(name) && !NonCouplable.Contains(name);
 
     private static DateTime SafeStartTime(Process p)

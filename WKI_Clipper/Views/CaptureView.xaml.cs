@@ -121,7 +121,7 @@ public partial class CaptureView : UserControl
         {
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
-            Text = "Nimmt den Monitor des Fensters auf, das beim Start des Buffers im Vordergrund ist, und bleibt dort — ein Alt-Tab (z.B. zu Discord) ändert den F9-Clip nicht.\n\nWichtig: Läuft der Clipper schon, bevor du das Spiel startest, richte den Buffer danach einmal per Strg+F10 neu aus. Für Spiele, die du oft clippst, ist der Fenster-Modus besser — der pinnt automatisch auf das Spiel, sobald es startet."
+            Text = "Richtet die Aufnahme automatisch aus: Startet ein Spiel (neues Vollbild-Programm im Vordergrund), wird darauf gepinnt — auch wenn der Clipper schon vorher lief. Alt-Tab zu bereits laufenden Programmen (z.B. Discord) ändert das Ziel nicht, der Clip bleibt beim Spiel.\n\nFür ein festes Stammspiel ist der Fenster-Modus die strikteste Wahl (pinnt ausschließlich auf dieses Programm)."
         });
 
         // Window panel: shared window picker.
