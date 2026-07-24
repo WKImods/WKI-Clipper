@@ -237,6 +237,7 @@ public sealed class AppHost : IDisposable
         Foreground?.Dispose();
         GameWatcher?.Dispose();
         Performance.Dispose();
+        Crosshairs.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

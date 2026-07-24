@@ -19,10 +19,44 @@ public partial class CrosshairView : UserControl
 {
     private bool _building;
 
+    private bool _watching;
+
     public CrosshairView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
+
+    /// <summary>Folder changed on disk (files dropped in via Explorer) → refresh the list.</summary>
+    private void OnLibraryChanged()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!IsLoaded) return;
+            var host = App.Host;
+            if (host is null) return;
+
+            // If nothing is selected yet, adopt the first available crosshair so a
+            // dropped-in file is usable right away.
+            if (string.IsNullOrEmpty(S!.ActiveId) && host.Crosshairs.Entries.Count > 0)
+            {
+                S.ActiveId = host.Crosshairs.Entries[0].Id;
+                host.Settings.Save();
+                host.RefreshCrosshair();
+            }
+            RefreshLibrary();
+        }));
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        var host = App.Host;
+        if (host != null && _watching)
+        {
+            host.Crosshairs.LibraryChanged -= OnLibraryChanged;
+            _watching = false;
+        }
     }
 
     private CrosshairSettings? S => App.Host?.Settings.Current.Crosshair;
@@ -31,6 +65,15 @@ public partial class CrosshairView : UserControl
     {
         var host = App.Host;
         if (host is null) return;
+
+        if (!_watching)
+        {
+            host.Crosshairs.LibraryChanged += OnLibraryChanged;
+            _watching = true;
+        }
+        // Catch anything dropped in while this view wasn't alive.
+        host.Crosshairs.ScanFolder();
+
         if (SlidersPanel.Children.Count > 0) { RefreshLibrary(); return; }
 
         EnabledBox.Content = L.T("Crosshair anzeigen", "Show crosshair");
