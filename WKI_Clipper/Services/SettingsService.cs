@@ -12,11 +12,14 @@ public sealed class SettingsService
     {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        // Safety net: a stray NaN/Infinity in ANY double (window geometry, sliders)
+        // would otherwise make the whole settings file unwritable and brick startup.
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         Converters = { new JsonStringEnumConverter() }
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 3;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -73,42 +76,87 @@ public sealed class SettingsService
     /// <see cref="CaptureProfile"/> from the legacy video CaptureSource + GameOnly
     /// audio fields so existing users keep a sensible behaviour.
     /// </summary>
-    private static bool MigrateIfNeeded(AppSettings s)
+    internal static bool MigrateIfNeeded(AppSettings s)
     {
         if (s.SchemaVersion >= CurrentSchemaVersion) return false;
+        bool changed = false;
 
         // v0 → v1: legacy Video.CaptureSource + Audio.SystemCaptureMode/GameProcessName
         // become a unified CaptureProfile.
-        if (s.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
+        if (s.SchemaVersion < 1)
         {
-            s.Capture.CoupleAudio = true;
-            if (!string.IsNullOrEmpty(s.Audio.GameProcessName))
+            if (s.Audio.SystemCaptureMode == AudioCaptureMode.GameOnly)
             {
-                s.Capture.Mode = CaptureMode.Window;
-                s.Capture.TargetProcessName = s.Audio.GameProcessName;
+                s.Capture.CoupleAudio = true;
+                if (!string.IsNullOrEmpty(s.Audio.GameProcessName))
+                {
+                    s.Capture.Mode = CaptureMode.Window;
+                    s.Capture.TargetProcessName = s.Audio.GameProcessName;
+                }
+                else
+                {
+                    s.Capture.Mode = CaptureMode.Auto;
+                }
             }
             else
             {
-                s.Capture.Mode = CaptureMode.Auto;
+                s.Capture.CoupleAudio = false;
+                s.Capture.Mode = s.Video.CaptureSource == CaptureSource.ActiveWindow
+                    ? CaptureMode.Auto
+                    : CaptureMode.Monitor;
             }
-        }
-        else
-        {
-            s.Capture.CoupleAudio = false;
-            s.Capture.Mode = s.Video.CaptureSource == CaptureSource.ActiveWindow
-                ? CaptureMode.Auto
-                : CaptureMode.Monitor;
+            s.SchemaVersion = 1;
+            changed = true;
+            Logger.Info($"Settings migrated to schema v1: Capture.Mode={s.Capture.Mode}, CoupleAudio={s.Capture.CoupleAudio}, TargetProcess='{s.Capture.TargetProcessName ?? "(null)"}'");
         }
 
-        s.SchemaVersion = CurrentSchemaVersion;
-        Logger.Info($"Settings migrated to schema v{CurrentSchemaVersion}: Capture.Mode={s.Capture.Mode}, CoupleAudio={s.Capture.CoupleAudio}, TargetProcess='{s.Capture.TargetProcessName ?? "(null)"}'");
-        return true;
+        // v1 → v2: widget-overlay layout. Ensure the five built-in widgets exist so
+        // the host has a layout to place; just re-stamp the version otherwise.
+        if (s.SchemaVersion < 2)
+        {
+            if (s.Widgets == null || s.Widgets.Widgets == null || s.Widgets.Widgets.Count == 0)
+                s.Widgets = new WidgetSettings();
+            s.SchemaVersion = 2;
+            changed = true;
+            Logger.Info($"Settings migrated to schema v2: {s.Widgets.Widgets.Count} widgets in layout");
+        }
+
+        // v2 → v3: crosshair overlay. Existing files carry a saved Hotkeys dictionary,
+        // so newly added default bindings (Ctrl+Alt+C) would never reach them — merge
+        // in any missing defaults. Same for the new crosshair widget in the layout.
+        if (s.SchemaVersion < 3)
+        {
+            foreach (var kv in new AppSettings().Hotkeys)
+            {
+                if (!s.Hotkeys.ContainsKey(kv.Key))
+                {
+                    s.Hotkeys[kv.Key] = kv.Value;
+                    Logger.Info($"Migration v3: added missing default hotkey '{kv.Key}'");
+                }
+            }
+            s.Widgets.GetOrAdd(WidgetId.Crosshair);
+            s.SchemaVersion = 3;
+            changed = true;
+            Logger.Info("Settings migrated to schema v3: crosshair hotkey + widget ensured");
+        }
+
+        return changed;
     }
 
     public void Save()
     {
-        var json = JsonSerializer.Serialize(Current, JsonOptions);
-        File.WriteAllText(SettingsFilePath, json);
+        // A failed save must never take the app down (it is called from startup,
+        // hotkeys and every settings widget). Log it and keep running with the
+        // in-memory settings instead.
+        try
+        {
+            var json = JsonSerializer.Serialize(Current, JsonOptions);
+            File.WriteAllText(SettingsFilePath, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Settings save failed — continuing with in-memory settings", ex);
+        }
         SettingsChanged?.Invoke(this, Current);
     }
 

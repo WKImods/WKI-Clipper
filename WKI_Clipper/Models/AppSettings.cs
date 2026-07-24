@@ -18,6 +18,8 @@ public sealed class AppSettings
     public OutputSettings Output { get; set; } = new();
     public Dictionary<string, HotkeyBinding> Hotkeys { get; set; } = HotkeyDefaults();
     public BehaviorSettings Behavior { get; set; } = new();
+    public WidgetSettings Widgets { get; set; } = new();
+    public CrosshairSettings Crosshair { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -25,7 +27,8 @@ public sealed class AppSettings
         [HotkeyActions.Screenshot]      = new HotkeyBinding { Modifiers = 0,                                Key = 0x79 }, // F10
         [HotkeyActions.ToggleRecording] = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x78 }, // Ctrl+F9
         [HotkeyActions.ToggleOverlay]   = new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x47 }, // Ctrl+Alt+G (Ctrl+Shift+G kollidiert mit Discord)
-        [HotkeyActions.ToggleBuffer]    = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x79 }  // Ctrl+F10
+        [HotkeyActions.ToggleBuffer]    = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x79 }, // Ctrl+F10
+        [HotkeyActions.ToggleCrosshair] = new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x43 }  // Ctrl+Alt+C
     };
 }
 
@@ -36,6 +39,7 @@ public static class HotkeyActions
     public const string ToggleRecording = "ToggleRecording";
     public const string ToggleOverlay = "ToggleOverlay";
     public const string ToggleBuffer = "ToggleBuffer";
+    public const string ToggleCrosshair = "ToggleCrosshair";
 }
 
 public sealed class AudioSettings
@@ -219,6 +223,99 @@ public sealed class HotkeyBinding
 {
     public HotkeyModifier Modifiers { get; set; }
     public uint Key { get; set; }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair }
+
+/// <summary>
+/// The PNG crosshair overlay: which image from the library is active, where it sits
+/// and how it is tinted. The image files themselves live in the crosshair library
+/// (%APPDATA%\WKI_Clipper\crosshairs) — only the id is stored here.
+/// </summary>
+public sealed class CrosshairSettings
+{
+    /// <summary>Master switch — the overlay is shown when true (toggled by Ctrl+Alt+C).</summary>
+    public bool Enabled { get; set; }
+    /// <summary>Id of the active library entry. null = none selected yet.</summary>
+    public string? ActiveId { get; set; }
+    /// <summary>
+    /// Screen position of the crosshair's CENTER in virtual-desktop pixels.
+    /// null = not placed yet → centered on the primary screen. (Nullable rather than
+    /// NaN: JsonSerializer refuses to write NaN, which would break settings saving.)
+    /// </summary>
+    public double? CenterX { get; set; }
+    public double? CenterY { get; set; }
+    /// <summary>
+    /// Snap dragging to a grid anchored at the MONITOR CENTER — so the exact center is
+    /// always hittable and offsets stay symmetric.
+    /// </summary>
+    public bool SnapToGrid { get; set; } = true;
+    /// <summary>Grid step in pixels.</summary>
+    public int GridSize { get; set; } = 25;
+    /// <summary>Render scale, 1.0 = native PNG size.</summary>
+    public double Scale { get; set; } = 1.0;
+    /// <summary>0..1 window opacity.</summary>
+    public double Opacity { get; set; } = 1.0;
+    /// <summary>-1..+1, 0 = unchanged.</summary>
+    public double Brightness { get; set; }
+    /// <summary>0.5..2.0, 1 = unchanged.</summary>
+    public double Contrast { get; set; } = 1.0;
+    /// <summary>0..2, 1 = unchanged (0 = grayscale).</summary>
+    public double Saturation { get; set; } = 1.0;
+    /// <summary>Optional color tint multipliers, 1 = unchanged.</summary>
+    public double RedGain { get; set; } = 1.0;
+    public double GreenGain { get; set; } = 1.0;
+    public double BlueGain { get; set; } = 1.0;
+}
+
+/// <summary>
+/// One floating widget's persisted placement. Position is stored relative to the
+/// monitor named by <see cref="MonitorDeviceName"/> (device name is stable across
+/// replugging); on load it is clamped back onto a visible work area.
+/// </summary>
+public sealed class WidgetState
+{
+    public WidgetId Id { get; set; }
+    /// <summary>Shown when the board is open.</summary>
+    public bool Visible { get; set; } = true;
+    /// <summary>Stays visible over the game after the board closes.</summary>
+    public bool Pinned { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
+    /// <summary>Device name of the monitor the position is relative to. null = primary.</summary>
+    public string? MonitorDeviceName { get; set; }
+}
+
+public sealed class WidgetSettings
+{
+    public List<WidgetState> Widgets { get; set; } = DefaultLayout();
+
+    /// <summary>
+    /// The five built-in widgets at sensible starting sizes/offsets. Positions are
+    /// left at 0,0 here and laid out on first show by the host (staggered), so a
+    /// fresh install doesn't need monitor geometry baked into the model.
+    /// </summary>
+    public static List<WidgetState> DefaultLayout() => new()
+    {
+        new WidgetState { Id = WidgetId.Capture,     Visible = true,  Width = 360, Height = 430 },
+        new WidgetState { Id = WidgetId.Audio,       Visible = true,  Width = 380, Height = 500 },
+        new WidgetState { Id = WidgetId.Gallery,     Visible = true,  Width = 520, Height = 560 },
+        new WidgetState { Id = WidgetId.Performance, Visible = true,  Width = 320, Height = 300 },
+        new WidgetState { Id = WidgetId.Settings,    Visible = false, Width = 480, Height = 540 },
+        new WidgetState { Id = WidgetId.Crosshair,   Visible = false, Width = 400, Height = 560 },
+    };
+
+    /// <summary>Returns the stored state for an id, creating a default if missing.</summary>
+    public WidgetState GetOrAdd(WidgetId id)
+    {
+        foreach (var w in Widgets) if (w.Id == id) return w;
+        var created = DefaultLayout().Find(w => w.Id == id) ?? new WidgetState { Id = id, Width = 360, Height = 400 };
+        Widgets.Add(created);
+        return created;
+    }
 }
 
 [System.Flags]

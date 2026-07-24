@@ -209,8 +209,12 @@ public static class FFmpegCommandBuilder
     public static string BuildConcat(string listFilePath, string outputPath)
         => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -c copy -movflags +faststart \"{outputPath}\"";
 
+    // hwdownload,format=bgra is REQUIRED: ddagrab emits D3D11 GPU frames the PNG
+    // encoder can't consume (ffmpeg exits with "Impossible to convert ... src: d3d11"),
+    // same as every recording path. Without it the grab fails and falls back to a
+    // black GDI capture for fullscreen games.
     public static string BuildScreenshot(string outputPath, int monitorIndex = 0)
-        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx={monitorIndex}:framerate=1\" -frames:v 1 -y \"{outputPath}\"";
+        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx={monitorIndex}:framerate=1\" -vf \"hwdownload,format=bgra\" -frames:v 1 -y \"{outputPath}\"";
 
     public static string BuildThumbnail(string videoPath, string thumbnailPath, int width = 320)
         => $"-hide_banner -loglevel error -ss 1 -i \"{videoPath}\" -frames:v 1 -vf \"scale={width}:-1\" -y \"{thumbnailPath}\"";

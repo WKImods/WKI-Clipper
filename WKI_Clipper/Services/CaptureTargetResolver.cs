@@ -223,6 +223,32 @@ public static class CaptureTargetResolver
         return (null, name);
     }
 
+    /// <summary>
+    /// The monitor the user is currently looking at, INDEPENDENT of the capture
+    /// profile. Screenshots use this so they are ALWAYS a whole monitor regardless of
+    /// Auto/Window/Monitor mode. Prefers the foreground window's monitor; if that is
+    /// our own overlay (or there is none), falls back to the monitor under the cursor.
+    /// </summary>
+    public static (int MonitorIndex, Screen Screen) ResolveActiveMonitor()
+    {
+        var hwnd = User32.GetForegroundWindow();
+        if (hwnd != IntPtr.Zero)
+        {
+            User32.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid != 0 && (int)pid != SelfPid)
+                return MonitorForHwnd(hwnd);
+        }
+        try
+        {
+            var s = Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+            return (IndexOfScreen(s), s);
+        }
+        catch
+        {
+            return PrimaryMonitor();
+        }
+    }
+
     // -------- monitor mapping --------
     // NOTE: ddagrab output_idx is the DXGI output index. We map via WinForms
     // Screen order, which matches DXGI output order on typical single-GPU setups.

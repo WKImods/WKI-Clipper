@@ -22,11 +22,17 @@
     <AssemblyName>WKI_Clipper</AssemblyName>
     <RootNamespace>WKI_Clipper</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Authors>Phillip / WKI</Authors>
     <Product>WKI Clipper</Product>
     <Description>Minimal clipping &amp; replay tool for Windows 11 / AMD</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>WKI_Clipper.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />

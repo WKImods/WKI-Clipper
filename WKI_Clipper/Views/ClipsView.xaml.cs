@@ -16,6 +16,8 @@ public partial class ClipsView : UserControl
     private enum Filter { All, Clips, Recordings, Screenshots }
     private Filter _filter = Filter.All;
     private readonly Dictionary<Filter, System.Windows.Controls.Button> _filterButtons = new();
+    private string _search = "";
+    private bool _favOnly;
 
     public ClipsView()
     {
@@ -35,6 +37,8 @@ public partial class ClipsView : UserControl
             OpenShotsFolderBtn.Content = L.T("Screenshots-Ordner", "Screenshots folder");
             EmptyHint.Text = L.T("Keine Dateien gefunden. Drück F9 für nen Clip oder F10 für nen Screenshot.",
                                  "No files found. Press F9 for a clip or F10 for a screenshot.");
+            SearchBox.ToolTip = L.T("Nach Dateiname suchen…", "Search by file name…");
+            FavOnly.Content = L.T("★ Favoriten", "★ Favorites");
             BuildFilterButtons();
             RefreshBtn.Click += (_, _) => Reload(host);
             OpenClipsFolderBtn.Click += (_, _) => OpenFolder(SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder));
@@ -42,6 +46,18 @@ public partial class ClipsView : UserControl
         }
 
         Reload(host);
+    }
+
+    private void OnSearchChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        _search = SearchBox.Text ?? "";
+        if (App.Host != null && ItemsContainer != null) Reload(App.Host);
+    }
+
+    private void OnFavOnlyChanged(object sender, RoutedEventArgs e)
+    {
+        _favOnly = FavOnly.IsChecked == true;
+        if (App.Host != null && ItemsContainer != null) Reload(App.Host);
     }
 
     private void BuildFilterButtons()
@@ -114,6 +130,8 @@ public partial class ClipsView : UserControl
             }
         }
 
+        var meta = host.GalleryMeta;
+        var search = _search.Trim();
         var filtered = items
             .Where(it => _filter switch
             {
@@ -123,6 +141,8 @@ public partial class ClipsView : UserControl
                 Filter.Screenshots => it.Kind == MediaKind.Screenshot,
                 _                  => true
             })
+            .Where(it => search.Length == 0 || it.FileName.Contains(search, StringComparison.OrdinalIgnoreCase))
+            .Where(it => !_favOnly || meta.IsFavorite(it.FileName))
             .OrderByDescending(it => it.CreatedAt)
             .Take(200)
             .ToList();
@@ -141,6 +161,7 @@ public partial class ClipsView : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // star
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -205,6 +226,28 @@ public partial class ClipsView : UserControl
         Grid.SetColumn(kindLabel, 2);
         grid.Children.Add(kindLabel);
 
+        // Favorite star toggle
+        var meta = App.Host?.GalleryMeta;
+        var favBtn = new System.Windows.Controls.Button
+        {
+            Content = "★",
+            FontSize = 15,
+            Background = Brushes.Transparent,
+            Padding = new Thickness(6, 2, 6, 2),
+            Margin = new Thickness(0, 0, 6, 0),
+            Foreground = (Brush)FindResource(meta != null && meta.IsFavorite(it.FileName) ? "AccentBrush" : "MutedBrush"),
+            ToolTip = L.T("Favorit", "Favorite")
+        };
+        favBtn.Click += (_, _) =>
+        {
+            if (App.Host is null) return;
+            bool now = App.Host.GalleryMeta.ToggleFavorite(it.FileName);
+            favBtn.Foreground = (Brush)FindResource(now ? "AccentBrush" : "MutedBrush");
+            if (_favOnly) Reload(App.Host);
+        };
+        Grid.SetColumn(favBtn, 3);
+        grid.Children.Add(favBtn);
+
         // Open button
         var openBtn = new System.Windows.Controls.Button
         {
@@ -213,7 +256,7 @@ public partial class ClipsView : UserControl
             Margin = new Thickness(0, 0, 6, 0)
         };
         openBtn.Click += (_, _) => OpenFile(it.FilePath);
-        Grid.SetColumn(openBtn, 3);
+        Grid.SetColumn(openBtn, 4);
         grid.Children.Add(openBtn);
 
         // Show in Explorer
@@ -223,7 +266,7 @@ public partial class ClipsView : UserControl
             Padding = new Thickness(10, 5, 10, 5)
         };
         explorerBtn.Click += (_, _) => ShowInExplorer(it.FilePath);
-        Grid.SetColumn(explorerBtn, 4);
+        Grid.SetColumn(explorerBtn, 5);
         grid.Children.Add(explorerBtn);
 
         var card = new Border

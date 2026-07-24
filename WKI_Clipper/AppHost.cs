@@ -19,6 +19,18 @@ public sealed class AppHost : IDisposable
     public ScreenshotService Screenshots { get; }
     public AudioDeviceService AudioDevices { get; }
     public FFmpegService FFmpeg { get; }
+    public PerformanceMonitorService Performance { get; }
+    public GalleryMetaService GalleryMeta { get; }
+    public CrosshairLibraryService Crosshairs { get; }
+
+    /// <summary>
+    /// Set by the widget host: re-applies the crosshair overlay (image, sliders,
+    /// visibility) after settings changed. Keeps the UI-owning window out of AppHost.
+    /// </summary>
+    public Action? CrosshairRefresh { get; set; }
+
+    /// <summary>Re-render the live crosshair overlay from current settings.</summary>
+    public void RefreshCrosshair() => CrosshairRefresh?.Invoke();
     public GameProcessWatcher? GameWatcher { get; private set; }
     public ForegroundTracker? Foreground { get; private set; }
 
@@ -41,6 +53,9 @@ public sealed class AppHost : IDisposable
         ReplayBuffer = new ReplayBufferService(Settings);
         Screenshots = new ScreenshotService(Settings);
         AudioDevices = new AudioDeviceService();
+        Performance = new PerformanceMonitorService();
+        GalleryMeta = new GalleryMetaService();
+        Crosshairs = new CrosshairLibraryService();
 
         ResolveDefaultAudioDevices();
     }
@@ -221,6 +236,7 @@ public sealed class AppHost : IDisposable
     {
         Foreground?.Dispose();
         GameWatcher?.Dispose();
+        Performance.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

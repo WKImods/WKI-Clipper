@@ -1,0 +1,25 @@
+<UserControl x:Class="WKI_Clipper.Views.SettingsWidgetView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Tab strip -->
+        <StackPanel x:Name="TabStrip" Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+            <RadioButton x:Name="TabVideo"   GroupName="SW" Style="{StaticResource TabButtonStyle}" Content="Video"   Checked="OnTab" />
+            <RadioButton x:Name="TabHotkeys" GroupName="SW" Style="{StaticResource TabButtonStyle}" Content="Hotkeys" Checked="OnTab" />
+            <RadioButton x:Name="TabPaths"   GroupName="SW" Style="{StaticResource TabButtonStyle}" Content="Pfade"   Checked="OnTab" />
+            <RadioButton x:Name="TabAbout"   GroupName="SW" Style="{StaticResource TabButtonStyle}" Content="Über"    Checked="OnTab" />
+        </StackPanel>
+
+        <!-- Inner views bring their own ScrollViewer; no outer one (avoids double scroll). -->
+        <ContentControl x:Name="Host" Grid.Row="1" />
+
+        <Button x:Name="SaveBtn" Grid.Row="2" Margin="0,10,0,0"
+                Style="{StaticResource AccentButton}" Content="Settings speichern" Click="OnSave" />
+    </Grid>
+</UserControl>

@@ -3,7 +3,7 @@
 ; Prerequisite: run dotnet publish first (see build.ps1)
 
 #define AppName      "WKI Clipper"
-#define AppVersion   "0.2.0"
+#define AppVersion   "0.3.0"
 #define AppPublisher "WKI"
 #define AppExeName   "WKI_Clipper.exe"
 #define AppId        "{B5F3D2A1-8C4E-4F9B-A2D6-1E5C8A3F7D2C}"
@@ -52,8 +52,9 @@ Name: "autostart";   Description: "{cm:AutostartTask}";     GroupDescription: "{
 [Files]
 ; Main program (self-contained single-file .NET 8 publish output)
 Source: "publish\WKI_Clipper.exe"; DestDir: "{app}"; Flags: ignoreversion
-; WPF native DLLs (required beside the single-file exe)
-Source: "publish\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; WPF native DLLs — only present when publishing WITHOUT
+; IncludeNativeLibrariesForSelfExtract (otherwise they live inside the exe).
+Source: "publish\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Bundled FFmpeg (Gyan full build, ~214 MB, has AMF/NVENC/QSV)
 Source: "publish\Assets\ffmpeg\ffmpeg.exe"; DestDir: "{app}\Assets\ffmpeg"; Flags: ignoreversion
 ; App icon (tray fallback and shortcuts)

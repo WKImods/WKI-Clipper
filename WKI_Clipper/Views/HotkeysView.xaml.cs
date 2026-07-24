@@ -19,6 +19,7 @@ public partial class HotkeysView : UserControl
         (HotkeyActions.ToggleRecording, L.T("Recording Start/Stop", "Recording start/stop")),
         (HotkeyActions.ToggleOverlay,   L.T("Overlay öffnen/schließen", "Open/close overlay")),
         (HotkeyActions.ToggleBuffer,    L.T("Replay-Buffer pause/resume", "Replay buffer pause/resume")),
+        (HotkeyActions.ToggleCrosshair, L.T("Crosshair ein-/ausblenden", "Show/hide crosshair")),
     };
 
     public HotkeysView()
