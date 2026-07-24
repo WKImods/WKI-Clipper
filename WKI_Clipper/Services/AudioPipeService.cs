@@ -48,6 +48,8 @@ public sealed class AudioPipeService : IDisposable
     private long _sysBytesIn;
     private long _micBytesIn;
     private long _bytesPumped;
+    /// <summary>Frames of wall-clock-paced silence injected while the sources were idle.</summary>
+    private long _silenceFrames;
     private bool _micSignalSeen;
     private DateTime _lastStatsLog = DateTime.UtcNow;
     private readonly string? _micDeviceName;
@@ -234,12 +236,48 @@ public sealed class AudioPipeService : IDisposable
 
             var lastTrimCheck = DateTime.UtcNow;
 
+            // Wall-clock anchor for the silence pacing below: how much audio the
+            // stream SHOULD contain by now vs. how much we actually wrote.
+            var streamStart = DateTime.UtcNow;
+            long framesWritten = 0;
+
             while (!ct.IsCancellationRequested && _server.IsConnected)
             {
                 // Snapshot the providers each tick — SwapSystemSource can replace
                 // them at any time; one 10 ms tick on the outgoing pair is
                 // inaudible. hasPrimary is therefore dynamic too (a swap can add
                 // or remove the system source mid-run).
+                // Drift check every 500 ms so a buffer that creeps past the threshold
+                // gets trimmed promptly. Runs at the TOP of the loop so it still
+                // happens while the sources are idle (the silence path below
+                // continues, and a buffer must not be able to grow unwatched).
+                if ((DateTime.UtcNow - lastTrimCheck).TotalSeconds >= 0.5)
+                {
+                    lastTrimCheck = DateTime.UtcNow;
+                    BufferedWaveProvider? sb, mb;
+                    lock (_srcLock) { sb = _sysBuf; mb = _micBuf; }
+                    TrimIfStale(sb, "sys");
+                    TrimIfStale(mb, "mic");
+                }
+
+                // Stats every 5 s — also at the top, so throughput keeps being
+                // reported (and the silence counter stays visible) while idle.
+                if ((DateTime.UtcNow - _lastStatsLog).TotalSeconds >= 5)
+                {
+                    var elapsed = (DateTime.UtcNow - _lastStatsLog).TotalSeconds;
+                    _lastStatsLog = DateTime.UtcNow;
+                    long sysIn = Interlocked.Exchange(ref _sysBytesIn, 0);
+                    long micIn = Interlocked.Exchange(ref _micBytesIn, 0);
+                    long out_ = Interlocked.Exchange(ref _bytesPumped, 0);
+                    long silence = Interlocked.Exchange(ref _silenceFrames, 0);
+                    // "silence" > 0 means the render device was idle (nothing playing)
+                    // and we kept the stream alive ourselves — expected, not an error.
+                    string silencePart = silence > 0
+                        ? $"  ·  silence {silence * 1000.0 / TargetSampleRate / elapsed:F0} ms/s"
+                        : "";
+                    Logger.Info($"Audio throughput  ·  sys {sysIn / 1024 / elapsed:F1} KB/s  ·  mic {micIn / 1024 / elapsed:F1} KB/s  ·  out {out_ / 1024 / elapsed:F1} KB/s  ·  mic_signal={_micSignalSeen}{silencePart}");
+                }
+
                 ISampleProvider? sysP, micP;
                 lock (_srcLock) { sysP = _sysProvider; micP = _micProvider; }
 
@@ -255,6 +293,12 @@ public sealed class AudioPipeService : IDisposable
                 int sysRead = sysP?.Read(sysFloatBuf, 0, TICK_SAMPLES) ?? 0;
                 int micRead = 0;
 
+                // Wall-clock budget: how much audio the stream still owes. Used both
+                // to bound the mic when it has to carry a tick alone and to pace the
+                // silence fallback below.
+                long deficitFrames = AudioPacing.DeficitFrames(
+                    DateTime.UtcNow - streamStart, framesWritten, TargetSampleRate);
+
                 if (micP != null)
                 {
                     if (hasPrimary && sysRead > 0)
@@ -267,14 +311,49 @@ public sealed class AudioPipeService : IDisposable
                         // Mic-only mode: mic drives the timeline itself.
                         micRead = micP.Read(micFloatBuf, 0, TICK_SAMPLES);
                     }
-                    // When hasPrimary && sysRead==0: skip mic too — wait for
-                    // the primary source just like the single-source path does.
+                    else
+                    {
+                        // System source exists but delivered nothing — the render
+                        // device is idle (nothing playing). Skipping the mic here
+                        // would write silence OVER live speech and let _micBuf
+                        // overflow, so the mic carries this tick instead. It is
+                        // capped by the wall-clock deficit, which is what stops the
+                        // old "mic drives the length" overproduction from returning.
+                        int allowed = AudioPacing.MicAllowanceSamples(deficitFrames, TargetChannels, TICK_SAMPLES);
+                        if (allowed > 0) micRead = micP.Read(micFloatBuf, 0, allowed);
+                    }
                 }
 
                 int read = Math.Max(sysRead, micRead);
                 if (read == 0)
                 {
-                    await Task.Delay(1, ct).ConfigureAwait(false);
+                    // Nothing captured. This is NORMAL: WASAPI loopback delivers no
+                    // data at all while the render device is idle (nothing playing),
+                    // and with the mic off that starves the pipe completely — ffmpeg
+                    // then waits forever for audio and never finalises the file.
+                    //
+                    // Emit silence, but paced by the WALL CLOCK: only as much as real
+                    // time has advanced beyond what we already wrote. That keeps A/V
+                    // in sync and — unlike the old ReadFully=true behaviour, which
+                    // pumped silence as fast as the loop could spin and pushed real
+                    // audio seconds late — it can never overproduce.
+                    //
+                    // 2 ticks of slack so normal capture jitter doesn't inject silence
+                    // that the late real samples would then have to queue behind.
+                    int silenceFrames = AudioPacing.SilenceFramesToWrite(deficitFrames, TICK_FRAMES);
+                    if (silenceFrames > 0)
+                    {
+                        int silenceBytes = silenceFrames * TargetChannels * 2;
+                        Array.Clear(byteBuf, 0, silenceBytes);
+                        await _server.WriteAsync(byteBuf.AsMemory(0, silenceBytes), ct).ConfigureAwait(false);
+                        framesWritten += silenceFrames;
+                        Interlocked.Add(ref _bytesPumped, silenceBytes);
+                        Interlocked.Add(ref _silenceFrames, silenceFrames);
+                    }
+                    else
+                    {
+                        await Task.Delay(1, ct).ConfigureAwait(false);
+                    }
                     continue;
                 }
 
@@ -292,27 +371,7 @@ public sealed class AudioPipeService : IDisposable
 
                 await _server.WriteAsync(byteBuf.AsMemory(0, read * 2), ct).ConfigureAwait(false);
                 Interlocked.Add(ref _bytesPumped, read * 2);
-
-                // Drift check every 500 ms so a buffer that creeps past the
-                // threshold gets trimmed promptly.
-                if ((DateTime.UtcNow - lastTrimCheck).TotalSeconds >= 0.5)
-                {
-                    lastTrimCheck = DateTime.UtcNow;
-                    BufferedWaveProvider? sb, mb;
-                    lock (_srcLock) { sb = _sysBuf; mb = _micBuf; }
-                    TrimIfStale(sb, "sys");
-                    TrimIfStale(mb, "mic");
-                }
-                // Stats every 5 seconds (slower than the trim check).
-                if ((DateTime.UtcNow - _lastStatsLog).TotalSeconds >= 5)
-                {
-                    var elapsed = (DateTime.UtcNow - _lastStatsLog).TotalSeconds;
-                    _lastStatsLog = DateTime.UtcNow;
-                    long sysIn = Interlocked.Exchange(ref _sysBytesIn, 0);
-                    long micIn = Interlocked.Exchange(ref _micBytesIn, 0);
-                    long out_ = Interlocked.Exchange(ref _bytesPumped, 0);
-                    Logger.Info($"Audio throughput  ·  sys {sysIn / 1024 / elapsed:F1} KB/s  ·  mic {micIn / 1024 / elapsed:F1} KB/s  ·  out {out_ / 1024 / elapsed:F1} KB/s  ·  mic_signal={_micSignalSeen}");
-                }
+                framesWritten += read / TargetChannels;
             }
         }
         catch (OperationCanceledException) { }
