@@ -215,7 +215,8 @@ public partial class CaptureView : UserControl
             if (!h.ManualRecording.IsRecording) await h.ManualRecording.ToggleAsync();
             else await h.ManualRecording.ToggleAsync();
         }));
-        actions.Children.Add(MakeActionButton(L.T("Screenshot  (F10)", "Screenshot  (F10)"), accent: false, hideFirst: true, async h => await h.Screenshots.CaptureActiveWindowAsync()));
+        // Screenshot hides the whole overlay centrally (ScreenshotService.OverlayHider), so no local hideFirst.
+        actions.Children.Add(MakeActionButton(L.T("Screenshot  (F10)", "Screenshot  (F10)"), accent: false, hideFirst: false, async h => await h.Screenshots.CaptureAsync()));
         actions.Children.Add(MakeActionButton(L.T("Buffer ein/aus  (Strg+F10)", "Buffer on/off  (Ctrl+F10)"), accent: false, hideFirst: false, async h => await h.ReplayBuffer.ToggleAsync()));
         RowsContainer.Children.Add(MakeCard(L.T("Aktionen", "Actions"), L.T("Per Klick oder Hotkey.", "Via click or hotkey."), actions));
     }

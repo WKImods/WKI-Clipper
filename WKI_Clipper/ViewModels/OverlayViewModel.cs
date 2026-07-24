@@ -110,7 +110,7 @@ public partial class OverlayViewModel : ObservableObject
     private async Task SaveReplay() => await _host.ReplayBuffer.SaveLastAsync();
 
     [RelayCommand]
-    private async Task TakeScreenshot() => await _host.Screenshots.CaptureActiveWindowAsync();
+    private async Task TakeScreenshot() => await _host.Screenshots.CaptureAsync();
 
     [RelayCommand]
     private void OpenClipsFolder()

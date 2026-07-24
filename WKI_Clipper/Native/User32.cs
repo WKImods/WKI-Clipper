@@ -46,6 +46,20 @@ internal static class User32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    // --- Extended window styles (widget windows toggle NOACTIVATE when pinned) ---
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_NOACTIVATE = 0x08000000;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    /// <summary>Click-through: mouse input passes to the window underneath (crosshair overlay while gaming).</summary>
+    public const int WS_EX_TRANSPARENT = 0x00000020;
+
     // --- Window enumeration (for foreground self-exclusion / window picking) ---
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);

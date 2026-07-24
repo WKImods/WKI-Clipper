@@ -12,6 +12,15 @@
             </StackPanel>
         </DockPanel>
 
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+            <ToggleButton x:Name="FavOnly" DockPanel.Dock="Right" Content="★ Favoriten"
+                          Template="{StaticResource LauncherToggleTemplate}"
+                          Padding="10,6" Margin="8,0,0,0"
+                          Foreground="{StaticResource TextBrush}" Cursor="Hand"
+                          Checked="OnFavOnlyChanged" Unchecked="OnFavOnlyChanged" />
+            <TextBox x:Name="SearchBox" TextChanged="OnSearchChanged" />
+        </DockPanel>
+
         <TextBlock x:Name="EmptyHint"
                    DockPanel.Dock="Top"
                    Visibility="Collapsed"

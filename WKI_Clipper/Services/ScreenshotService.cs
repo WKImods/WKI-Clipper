@@ -1,16 +1,19 @@
 using System;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.Versioning;
-using System.Text;
 using System.Threading.Tasks;
-using WKI_Clipper.Models;
-using WKI_Clipper.Native;
 
 namespace WKI_Clipper.Services;
 
+/// <summary>
+/// Captures a screenshot of the WHOLE active monitor. Deliberately decoupled from the
+/// capture profile (Auto/Window/Monitor) — a screenshot is always a full-monitor grab
+/// of the display the user is currently looking at, never a single window. The old
+/// per-window PrintWindow path was removed because it produced black images for
+/// GPU-rendered games and ignored the "whole monitor" intent.
+/// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class ScreenshotService
 {
@@ -19,92 +22,59 @@ public sealed class ScreenshotService
     public event EventHandler<string>? ScreenshotSaved;
     public event EventHandler<string>? ScreenshotFailed;
 
+    /// <summary>
+    /// Optional hook that hides our own overlay windows for the duration of the grab
+    /// (returns an IDisposable that restores them, or null if nothing was visible).
+    /// Set by the app once the widget host exists. Keeps own screenshots free of the
+    /// overlay while widgets stay visible to external tools (Snipping Tool, OBS).
+    /// </summary>
+    public Func<IDisposable?>? OverlayHider { get; set; }
+
     public ScreenshotService(SettingsService settings)
     {
         _settings = settings;
     }
 
-    public async Task<string?> CaptureActiveWindowAsync()
+    public async Task<string?> CaptureAsync()
     {
         var outDir = SettingsService.ExpandPath(_settings.Current.Output.ScreenshotsFolder);
         Directory.CreateDirectory(outDir);
         var ts = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
 
-        var (windowTitle, hwnd) = GetActiveWindowInfo();
+        var (idx, screen) = CaptureTargetResolver.ResolveActiveMonitor();
+        var path = Path.Combine(outDir, $"Shot_Display{idx + 1}_{ts}.png");
 
-        // Try a clean per-window shot first.
-        var winPath = Path.Combine(outDir, $"Shot_{SanitizeFilename(windowTitle)}_{ts}.png");
-        if (TryPrintWindow(hwnd, winPath))
+        // Hide our own overlay so it isn't in the shot; let it actually disappear.
+        var hider = OverlayHider?.Invoke();
+        try
         {
-            ScreenshotSaved?.Invoke(this, winPath);
-            return winPath;
+            if (hider != null) await Task.Delay(150);
+
+            // Primary: DXGI Desktop Duplication (ddagrab) — captures the whole monitor
+            // including exclusive-fullscreen games, where GDI would be black.
+            if (await TryFFmpegMonitorAsync(path, idx))
+            {
+                ScreenshotSaved?.Invoke(this, path);
+                return path;
+            }
+
+            // Fallback: GDI full-monitor copy (still whole monitor, never a window).
+            if (TryGdiMonitorGrab(screen, path))
+            {
+                ScreenshotSaved?.Invoke(this, path);
+                return path;
+            }
+        }
+        finally
+        {
+            hider?.Dispose();
         }
 
-        // Fallback: whole-monitor grab. Name + notify it HONESTLY as a display
-        // shot (not the window title) and capture the resolved target monitor.
-        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-        var dispPath = Path.Combine(outDir, $"Shot_Display{plan.MonitorIndex + 1}_{ts}.png");
-        if (await TryFFmpegFallbackAsync(dispPath, plan.MonitorIndex))
-        {
-            ScreenshotSaved?.Invoke(this, dispPath);
-            return dispPath;
-        }
-
-        ScreenshotFailed?.Invoke(this, dispPath);
+        ScreenshotFailed?.Invoke(this, path);
         return null;
     }
 
-    private static bool TryPrintWindow(IntPtr hwnd, string outPath)
-    {
-        try
-        {
-            if (hwnd == IntPtr.Zero) return false;
-            if (!User32.GetWindowRect(hwnd, out var wr)) return false;
-            int w = wr.Width, h = wr.Height;
-            if (w <= 0 || h <= 0) return false;
-
-            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(bmp))
-            {
-                var hdc = g.GetHdc();
-                try
-                {
-                    if (!User32.PrintWindow(hwnd, hdc, User32.PW_RENDERFULLCONTENT))
-                        return false;
-                }
-                finally { g.ReleaseHdc(hdc); }
-            }
-
-            // Crop away the invisible resize border (GetWindowRect includes it,
-            // DWM's extended frame bounds don't) so the PNG has no blank edges.
-            if (User32.DwmGetWindowAttribute(hwnd, User32.DWMWA_EXTENDED_FRAME_BOUNDS,
-                    out var fb, System.Runtime.InteropServices.Marshal.SizeOf<User32.RECT>()) == 0
-                && fb.Width > 0 && fb.Height > 0)
-            {
-                int offX = fb.Left - wr.Left;
-                int offY = fb.Top - wr.Top;
-                var crop = new Rectangle(
-                    Math.Max(0, offX), Math.Max(0, offY),
-                    Math.Min(fb.Width, w - Math.Max(0, offX)),
-                    Math.Min(fb.Height, h - Math.Max(0, offY)));
-                if (crop.Width > 0 && crop.Height > 0)
-                {
-                    using var cropped = bmp.Clone(crop, bmp.PixelFormat);
-                    cropped.Save(outPath, ImageFormat.Png);
-                    return new FileInfo(outPath).Length > 1024;
-                }
-            }
-
-            bmp.Save(outPath, ImageFormat.Png);
-            return new FileInfo(outPath).Length > 1024; // PrintWindow can return true yet produce a blank image
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task<bool> TryFFmpegFallbackAsync(string outPath, int monitorIndex)
+    private async Task<bool> TryFFmpegMonitorAsync(string outPath, int monitorIndex)
     {
         try
         {
@@ -115,7 +85,7 @@ public sealed class ScreenshotService
             ffmpeg.Exited += (_, code) => tcs.TrySetResult(code);
             ffmpeg.Start(args);
             var code = await tcs.Task;
-            return code == 0 && File.Exists(outPath);
+            return code == 0 && File.Exists(outPath) && new FileInfo(outPath).Length > 1024;
         }
         catch
         {
@@ -123,22 +93,21 @@ public sealed class ScreenshotService
         }
     }
 
-    private static (string title, IntPtr hwnd) GetActiveWindowInfo()
+    private static bool TryGdiMonitorGrab(System.Windows.Forms.Screen screen, string outPath)
     {
-        var hwnd = User32.GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return ("unknown", IntPtr.Zero);
-        int len = User32.GetWindowTextLength(hwnd);
-        if (len <= 0) return ("window", hwnd);
-        var sb = new StringBuilder(len + 1);
-        User32.GetWindowText(hwnd, sb, sb.Capacity);
-        return (sb.ToString(), hwnd);
-    }
-
-    private static string SanitizeFilename(string s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return "window";
-        foreach (var c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
-        s = s.Replace(' ', '_');
-        return s.Length > 40 ? s[..40] : s;
+        try
+        {
+            var b = screen.Bounds;
+            if (b.Width <= 0 || b.Height <= 0) return false;
+            using var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+                g.CopyFromScreen(b.Location, System.Drawing.Point.Empty, b.Size);
+            bmp.Save(outPath, ImageFormat.Png);
+            return new FileInfo(outPath).Length > 1024;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

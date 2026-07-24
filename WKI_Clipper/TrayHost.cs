@@ -20,7 +20,7 @@ internal static class TrayHost
 {
     private static WinForms.NotifyIcon? _trayIcon;
     private static AppHost? _host;
-    private static OverlayWindow? _overlay;
+    private static WidgetHost? _widgetHost;
 
     // Cached icons per state. Built on demand via Bitmap → Icon.
     private static readonly Dictionary<TrayState, Icon> _icons = new();
@@ -28,10 +28,10 @@ internal static class TrayHost
 
     private static string? _lastClipPath;
 
-    public static void Install(AppHost host, OverlayWindow overlay)
+    public static void Install(AppHost host, WidgetHost widgetHost)
     {
         _host = host;
-        _overlay = overlay;
+        _widgetHost = widgetHost;
 
         var cms = BuildContextMenu();
 
@@ -55,7 +55,21 @@ internal static class TrayHost
             }
         };
 
+        // Rebuild the (build-once) context menu + tooltip when the language flips.
+        L.LanguageChanged += Relocalize;
+
         Logger.Info("Tray icon visible.");
+    }
+
+    private static void Relocalize()
+    {
+        if (_trayIcon is null) return;
+        try
+        {
+            _trayIcon.ContextMenuStrip = BuildContextMenu();
+            UpdateState(_currentState);
+        }
+        catch (Exception ex) { Logger.Warn("Tray relocalize failed: " + ex.Message); }
     }
 
     public static void UpdateState(TrayState state, string? detail = null)
@@ -176,7 +190,7 @@ internal static class TrayHost
         cms.Items.Add(recItem);
 
         var shotItem = new WinForms.ToolStripMenuItem("Screenshot");
-        shotItem.Click += async (_, _) => { if (_host != null) await _host.Screenshots.CaptureActiveWindowAsync(); };
+        shotItem.Click += async (_, _) => { if (_host != null) await _host.Screenshots.CaptureAsync(); };
         cms.Items.Add(shotItem);
 
         var saveReplayItem = new WinForms.ToolStripMenuItem(L.T("Letzte N Sekunden speichern", "Save last N seconds"));
@@ -214,7 +228,7 @@ internal static class TrayHost
         return cms;
     }
 
-    private static void ShowOverlay() => _overlay?.ShowOnActiveMonitor();
+    private static void ShowOverlay() => _widgetHost?.OpenBoard();
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]

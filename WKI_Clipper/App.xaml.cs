@@ -14,7 +14,7 @@ public partial class App : Application
 
     private Mutex? _singleInstanceMutex;
     public static AppHost Host { get; private set; } = null!;
-    private OverlayWindow? _overlay;
+    private WidgetHost? _widgetHost;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -118,11 +118,14 @@ public partial class App : Application
                 Host.ReplayBuffer.Start();
             }
 
-            _overlay = new OverlayWindow(Host);
-            Logger.Info("OverlayWindow constructed.");
-            // Don't show — tray icon controls visibility.
+            _widgetHost = new WidgetHost(Host);
+            _widgetHost.RestorePinned();
+            // Own screenshots hide the overlay first (widgets are otherwise capture-visible now).
+            Host.Screenshots.OverlayHider = () => _widgetHost.HideDuringCapture();
+            Logger.Info("WidgetHost constructed.");
+            // Board is opened via hotkey / tray — pinned widgets already restored.
 
-            TrayHost.Install(Host, _overlay);
+            TrayHost.Install(Host, _widgetHost);
             Logger.Info("TrayHost installed.");
 
             Logger.Info("Startup complete.");
@@ -147,7 +150,7 @@ public partial class App : Application
                     await Host.ReplayBuffer.SaveLastAsync();
                     break;
                 case HotkeyActions.Screenshot:
-                    await Host.Screenshots.CaptureActiveWindowAsync();
+                    await Host.Screenshots.CaptureAsync();
                     break;
                 case HotkeyActions.ToggleRecording:
                     await Host.ManualRecording.ToggleAsync();
@@ -158,6 +161,9 @@ public partial class App : Application
                 case HotkeyActions.ToggleBuffer:
                     await Host.ReplayBuffer.ToggleAsync();
                     break;
+                case HotkeyActions.ToggleCrosshair:
+                    ToggleCrosshair();
+                    break;
             }
         }
         catch (Exception ex)
@@ -166,11 +172,24 @@ public partial class App : Application
         }
     }
 
-    private void ToggleOverlay()
+    private void ToggleOverlay() => _widgetHost?.ToggleBoard();
+
+    private void ToggleCrosshair()
     {
-        if (_overlay is null) return;
-        if (_overlay.IsVisible) _overlay.Hide();
-        else _overlay.ShowOnActiveMonitor();
+        if (_widgetHost is null) return;
+        bool on = _widgetHost.ToggleCrosshair();
+
+        // Tell the user why nothing appeared if the library is still empty.
+        bool hasImage = Host.Crosshairs.GetById(Host.Settings.Current.Crosshair.ActiveId) != null;
+        if (on && !hasImage)
+        {
+            ToastService.Show(Views.ToastKind.Warning, "Crosshair",
+                L.T("Kein Bild gewählt — im Crosshair-Widget ein PNG hinzufügen.",
+                    "No image selected — add a PNG in the crosshair widget."), durationSeconds: 5);
+            return;
+        }
+        ToastService.Show(Views.ToastKind.Info, "Crosshair",
+            on ? L.T("Eingeblendet", "Shown") : L.T("Ausgeblendet", "Hidden"), durationSeconds: 1.6);
     }
 
     protected override void OnExit(ExitEventArgs e)

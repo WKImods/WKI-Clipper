@@ -7,10 +7,42 @@ Lightweight replay clipper and screen recorder for Windows. A handful of hotkeys
 | Hotkey | Action |
 |--------|--------|
 | `F9` | Save the last 15–180 s as MP4 (instant replay) |
-| `F10` | Screenshot of the active window (PNG) |
+| `F10` | Screenshot of the whole active monitor (PNG) |
 | `Ctrl+F9` | Start/stop manual recording |
 | `Ctrl+F10` | Pause/resume the replay buffer |
-| `Ctrl+Alt+G` | Open/close the overlay |
+| `Ctrl+Alt+G` | Open/close the widget overlay |
+| `Ctrl+Alt+C` | Show/hide the crosshair overlay |
+
+All hotkeys are rebindable in the Hotkeys settings (press-to-bind).
+
+## Widget overlay
+
+The overlay is a modular, Xbox-Game-Bar-style board rather than a single window. Each
+widget is its own frameless window: drag it anywhere, **pin** it to keep it on screen
+while you play, or close it. Layout, size, pin and visibility are remembered per monitor.
+
+| Widget | What it does |
+|--------|--------------|
+| **Capture** | Live "what gets clipped next" plus target mode, window picker and audio coupling |
+| **Audio** | Devices, levels, gain and sync offset |
+| **Gallery** | Clips, recordings and screenshots with search and favorites |
+| **Performance** | Live CPU / GPU / RAM / VRAM usage (polled only while visible) |
+| **Crosshair** | PNG crosshair overlay — see below |
+| **Settings** | Video, hotkeys, paths and about |
+
+## Crosshair overlay
+
+Import your own PNG crosshairs into a small library (they are copied into the app's data
+folder, so the originals can move or disappear). Pick one, place it, and toggle it with
+`Ctrl+Alt+C`.
+
+- **Click-through while playing** — the crosshair never intercepts a shot; it only becomes
+  draggable while the overlay board is open.
+- **Snap to grid**, anchored at the *monitor center*, so dead center is always reachable
+  and offsets stay symmetric. Grid step is adjustable, or place freely.
+- **Image controls**: size, opacity, brightness, contrast, saturation and per-channel
+  red/green/blue gain. Import white crosshairs for maximum tinting freedom — the gains are
+  multiplicative, so a channel that is zero in the source cannot be recovered.
 
 ## Capture modes
 
@@ -30,7 +62,7 @@ Audio can be coupled to the video target: with "game-only" audio enabled, the cl
 
 ## Language
 
-The UI is fully bilingual (German/English). Switch it in the About tab → "Sprache / Language" (restart applies it everywhere).
+The UI is fully bilingual (German/English). Switch it in Settings → About → "Sprache / Language"; it applies immediately across every window, no restart needed.
 
 ## Audio
 
@@ -125,9 +157,11 @@ WKI_Clipper.exe (.NET 8 / WPF)
   +-- ProcessLoopbackCapture  game-only audio (WASAPI process loopback)
   +-- ReplayBufferService     FFmpeg segmented recording (rolling ring buffer)
   +-- ManualRecordingService  FFmpeg single-file recording
-  +-- ScreenshotService       PrintWindow / ddagrab fallback
-  +-- SettingsService         JSON config in %APPDATA%
-  +-- OverlayWindow           WPF overlay (capture, settings, clips, status)
+  +-- ScreenshotService       whole-monitor grab (ddagrab, GDI fallback)
+  +-- SettingsService         JSON config in %APPDATA% (versioned + migrated)
+  +-- WidgetHost              owns the widget board, pinning and the crosshair overlay
+  +-- CrosshairLibraryService PNG crosshair library (copies + JSON index)
+  +-- PerformanceMonitorService  CPU/GPU/RAM/VRAM counters, 1 Hz, only while visible
 ```
 
 Window capture runs through Windows.Graphics.Capture (occlusion-proof, survives covered windows); full-monitor capture uses `ddagrab` (Desktop Duplication API). Audio is captured in-process via NAudio (WASAPI), mixed, and fed to FFmpeg through a named pipe.

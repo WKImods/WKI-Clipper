@@ -44,34 +44,19 @@ public partial class AboutView : UserControl
             Style = (Style)FindResource("MutedStyle"),
             Margin = new Thickness(0, 6, 0, 0),
             TextWrapping = TextWrapping.Wrap,
-            Text = L.T("Wird nach einem App-Neustart vollständig übernommen.",
-                       "Fully applied after an app restart.")
-        };
-        var restartBtn = new System.Windows.Controls.Button
-        {
-            Content = L.T("Jetzt neu starten", "Restart now"),
-            Padding = new Thickness(10, 4, 10, 4),
-            Margin = new Thickness(0, 8, 0, 0),
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
-            Visibility = Visibility.Collapsed
-        };
-        restartBtn.Click += (_, _) =>
-        {
-            var exe = Process.GetCurrentProcess().MainModule?.FileName;
-            if (exe != null) Process.Start(exe);
-            Application.Current.Shutdown();
+            Text = L.T("Wird sofort in allen Fenstern übernommen.",
+                       "Applied immediately across all windows.")
         };
         langBox.SelectionChanged += (_, _) =>
         {
             var newLang = langBox.SelectedIndex == 1 ? Models.AppLanguage.English : Models.AppLanguage.Deutsch;
             if (newLang == host.Settings.Current.Behavior.Language) return;
             host.Settings.Current.Behavior.Language = newLang;
+            // Save → L.Init → L.LanguageChanged → WidgetHost/TrayHost rebuild live.
             host.Settings.Save();
-            restartBtn.Visibility = Visibility.Visible;
         };
         langStack.Children.Add(langBox);
         langStack.Children.Add(langNote);
-        langStack.Children.Add(restartBtn);
         InfoContainer.Children.Add(SectionCard(L.T("Sprache / Language", "Language / Sprache"), langStack));
 
         // App info
