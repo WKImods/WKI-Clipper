@@ -3,7 +3,7 @@
 ; Prerequisite: run dotnet publish first (see build.ps1)
 
 #define AppName      "WKI Clipper"
-#define AppVersion   "0.3.1"
+#define AppVersion   "0.3.2"
 #define AppPublisher "WKI"
 #define AppExeName   "WKI_Clipper.exe"
 #define AppId        "{B5F3D2A1-8C4E-4F9B-A2D6-1E5C8A3F7D2C}"
@@ -57,6 +57,8 @@ Source: "publish\WKI_Clipper.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "publish\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Bundled FFmpeg (Gyan full build, ~214 MB, has AMF/NVENC/QSV)
 Source: "publish\Assets\ffmpeg\ffmpeg.exe"; DestDir: "{app}\Assets\ffmpeg"; Flags: ignoreversion
+; Starter crosshairs seeded into the library on first run
+Source: "publish\Assets\DefaultCrosshairs\*.png"; DestDir: "{app}\Assets\DefaultCrosshairs"; Flags: ignoreversion skipifsourcedoesntexist
 ; App icon (tray fallback and shortcuts)
 Source: "Resources\Icons\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 

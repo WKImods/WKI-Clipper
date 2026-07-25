@@ -9,12 +9,18 @@ namespace WKI_Clipper.Tests;
 public sealed class CrosshairLibraryTests : IDisposable
 {
     private readonly string _dir;
+    // These tests exercise drop-in detection, not seeding — point the service at a
+    // non-existent defaults folder so nothing is auto-seeded into _dir.
+    private readonly string _noDefaults;
 
     public CrosshairLibraryTests()
     {
         _dir = Path.Combine(Path.GetTempPath(), "wki_ch_" + Guid.NewGuid().ToString("N"));
+        _noDefaults = Path.Combine(_dir, "..", "wki_no_defaults_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
     }
+
+    private CrosshairLibraryService NewLib() => new(_dir, _noDefaults);
 
     public void Dispose()
     {
@@ -33,7 +39,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     public void Manually_dropped_png_is_picked_up()
     {
         DropPng("Green_Round.png");
-        var svc = new CrosshairLibraryService(_dir);   // ctor scans
+        var svc = NewLib();   // ctor scans
 
         Assert.Single(svc.Entries);
         Assert.Equal("Green_Round", svc.Entries[0].Name);
@@ -44,7 +50,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     public void Scanning_twice_does_not_duplicate()
     {
         DropPng("dot.png");
-        var svc = new CrosshairLibraryService(_dir);
+        var svc = NewLib();
         svc.ScanFolder();
         svc.ScanFolder();
 
@@ -54,7 +60,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     [Fact]
     public void New_file_after_construction_is_found_by_scan()
     {
-        var svc = new CrosshairLibraryService(_dir);
+        var svc = NewLib();
         Assert.Empty(svc.Entries);
 
         DropPng("later.png");
@@ -68,7 +74,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     public void Deleted_file_is_dropped_from_the_index()
     {
         var path = DropPng("gone.png");
-        var svc = new CrosshairLibraryService(_dir);
+        var svc = NewLib();
         Assert.Single(svc.Entries);
 
         File.Delete(path);
@@ -82,7 +88,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     {
         File.WriteAllText(Path.Combine(_dir, "notes.txt"), "hello");
         File.WriteAllText(Path.Combine(_dir, "cross.jpg"), "x");
-        var svc = new CrosshairLibraryService(_dir);
+        var svc = NewLib();
 
         Assert.Empty(svc.Entries);
     }
@@ -91,11 +97,11 @@ public sealed class CrosshairLibraryTests : IDisposable
     public void Index_survives_a_restart_of_the_service()
     {
         DropPng("keep.png");
-        var first = new CrosshairLibraryService(_dir);
+        var first = NewLib();
         Assert.Single(first.Entries);
         first.Dispose();
 
-        var second = new CrosshairLibraryService(_dir);
+        var second = NewLib();
         Assert.Single(second.Entries);
         Assert.Equal("keep", second.Entries[0].Id);
     }
@@ -107,7 +113,7 @@ public sealed class CrosshairLibraryTests : IDisposable
         File.WriteAllBytes(src, new byte[] { 0x89, 0x50, 0x4E, 0x47, 1, 2 });
         try
         {
-            var svc = new CrosshairLibraryService(_dir);
+            var svc = NewLib();
             var entry = svc.Import(src);
 
             Assert.NotNull(entry);
@@ -125,7 +131,7 @@ public sealed class CrosshairLibraryTests : IDisposable
     public void Remove_deletes_the_file_and_the_entry()
     {
         DropPng("bye.png");
-        var svc = new CrosshairLibraryService(_dir);
+        var svc = NewLib();
         var id = svc.Entries[0].Id;
 
         svc.Remove(id);

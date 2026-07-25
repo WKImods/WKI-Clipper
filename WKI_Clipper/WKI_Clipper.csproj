@@ -22,7 +22,7 @@
     <AssemblyName>WKI_Clipper</AssemblyName>
     <RootNamespace>WKI_Clipper</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.3.1</Version>
+    <Version>0.3.2</Version>
     <Authors>Phillip / WKI</Authors>
     <Product>WKI Clipper</Product>
     <Description>Minimal clipping &amp; replay tool for Windows 11 / AMD</Description>
@@ -42,6 +42,9 @@
 
   <ItemGroup>
     <None Update="Assets\ffmpeg\ffmpeg.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\DefaultCrosshairs\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

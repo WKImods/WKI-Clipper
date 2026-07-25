@@ -28,6 +28,7 @@ public sealed class CrosshairLibraryService : IDisposable
 {
     private readonly string _dir;
     private readonly string _indexPath;
+    private readonly string _defaultsDir;
     private List<CrosshairEntry> _entries = new();
 
     private FileSystemWatcher? _watcher;
@@ -38,15 +39,50 @@ public sealed class CrosshairLibraryService : IDisposable
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    public CrosshairLibraryService(string? directory = null)
+    public CrosshairLibraryService(string? directory = null, string? defaultsDirectory = null)
     {
         _dir = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "WKI_Clipper", "crosshairs");
+        // Bundled starter crosshairs shipped next to the exe (Assets/DefaultCrosshairs).
+        _defaultsDir = defaultsDirectory ?? Path.Combine(AppContext.BaseDirectory, "Assets", "DefaultCrosshairs");
         _indexPath = Path.Combine(_dir, "crosshairs.json");
         Load();
-        ScanFolder();     // pick up PNGs that were dropped in manually while we were off
+        SeedDefaultsIfNeeded();  // first run: drop the shipped crosshairs into the library
+        ScanFolder();            // pick up PNGs (defaults + anything dropped in manually)
         StartWatching();
+    }
+
+    /// <summary>
+    /// On the very first run, copies the crosshairs shipped with the app into the
+    /// user's library folder. Guarded by a one-time marker so a user who deletes them
+    /// doesn't get them back, and it never overwrites a file the user already has.
+    /// </summary>
+    private void SeedDefaultsIfNeeded()
+    {
+        var marker = Path.Combine(_dir, ".defaults-seeded");
+        try
+        {
+            System.IO.Directory.CreateDirectory(_dir);
+            if (File.Exists(marker)) return;
+
+            int copied = 0;
+            if (System.IO.Directory.Exists(_defaultsDir))
+            {
+                foreach (var src in System.IO.Directory.EnumerateFiles(_defaultsDir, "*.png"))
+                {
+                    var dest = Path.Combine(_dir, Path.GetFileName(src));
+                    if (File.Exists(dest)) continue;   // never clobber a user's own file
+                    try { File.Copy(src, dest); copied++; } catch { /* skip a bad file, keep going */ }
+                }
+            }
+            File.WriteAllText(marker, DateTime.UtcNow.ToString("o"));
+            Logger.Info($"Seeded {copied} default crosshair(s) from {_defaultsDir}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("Crosshair default seeding failed: " + ex.Message);
+        }
     }
 
     /// <summary>
