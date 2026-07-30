@@ -80,6 +80,14 @@ public partial class App : Application
                     System.IO.Path.GetFileName(path),
                     path);
             };
+            Host.ReplayBuffer.GifSaved += (_, path) =>
+            {
+                ToastService.Show(Views.ToastKind.Clip,
+                    L.T($"GIF gespeichert ({Host.Settings.Current.Gif.DurationSeconds} s)",
+                        $"GIF saved ({Host.Settings.Current.Gif.DurationSeconds} s)"),
+                    System.IO.Path.GetFileName(path),
+                    path);
+            };
             Host.ReplayBuffer.BufferError += (_, msg) =>
             {
                 ToastService.Show(Views.ToastKind.Warning, L.T("Buffer-Fehler", "Buffer error"), msg, durationSeconds: 6.0);
@@ -93,9 +101,11 @@ public partial class App : Application
                 TrayHost.UpdateState(TrayState.Recording, System.IO.Path.GetFileNameWithoutExtension(path));
                 ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gestartet", "Recording started"),
                     System.IO.Path.GetFileName(path), durationSeconds: 2.5);
+                ShowRecIndicator();
             };
             Host.ManualRecording.RecordingStopped += (_, result) =>
             {
+                HideRecIndicator();
                 // Revert the tray icon regardless of outcome.
                 TrayHost.UpdateState(Host.ReplayBuffer.IsRunning ? TrayState.BufferActive : TrayState.Idle,
                     Host.ReplayBuffer.IsRunning ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
@@ -164,12 +174,37 @@ public partial class App : Application
                 case HotkeyActions.ToggleCrosshair:
                     ToggleCrosshair();
                     break;
+                case HotkeyActions.SaveGif:
+                    await Host.ReplayBuffer.SaveGifAsync();
+                    break;
             }
         }
         catch (Exception ex)
         {
             Logger.Error($"Hotkey action {action} threw", ex);
         }
+    }
+
+    private Views.RecordingIndicatorWindow? _recIndicator;
+
+    private void ShowRecIndicator()
+    {
+        if (Host?.Settings.Current.Behavior.ShowRecordingIndicator != true) return;
+        Dispatcher.Invoke(() =>
+        {
+            try
+            {
+                _recIndicator ??= new Views.RecordingIndicatorWindow();
+                var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+                _recIndicator.StartOn(screen);
+            }
+            catch (Exception ex) { Logger.Warn("REC indicator show failed: " + ex.Message); }
+        });
+    }
+
+    private void HideRecIndicator()
+    {
+        Dispatcher.Invoke(() => { try { _recIndicator?.StopIndicator(); } catch { } });
     }
 
     private void ToggleOverlay() => _widgetHost?.ToggleBoard();

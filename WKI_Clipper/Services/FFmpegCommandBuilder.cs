@@ -35,7 +35,7 @@ public static class FFmpegCommandBuilder
     /// -video_size/-framerate/-i.
     /// </param>
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
-        int segmentDurationSec = 5, int segmentWrap = 12, string? audioPipeArgs = null,
+        int segmentDurationSec = 5, int segmentWrap = 12, IReadOnlyList<string>? audioPipeArgs = null,
         int monitorIndex = 0, string? videoInputArgs = null)
     {
         var sb = new StringBuilder();
@@ -59,23 +59,25 @@ public static class FFmpegCommandBuilder
               .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
         }
 
-        bool usePipe = !string.IsNullOrWhiteSpace(audioPipeArgs);
+        bool usePipe = audioPipeArgs != null && audioPipeArgs.Count > 0;
         int audioInputs = 0;
         var audioLabels = new List<string>();
 
         if (usePipe)
         {
-            // AudioPipeService already mixed Mic + System into one PCM stream.
-            // -itsoffset shifts audio timestamps to compensate WASAPI capture lag
-            // (typical: -150 ms so audio appears 150 ms earlier and lines up with
-            // the low-latency ddagrab video).
+            // One or more PCM pipes from AudioPipeService(s). A single pipe carries the
+            // mixed mic+system stream; two pipes carry system (track 1) and mic (track 2)
+            // separately. -itsoffset shifts audio timestamps to compensate WASAPI capture
+            // lag (typical: -150 ms so audio lines up with the low-latency video); the
+            // same offset applies to every audio input so the tracks stay aligned.
             double offsetSec = settings.Audio.OffsetMilliseconds / 1000.0;
-            if (Math.Abs(offsetSec) > 0.001)
+            foreach (var pipeArg in audioPipeArgs!)
             {
-                sb.Append("-itsoffset ").Append(offsetSec.ToString("0.000", CultureInfo.InvariantCulture)).Append(' ');
+                if (Math.Abs(offsetSec) > 0.001)
+                    sb.Append("-itsoffset ").Append(offsetSec.ToString("0.000", CultureInfo.InvariantCulture)).Append(' ');
+                sb.Append(pipeArg).Append(' ');
+                audioInputs++;
             }
-            sb.Append(audioPipeArgs).Append(' ');
-            audioInputs = 1;
         }
         else
         {
@@ -100,7 +102,9 @@ public static class FFmpegCommandBuilder
         // Audio mapping
         if (usePipe && audioInputs > 0)
         {
-            sb.Append("-map 0:v -map 1:a ");
+            // Video is input 0; each PCM pipe is its own output audio track.
+            sb.Append("-map 0:v ");
+            for (int i = 0; i < audioInputs; i++) sb.Append("-map ").Append(i + 1).Append(":a ");
         }
         else if (audioInputs > 1)
         {
@@ -206,8 +210,27 @@ public static class FFmpegCommandBuilder
         return sb.ToString();
     }
 
+    // -map 0 copies ALL streams (video + every audio track). Without it the concat
+    // demuxer keeps only one audio stream per output, which would silently drop the
+    // second track of a separate-mic-track recording. Harmless for single-track clips.
     public static string BuildConcat(string listFilePath, string outputPath)
-        => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -c copy -movflags +faststart \"{outputPath}\"";
+        => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -map 0 -c copy -movflags +faststart \"{outputPath}\"";
+
+    /// <summary>
+    /// Turns the LAST <paramref name="durationSec"/> seconds of a source video into a
+    /// looping GIF. A two-pass palette (palettegen → paletteuse in one filter graph)
+    /// keeps quality high at a sane size. -sseof seeks from the END of the source, so
+    /// only the final seconds are used; if the source is shorter it is used whole.
+    /// </summary>
+    public static string BuildGif(string sourcePath, string outputPath, int durationSec, int fps, int width)
+    {
+        durationSec = Math.Clamp(durationSec, 1, 30);
+        fps = Math.Clamp(fps, 5, 30);
+        string scale = width > 0 ? $"scale={width}:-1:flags=lanczos," : "";
+        string vf = $"fps={fps},{scale}split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3";
+        return $"-hide_banner -loglevel warning -sseof -{durationSec} -i \"{sourcePath}\" -t {durationSec} " +
+               $"-vf \"{vf}\" -loop 0 -y \"{outputPath}\"";
+    }
 
     // hwdownload,format=bgra is REQUIRED: ddagrab emits D3D11 GPU frames the PNG
     // encoder can't consume (ffmpeg exits with "Impossible to convert ... src: d3d11"),

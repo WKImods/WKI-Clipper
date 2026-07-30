@@ -57,6 +57,17 @@ internal static class User32
     public const int GWL_EXSTYLE = -20;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
+
+    // --- Display affinity: hide a window from ALL screen capture (WGC / ddagrab /
+    // desktop duplication). Used by the REC indicator so it is visible to the user
+    // but never appears in the recording. Requires Win10 2004 (runtime min 19041). ---
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+    public const uint WDA_NONE = 0x00000000;
+    public const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
     /// <summary>Click-through: mouse input passes to the window underneath (crosshair overlay while gaming).</summary>
     public const int WS_EX_TRANSPARENT = 0x00000020;
 

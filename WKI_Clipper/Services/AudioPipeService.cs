@@ -65,11 +65,17 @@ public sealed class AudioPipeService : IDisposable
     /// This is independent of the "System-Sound" checkbox, so game-only audio works
     /// even when desktop loopback is off.
     /// </param>
-    public AudioPipeService(AppSettings settings, SystemAudioMode sysMode, int? gamePid = null)
+    public AudioPipeService(AppSettings settings, SystemAudioMode sysMode, int? gamePid = null,
+        AudioSourceMask mask = AudioSourceMask.Both)
     {
-        _wantMic = settings.Audio.RecordMicrophone && !string.IsNullOrWhiteSpace(settings.Audio.MicDeviceId);
-        _sysMode = sysMode;
-        _wantSys = sysMode != SystemAudioMode.None;
+        // The mask restricts which sources this pipe opens — used to split mic and
+        // system onto their own pipes for the separate-mic-track feature. It ONLY
+        // gates source creation; the mixing/pacing writer loop is untouched.
+        bool allowMic = mask != AudioSourceMask.SystemOnly;
+        bool allowSys = mask != AudioSourceMask.MicOnly;
+        _wantMic = allowMic && settings.Audio.RecordMicrophone && !string.IsNullOrWhiteSpace(settings.Audio.MicDeviceId);
+        _sysMode = allowSys ? sysMode : SystemAudioMode.None;
+        _wantSys = _sysMode != SystemAudioMode.None;
         _micDeviceName = settings.Audio.MicDeviceId;
         _sysDeviceName = settings.Audio.SystemDeviceId;
         _micVolume = (float)Math.Clamp(settings.Audio.MicVolume, 0.0, 8.0);

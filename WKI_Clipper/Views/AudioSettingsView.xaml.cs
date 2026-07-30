@@ -58,6 +58,7 @@ public partial class AudioSettingsView : UserControl
 
         RowsContainer.Children.Add(BuildMicCard(host));
         RowsContainer.Children.Add(BuildSysCard(host));
+        RowsContainer.Children.Add(BuildSeparateTrackCard(host));
         RowsContainer.Children.Add(BuildSyncCard(host));
         RowsContainer.Children.Add(BuildGameAudioCard(host));
 
@@ -268,6 +269,42 @@ public partial class AudioSettingsView : UserControl
     private sealed record ProcessListEntry(string DisplayName, string? ProcessName, bool IsAutoDetect)
     {
         public override string ToString() => DisplayName;
+    }
+
+    private FrameworkElement BuildSeparateTrackCard(AppHost host)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = L.T("Separate Mikrofonspur", "Separate microphone track"),
+            FontWeight = System.Windows.FontWeights.SemiBold, FontSize = 14,
+            Foreground = (System.Windows.Media.Brush)FindResource("TextBrush")
+        });
+        var box = new System.Windows.Controls.CheckBox
+        {
+            Content = L.T("Mikrofon auf eigener Tonspur (statt gemischt)",
+                          "Microphone on its own audio track (instead of mixed)"),
+            IsChecked = host.Settings.Current.Audio.SeparateMicTrack,
+            Foreground = (System.Windows.Media.Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        void Apply(bool on)
+        {
+            host.Settings.Current.Audio.SeparateMicTrack = on;
+            host.Settings.Save();
+            host.ReplayBuffer.RequestRestart();   // running buffer picks it up
+        }
+        box.Checked += (_, _) => Apply(true);
+        box.Unchecked += (_, _) => Apply(false);
+        stack.Children.Add(box);
+        stack.Children.Add(new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+            Text = L.T("Spur 1 = Spiel/System, Spur 2 = Mikro — ideal zum getrennten Schneiden. Greift nur, wenn Mikro UND System aktiv sind.",
+                       "Track 1 = game/system, track 2 = mic — ideal for editing them separately. Only applies when both mic AND system are on.")
+        });
+        return Card(stack);
     }
 
     private FrameworkElement BuildSyncCard(AppHost host)

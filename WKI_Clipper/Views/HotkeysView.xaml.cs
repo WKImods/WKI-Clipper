@@ -20,6 +20,7 @@ public partial class HotkeysView : UserControl
         (HotkeyActions.ToggleOverlay,   L.T("Overlay öffnen/schließen", "Open/close overlay")),
         (HotkeyActions.ToggleBuffer,    L.T("Replay-Buffer pause/resume", "Replay buffer pause/resume")),
         (HotkeyActions.ToggleCrosshair, L.T("Crosshair ein-/ausblenden", "Show/hide crosshair")),
+        (HotkeyActions.SaveGif,         L.T("Sofort-GIF speichern", "Save instant GIF")),
     };
 
     public HotkeysView()

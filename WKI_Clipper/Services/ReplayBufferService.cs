@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -26,7 +27,7 @@ public sealed class ReplayBufferService : IDisposable
     private readonly SettingsService _settings;
     private FFmpegService? _ffmpeg;
     private FFmpegService? _concatFfmpeg;
-    private AudioPipeService? _audio;
+    private AudioTrackSet? _audio;
     private WgcWindowCapture? _wgc;
     private VideoPipeService? _videoPipe;
     private CancellationTokenSource? _watchdogCts;
@@ -58,6 +59,7 @@ public sealed class ReplayBufferService : IDisposable
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
     public CaptureTargetResolver.CapturePlan? CurrentPlan { get; private set; }
     public event EventHandler<string>? ReplaySaved;          // final clip path
+    public event EventHandler<string>? GifSaved;             // final gif path
     public event EventHandler<string>? BufferError;
     public event EventHandler<string>? BufferInfo;           // non-error notices (save busy, restarting)
     public event EventHandler<bool>? BufferStateChanged;     // true=running
@@ -127,14 +129,14 @@ public sealed class ReplayBufferService : IDisposable
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
         // If audio init fails, fall back to video-only.
-        _audio = new AudioPipeService(_settings.Current, plan.SysMode, plan.AudioPid);
-        string? audioArgs = null;
+        _audio = new AudioTrackSet(_settings.Current, plan.SysMode, plan.AudioPid);
+        IReadOnlyList<string>? audioArgs = null;
         if (_audio.HasAnyAudio())
         {
             bool ok = _audio.Start();
             if (ok)
             {
-                audioArgs = _audio.FFmpegInputArgs;
+                audioArgs = _audio.PipeArgs;
             }
             else
             {
@@ -475,31 +477,14 @@ public sealed class ReplayBufferService : IDisposable
             int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
             int neededSegments = (int)Math.Ceiling((double)targetSec / segSec);
 
-            // Sorted oldest→newest by mtime. Drop the newest file (the segment
-            // ffmpeg is currently writing — it has no moov atom yet and would
-            // break the concat). Take the last N complete segments across
-            // generations. Guard by size so a just-created tiny file is skipped.
-            var segments = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
-                .Select(p => new FileInfo(p))
-                .Where(fi => fi.Length > 1024
-                             && fi.LastWriteTimeUtc >= _sessionStartUtc
-                             && IsCurrentIdentity(fi.Name))
-                .OrderBy(fi => fi.LastWriteTimeUtc)
-                .ToList();
-
-            // The last (newest) file is the one being written — exclude it.
-            if (segments.Count > 1)
-                segments.RemoveAt(segments.Count - 1);
-
-            if (segments.Count == 0)
+            var pick = CollectRecentSegments(neededSegments);
+            if (pick.Count == 0)
             {
                 BufferInfo?.Invoke(this,
                     L.T("Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.",
                         "Buffer just restarted — not enough material yet. Try again shortly."));
                 return null;
             }
-
-            var pick = segments.TakeLast(neededSegments).ToList();
 
             var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
             Directory.CreateDirectory(clipsDir);
@@ -550,6 +535,112 @@ public sealed class ReplayBufferService : IDisposable
         {
             Interlocked.Exchange(ref _saving, 0);
         }
+    }
+
+    /// <summary>
+    /// The most recent COMPLETE segments of the current identity, oldest→newest, capped
+    /// to <paramref name="neededSegments"/>. Excludes the segment ffmpeg is still writing
+    /// (no moov atom yet) and files from a previous session/monitor. Empty = not enough
+    /// material yet. Assumes the buffer is running and <see cref="_bufferDir"/> is set.
+    /// </summary>
+    private List<FileInfo> CollectRecentSegments(int neededSegments)
+    {
+        var segments = Directory.EnumerateFiles(_bufferDir!, "seg_*.mp4")
+            .Select(p => new FileInfo(p))
+            .Where(fi => fi.Length > 1024
+                         && fi.LastWriteTimeUtc >= _sessionStartUtc
+                         && IsCurrentIdentity(fi.Name))
+            .OrderBy(fi => fi.LastWriteTimeUtc)
+            .ToList();
+        // The newest file is the one being written — exclude it.
+        if (segments.Count > 1) segments.RemoveAt(segments.Count - 1);
+        return segments.TakeLast(Math.Max(1, neededSegments)).ToList();
+    }
+
+    /// <summary>
+    /// Save the last few seconds of the buffer as a looping GIF. Shares the save
+    /// reentrancy guard with <see cref="SaveLastAsync"/> (both drive one concat ffmpeg).
+    /// Two steps: stream-copy the covering segments into a temp mp4, then GIF its last
+    /// N seconds via a palette pass.
+    /// </summary>
+    public async Task<string?> SaveGifAsync()
+    {
+        if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
+        {
+            BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
+            return null;
+        }
+        string? tempMp4 = null;
+        string? listPath = null;
+        try
+        {
+            if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
+            {
+                BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht — gleich nochmal.", "Buffer isn't running right now — try again shortly."));
+                return null;
+            }
+
+            var g = _settings.Current.Gif;
+            int gifSec = Math.Clamp(g.DurationSeconds, 1, 30);
+            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+            int neededSegments = (int)Math.Ceiling((double)gifSec / segSec) + 1; // +1 so the trim has enough material
+
+            var pick = CollectRecentSegments(neededSegments);
+            if (pick.Count == 0)
+            {
+                BufferInfo?.Invoke(this, L.T("Noch nicht genug Material für ein GIF. Gleich nochmal.",
+                                             "Not enough material for a GIF yet. Try again shortly."));
+                return null;
+            }
+
+            var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
+            Directory.CreateDirectory(clipsDir);
+            var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
+
+            // 1) concat the covering segments into a temp mp4 (stream copy, instant).
+            tempMp4 = Path.Combine(_bufferDir, "_gif_src.mp4");
+            listPath = Path.Combine(_bufferDir, "_gif_list.txt");
+            await File.WriteAllLinesAsync(listPath,
+                pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")).ConfigureAwait(false);
+            if (!await RunConcatFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4), 30).ConfigureAwait(false)
+                || !File.Exists(tempMp4))
+            {
+                BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen (Concat).", "GIF creation failed (concat)."));
+                return null;
+            }
+
+            // 2) last gifSec seconds of the temp mp4 → gif.
+            if (!await RunConcatFfmpegAsync(FFmpegCommandBuilder.BuildGif(tempMp4, outputPath, gifSec, g.Framerate, g.Width), 60).ConfigureAwait(false)
+                || !File.Exists(outputPath))
+            {
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
+                return null;
+            }
+
+            GifSaved?.Invoke(this, outputPath);
+            return outputPath;
+        }
+        finally
+        {
+            try { if (listPath != null && File.Exists(listPath)) File.Delete(listPath); } catch { }
+            try { if (tempMp4 != null && File.Exists(tempMp4)) File.Delete(tempMp4); } catch { }
+            Interlocked.Exchange(ref _saving, 0);
+        }
+    }
+
+    /// <summary>Runs a one-shot ffmpeg (concat/gif) on the shared concat slot, timeout-bounded. True on exit 0.</summary>
+    private async Task<bool> RunConcatFfmpegAsync(string args, int timeoutSec)
+    {
+        _concatFfmpeg?.Dispose();
+        _concatFfmpeg = new FFmpegService();
+        if (!_concatFfmpeg.IsAvailable()) return false;
+        var tcs = new TaskCompletionSource<int>();
+        _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
+        _concatFfmpeg.Start(args);
+        var done = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(timeoutSec))).ConfigureAwait(false);
+        if (done != tcs.Task) { try { _concatFfmpeg?.Dispose(); } catch { } return false; }
+        return await tcs.Task.ConfigureAwait(false) == 0;
     }
 
     private void StartWatchdog()

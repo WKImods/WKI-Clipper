@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using WKI_Clipper.Models;
@@ -9,7 +10,7 @@ public sealed class ManualRecordingService : IDisposable
 {
     private readonly SettingsService _settings;
     private FFmpegService? _ffmpeg;
-    private AudioPipeService? _audio;
+    private AudioTrackSet? _audio;
     private WgcWindowCapture? _wgc;
     private VideoPipeService? _videoPipe;
 
@@ -45,14 +46,15 @@ public sealed class ManualRecordingService : IDisposable
         // Start the audio pipe FIRST so the named pipe exists before ffmpeg opens
         // it. If audio init fails, build the ffmpeg command WITHOUT the pipe input
         // so recording still works (silent video).
-        _audio = new AudioPipeService(_settings.Current, plan.SysMode, plan.AudioPid);
-        string? audioArgs = null;
+        _audio = new AudioTrackSet(_settings.Current, plan.SysMode, plan.AudioPid);
+        IReadOnlyList<string>? audioArgs = null;
         if (_audio.HasAnyAudio())
         {
             bool ok = _audio.Start();
             if (ok)
             {
-                audioArgs = _audio.FFmpegInputArgs;
+                audioArgs = _audio.PipeArgs;
+                if (_audio.Separate) Logger.Info("ManualRecording: separate mic track (2 audio streams)");
             }
             else
             {

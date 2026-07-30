@@ -164,6 +164,18 @@ public partial class AboutView : UserControl
         };
         actionsStack.Children.Add(bufBox);
 
+        var recIndBox = new System.Windows.Controls.CheckBox
+        {
+            Content = L.T("REC-Indikator während der Aufnahme zeigen (nicht im Video sichtbar)",
+                          "Show a REC indicator while recording (never appears in the video)"),
+            IsChecked = host.Settings.Current.Behavior.ShowRecordingIndicator,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        recIndBox.Checked += (_, _) => { host.Settings.Current.Behavior.ShowRecordingIndicator = true; host.Settings.Save(); };
+        recIndBox.Unchecked += (_, _) => { host.Settings.Current.Behavior.ShowRecordingIndicator = false; host.Settings.Save(); };
+        actionsStack.Children.Add(recIndBox);
+
         var btnRow = new WrapPanel();
         var openLogBtn = new System.Windows.Controls.Button
         {

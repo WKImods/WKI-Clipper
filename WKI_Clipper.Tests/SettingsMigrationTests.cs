@@ -55,7 +55,9 @@ public sealed class SettingsMigrationTests
         bool changed = SettingsService.MigrateIfNeeded(s);
 
         Assert.True(changed);
-        Assert.Equal(3, s.SchemaVersion);
+        // v2 now migrates all the way up (crosshair v3 + gif v4); the crosshair
+        // hotkey is still merged in on the way.
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
         Assert.True(s.Hotkeys.ContainsKey(HotkeyActions.ToggleCrosshair));
         Assert.Equal(0x43u, s.Hotkeys[HotkeyActions.ToggleCrosshair].Key);   // 'C'
         Assert.Equal(HotkeyModifier.Control | HotkeyModifier.Alt,

@@ -112,9 +112,12 @@ public partial class ClipsView : UserControl
             foreach (var f in new DirectoryInfo(clipsDir).EnumerateFiles())
             {
                 var ext = f.Extension.ToLowerInvariant();
-                if (ext != ".mp4" && ext != ".mkv" && ext != ".mov") continue;
-                var kind = f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase)
-                    ? MediaKind.Recording : MediaKind.Clip;
+                MediaKind kind;
+                if (ext == ".gif") kind = MediaKind.Gif;
+                else if (ext == ".mp4" || ext == ".mkv" || ext == ".mov")
+                    kind = f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase)
+                        ? MediaKind.Recording : MediaKind.Clip;
+                else continue;
                 items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, kind));
             }
         }
@@ -175,6 +178,7 @@ public partial class ClipsView : UserControl
                 MediaKind.Clip       => "AccentBrush",
                 MediaKind.Recording  => "DangerBrush",
                 MediaKind.Screenshot => "PanelHoverBrush",
+                MediaKind.Gif        => "AccentDimBrush",
                 _                    => "PanelBrush"
             }),
             VerticalAlignment = VerticalAlignment.Center,
@@ -182,7 +186,7 @@ public partial class ClipsView : UserControl
         };
         iconBg.Child = new TextBlock
         {
-            Text = it.Kind == MediaKind.Screenshot ? "PNG" : "MP4",
+            Text = it.Kind == MediaKind.Screenshot ? "PNG" : it.Kind == MediaKind.Gif ? "GIF" : "MP4",
             FontSize = 10,
             FontWeight = System.Windows.FontWeights.Bold,
             Foreground = (Brush)System.Windows.Media.Brushes.White,
@@ -217,6 +221,7 @@ public partial class ClipsView : UserControl
                 MediaKind.Clip       => "Clip",
                 MediaKind.Recording  => "Recording",
                 MediaKind.Screenshot => "Screenshot",
+                MediaKind.Gif        => "GIF",
                 _                    => ""
             },
             Style = (Style)FindResource("MutedStyle"),
@@ -329,6 +334,6 @@ public partial class ClipsView : UserControl
         return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 
-    private enum MediaKind { Clip, Recording, Screenshot }
+    private enum MediaKind { Clip, Recording, Screenshot, Gif }
     private sealed record MediaEntry(string FilePath, string FileName, DateTime CreatedAt, long SizeBytes, MediaKind Kind);
 }

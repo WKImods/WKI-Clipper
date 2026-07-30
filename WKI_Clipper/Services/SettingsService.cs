@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -138,6 +138,23 @@ public sealed class SettingsService
             s.SchemaVersion = 3;
             changed = true;
             Logger.Info("Settings migrated to schema v3: crosshair hotkey + widget ensured");
+        }
+
+        // v3 → v4: instant-GIF hotkey (F8). Merge any still-missing default bindings
+        // into an existing file so the new SaveGif hotkey reaches current users.
+        if (s.SchemaVersion < 4)
+        {
+            foreach (var kv in new AppSettings().Hotkeys)
+            {
+                if (!s.Hotkeys.ContainsKey(kv.Key))
+                {
+                    s.Hotkeys[kv.Key] = kv.Value;
+                    Logger.Info($"Migration v4: added missing default hotkey '{kv.Key}'");
+                }
+            }
+            s.SchemaVersion = 4;
+            changed = true;
+            Logger.Info("Settings migrated to schema v4: GIF hotkey ensured");
         }
 
         return changed;

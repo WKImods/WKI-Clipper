@@ -20,6 +20,7 @@ public sealed class AppSettings
     public BehaviorSettings Behavior { get; set; } = new();
     public WidgetSettings Widgets { get; set; } = new();
     public CrosshairSettings Crosshair { get; set; } = new();
+    public GifSettings Gif { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -28,7 +29,8 @@ public sealed class AppSettings
         [HotkeyActions.ToggleRecording] = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x78 }, // Ctrl+F9
         [HotkeyActions.ToggleOverlay]   = new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x47 }, // Ctrl+Alt+G (Ctrl+Shift+G kollidiert mit Discord)
         [HotkeyActions.ToggleBuffer]    = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x79 }, // Ctrl+F10
-        [HotkeyActions.ToggleCrosshair] = new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x43 }  // Ctrl+Alt+C
+        [HotkeyActions.ToggleCrosshair] = new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x43 }, // Ctrl+Alt+C
+        [HotkeyActions.SaveGif]         = new HotkeyBinding { Modifiers = 0,                                Key = 0x77 }  // F8
     };
 }
 
@@ -40,6 +42,7 @@ public static class HotkeyActions
     public const string ToggleOverlay = "ToggleOverlay";
     public const string ToggleBuffer = "ToggleBuffer";
     public const string ToggleCrosshair = "ToggleCrosshair";
+    public const string SaveGif = "SaveGif";
 }
 
 public sealed class AudioSettings
@@ -66,6 +69,13 @@ public sealed class AudioSettings
     /// Process name (without .exe) for GameOnly mode. null = auto-detect foreground window.
     /// </summary>
     public string? GameProcessName { get; set; }
+
+    /// <summary>
+    /// When true AND both mic and system audio are captured, the microphone is written
+    /// to its OWN second audio track (track 1 = system, track 2 = mic) instead of being
+    /// mixed in — so it can be edited separately. No effect if only one source is on.
+    /// </summary>
+    public bool SeparateMicTrack { get; set; } = false;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -126,6 +136,17 @@ public enum SystemAudioMode
     AllAudio,
     /// <summary>Process loopback of a specific PID tree.</summary>
     Process
+}
+
+/// <summary>Which sources an audio pipe may open — used to split mic and system onto separate tracks.</summary>
+public enum AudioSourceMask
+{
+    /// <summary>Mic + system, mixed into one stream (default single-track behaviour).</summary>
+    Both,
+    /// <summary>System audio only (track 1 of a separate-mic recording).</summary>
+    SystemOnly,
+    /// <summary>Microphone only (track 2 of a separate-mic recording).</summary>
+    MicOnly
 }
 
 public sealed class VideoSettings
@@ -217,6 +238,23 @@ public sealed class BehaviorSettings
     public bool MinimizeToTray { get; set; } = true;
     public bool ShowToastNotifications { get; set; } = true;
     public int OverlayAutoCloseSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Show a small "REC" indicator while a manual recording runs. The indicator
+    /// window is excluded from screen capture, so it never appears in the recording.
+    /// </summary>
+    public bool ShowRecordingIndicator { get; set; } = true;
+}
+
+/// <summary>Settings for the instant-GIF export (last N seconds of the buffer as a GIF).</summary>
+public sealed class GifSettings
+{
+    /// <summary>How many seconds from the end of the buffer to turn into a GIF.</summary>
+    public int DurationSeconds { get; set; } = 5;
+    /// <summary>GIF frame rate — kept low; GIFs balloon in size fast.</summary>
+    public int Framerate { get; set; } = 15;
+    /// <summary>GIF width in pixels (height keeps aspect). 0 = source width.</summary>
+    public int Width { get; set; } = 640;
 }
 
 public sealed class HotkeyBinding
