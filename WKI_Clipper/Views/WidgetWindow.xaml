@@ -93,9 +93,11 @@
                 <Border Background="#FF23232A" BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1" CornerRadius="6" Padding="12,8">
                     <StackPanel Orientation="Horizontal">
+                        <!-- ValueChanged is attached in code AFTER InitializeComponent:
+                             setting Minimum during XAML parse coerces Value and would
+                             fire the handler while OpacityValueText is still null. -->
                         <Slider x:Name="OpacitySlider" Width="130" Minimum="0.3" Maximum="1.0"
-                                VerticalAlignment="Center"
-                                ValueChanged="OnOpacitySliderChanged" />
+                                VerticalAlignment="Center" />
                         <TextBlock x:Name="OpacityValueText" MinWidth="38" Margin="10,0,0,0"
                                    VerticalAlignment="Center"
                                    Foreground="{StaticResource TextBrush}" />

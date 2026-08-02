@@ -47,6 +47,8 @@ public partial class WidgetWindow : Window
         WidgetContent = content;
         ContentHost.Child = content;
         OpacityButton.ToolTip = Services.L.T("Transparenz", "Transparency");
+        OpacitySlider.Value = _configuredOpacity;
+        OpacitySlider.ValueChanged += OnOpacitySliderChanged;
         UpdateOpacityLabel();
     }
 
@@ -84,7 +86,11 @@ public partial class WidgetWindow : Window
     }
 
     private void UpdateOpacityLabel()
-        => OpacityValueText.Text = $"{(int)Math.Round(_configuredOpacity * 100)} %";
+    {
+        // Defensive: never let a XAML-parse-order event kill the constructor again.
+        if (OpacityValueText != null)
+            OpacityValueText.Text = $"{(int)Math.Round(_configuredOpacity * 100)} %";
+    }
 
     // Hover = temporarily fully visible; leaving fades back to the chosen value.
     // Only active when the user actually dialed transparency in.
