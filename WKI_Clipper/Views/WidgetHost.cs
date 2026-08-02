@@ -129,7 +129,7 @@ public sealed class WidgetHost : IDisposable
 
     /// <summary>Order of widgets in the launcher; also the stagger order for default placement.</summary>
     private static readonly WidgetId[] Order =
-        { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair, WidgetId.Settings };
+        { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair, WidgetId.Streaming, WidgetId.Settings };
 
     private WidgetSettings Settings => _host.Settings.Current.Widgets;
 
@@ -140,6 +140,7 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Gallery     => L.T("Galerie", "Gallery"),
         WidgetId.Performance => L.T("Leistung", "Performance"),
         WidgetId.Crosshair   => L.T("Crosshair", "Crosshair"),
+        WidgetId.Streaming   => "Streaming",
         WidgetId.Settings    => L.T("Einstellungen", "Settings"),
         _                    => id.ToString()
     };
@@ -151,6 +152,7 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Gallery     => new ClipsView(),
         WidgetId.Performance => new PerformanceView(),
         WidgetId.Crosshair   => new CrosshairView(),
+        WidgetId.Streaming   => new StreamingView(),
         WidgetId.Settings    => new SettingsWidgetView(),
         _                    => new System.Windows.Controls.Control()
     };

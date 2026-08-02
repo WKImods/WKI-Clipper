@@ -44,27 +44,82 @@ public sealed class HotkeyService : IDisposable
         RegisterAll();
     }
 
+    /// <summary>Action prefix for stream-deck tile hotkeys: "StreamButton:{slot}".</summary>
+    public const string StreamButtonPrefix = "StreamButton:";
+
+    /// <summary>
+    /// Central collision check across BOTH hotkey worlds (clipper actions + stream-deck
+    /// tiles). Returns a human-readable owner of the conflicting binding, or null when
+    /// the combo is free. Exclusions let the caller skip the entry being edited.
+    /// </summary>
+    public static string? FindCollision(AppSettings settings, HotkeyBinding candidate,
+        string? excludeAction = null, int? excludeSlot = null)
+    {
+        if (candidate.Key == 0) return null;
+
+        foreach (var (action, b) in settings.Hotkeys)
+        {
+            if (action == excludeAction || b.Key == 0) continue;
+            if (b.Key == candidate.Key && b.Modifiers == candidate.Modifiers)
+                return L.T($"Clipper-Aktion \"{action}\"", $"clipper action \"{action}\"");
+        }
+        foreach (var btn in settings.Streaming.Buttons)
+        {
+            if (btn.Slot == excludeSlot || btn.Hotkey is not { Key: not 0 } hb) continue;
+            if (hb.Key == candidate.Key && hb.Modifiers == candidate.Modifiers)
+                return L.T($"Streaming-Button \"{btn.Label}\"", $"streaming button \"{btn.Label}\"");
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Turns an internal action id into something a user can recognize in a toast —
+    /// "StreamButton:2" becomes the tile's label.
+    /// </summary>
+    public static string DescribeAction(AppSettings settings, string action)
+    {
+        if (action.StartsWith(StreamButtonPrefix, StringComparison.Ordinal)
+            && int.TryParse(action.AsSpan(StreamButtonPrefix.Length), out int slot))
+        {
+            var btn = settings.Streaming.Buttons.Find(b => b.Slot == slot);
+            if (btn != null)
+                return L.T($"Streaming-Button \"{btn.Label}\"", $"streaming button \"{btn.Label}\"");
+        }
+        return action;
+    }
+
     public void RegisterAll()
     {
         UnregisterAll();
         if (_hwndSource is null) return;
 
         foreach (var (action, binding) in _settings.Current.Hotkeys)
+            RegisterOne(action, binding);
+
+        // Stream-deck tile hotkeys ride the same mechanism: collision detection
+        // (ERROR_HOTKEY_ALREADY_REGISTERED) and WM_HOTKEY routing come for free.
+        foreach (var btn in _settings.Current.Streaming.Buttons)
         {
-            if (binding.Key == 0) continue;
-            int id = _nextId++;
-            bool ok = User32.RegisterHotKey(_hwndSource.Handle, id, (uint)binding.Modifiers, binding.Key);
-            if (ok)
-            {
-                _idToAction[id] = action;
-                Logger.Info($"Hotkey registered: {action} = {DescribeBinding(binding)} (id 0x{id:X})");
-            }
-            else
-            {
-                int err = Marshal.GetLastWin32Error();
-                Logger.Error($"Hotkey FAILED: {action} = {DescribeBinding(binding)} | Win32 error {err} ({(err == 1409 ? "ERROR_HOTKEY_ALREADY_REGISTERED" : "see Win32 docs")})");
-                HotkeyRegistrationFailed?.Invoke(this, action);
-            }
+            if (btn.Hotkey is { Key: not 0 } hk)
+                RegisterOne(StreamButtonPrefix + btn.Slot, hk);
+        }
+    }
+
+    private void RegisterOne(string action, HotkeyBinding binding)
+    {
+        if (binding.Key == 0 || _hwndSource is null) return;
+        int id = _nextId++;
+        bool ok = User32.RegisterHotKey(_hwndSource.Handle, id, (uint)binding.Modifiers, binding.Key);
+        if (ok)
+        {
+            _idToAction[id] = action;
+            Logger.Info($"Hotkey registered: {action} = {DescribeBinding(binding)} (id 0x{id:X})");
+        }
+        else
+        {
+            int err = Marshal.GetLastWin32Error();
+            Logger.Error($"Hotkey FAILED: {action} = {DescribeBinding(binding)} | Win32 error {err} ({(err == 1409 ? "ERROR_HOTKEY_ALREADY_REGISTERED" : "see Win32 docs")})");
+            HotkeyRegistrationFailed?.Invoke(this, action);
         }
     }
 

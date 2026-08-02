@@ -22,7 +22,7 @@
     <AssemblyName>WKI_Clipper</AssemblyName>
     <RootNamespace>WKI_Clipper</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <Authors>Phillip / WKI</Authors>
     <Product>WKI Clipper</Product>
     <Description>Minimal clipping &amp; replay tool for Windows 11 / AMD</Description>
@@ -37,6 +37,8 @@
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="obs-websocket-dotnet" Version="5.0.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
 

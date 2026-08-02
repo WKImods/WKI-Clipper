@@ -21,6 +21,7 @@ public sealed class AppSettings
     public WidgetSettings Widgets { get; set; } = new();
     public CrosshairSettings Crosshair { get; set; } = new();
     public GifSettings Gif { get; set; } = new();
+    public StreamingSettings Streaming { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -246,6 +247,65 @@ public sealed class BehaviorSettings
     public bool ShowRecordingIndicator { get; set; } = true;
 }
 
+/// <summary>
+/// The "Streaming" widget: a software stream deck whose buttons drive OBS over
+/// obs-websocket v5. Fully self-built — no Elgato software or hardware involved.
+/// </summary>
+public sealed class StreamingSettings
+{
+    public ObsConnectionSettings Obs { get; set; } = new();
+    public int GridColumns { get; set; } = 4;
+    public int GridRows { get; set; } = 3;
+    public List<StreamButtonConfig> Buttons { get; set; } = new();
+}
+
+public sealed class ObsConnectionSettings
+{
+    public string Host { get; set; } = "127.0.0.1";
+    public int Port { get; set; } = 4455;
+    /// <summary>
+    /// DPAPI-protected (CurrentUser) base64 — never the plaintext password.
+    /// null/empty = no password (OBS with auth disabled).
+    /// </summary>
+    public string? PasswordProtected { get; set; }
+    public bool AutoConnect { get; set; } = true;
+}
+
+/// <summary>One tile of the stream-deck grid.</summary>
+public sealed class StreamButtonConfig
+{
+    /// <summary>Grid slot index (row-major). Also the identity for the hotkey routing.</summary>
+    public int Slot { get; set; }
+    public string Label { get; set; } = "";
+    /// <summary>Tile background as #RRGGBB.</summary>
+    public string Color { get; set; } = "#3A3A44";
+    public StreamAction Action { get; set; } = StreamAction.SetScene;
+    /// <summary>Scene name / input name, depending on the action.</summary>
+    public string? Param { get; set; }
+    /// <summary>Second parameter — the scene-item name for ToggleSceneItem.</summary>
+    public string? Param2 { get; set; }
+    /// <summary>Optional global hotkey. null / Key==0 = none.</summary>
+    public HotkeyBinding? Hotkey { get; set; }
+}
+
+/// <summary>What a stream-deck button does in OBS (obs-websocket v5 requests).</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum StreamAction
+{
+    SetScene,               // SetCurrentProgramScene {Param = scene}
+    ToggleStream,
+    StartStream,
+    StopStream,
+    ToggleRecord,
+    PauseResumeRecord,      // PauseRecord/ResumeRecord depending on state
+    SaveReplayBuffer,       // OBS's own replay buffer — NOT the clipper's F9 buffer
+    ToggleReplayBuffer,
+    ToggleInputMute,        // {Param = input name}
+    ToggleSceneItem,        // {Param = scene, Param2 = item name}
+    ToggleVirtualCam,
+    StudioModeTransition
+}
+
 /// <summary>Settings for the instant-GIF export (last N seconds of the buffer as a GIF).</summary>
 public sealed class GifSettings
 {
@@ -264,7 +324,7 @@ public sealed class HotkeyBinding
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair }
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming }
 
 /// <summary>
 /// The PNG crosshair overlay: which image from the library is active, where it sits
@@ -344,6 +404,7 @@ public sealed class WidgetSettings
         new WidgetState { Id = WidgetId.Performance, Visible = true,  Width = 320, Height = 300 },
         new WidgetState { Id = WidgetId.Settings,    Visible = false, Width = 480, Height = 540 },
         new WidgetState { Id = WidgetId.Crosshair,   Visible = false, Width = 400, Height = 560 },
+        new WidgetState { Id = WidgetId.Streaming,   Visible = false, Width = 460, Height = 520 },
     };
 
     /// <summary>Returns the stored state for an id, creating a default if missing.</summary>

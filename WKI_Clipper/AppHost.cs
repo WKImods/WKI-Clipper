@@ -21,6 +21,7 @@ public sealed class AppHost : IDisposable
     public FFmpegService FFmpeg { get; }
     public PerformanceMonitorService Performance { get; }
     public GalleryMetaService GalleryMeta { get; }
+    public ObsWebSocketService Obs { get; }
     public CrosshairLibraryService Crosshairs { get; }
 
     /// <summary>
@@ -55,6 +56,7 @@ public sealed class AppHost : IDisposable
         AudioDevices = new AudioDeviceService();
         Performance = new PerformanceMonitorService();
         GalleryMeta = new GalleryMetaService();
+        Obs = new ObsWebSocketService(Settings);
         Crosshairs = new CrosshairLibraryService();
 
         ResolveDefaultAudioDevices();
@@ -103,6 +105,11 @@ public sealed class AppHost : IDisposable
         // Event-based foreground tracking for the Auto mode (re-pins the buffer
         // when a game launches). Must be created here: Initialize runs on the
         // WPF UI thread, whose message pump delivers the WinEvent callbacks.
+        // OBS auto-connect: harmless while OBS is closed — the service just keeps
+        // retrying every 5 s until the user starts OBS.
+        if (Settings.Current.Streaming.Obs.AutoConnect)
+            Obs.Enable();
+
         Foreground = new ForegroundTracker(Settings);
         Foreground.RetargetRequested += name =>
         {
@@ -238,6 +245,7 @@ public sealed class AppHost : IDisposable
         GameWatcher?.Dispose();
         Performance.Dispose();
         Crosshairs.Dispose();
+        Obs.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

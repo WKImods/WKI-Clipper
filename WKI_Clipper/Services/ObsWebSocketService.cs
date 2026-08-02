@@ -1,0 +1,262 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using OBSWebsocketDotNet;
+using WKI_Clipper.Models;
+
+namespace WKI_Clipper.Services;
+
+/// <summary>Live OBS state mirrored from obs-websocket v5 events, for the button tiles.</summary>
+public sealed class ObsStatus
+{
+    public bool Connected;
+    public string? CurrentScene;
+    public bool Streaming;
+    public bool Recording;
+    public bool RecordPaused;
+    public bool ReplayBufferActive;
+    public bool VirtualCamActive;
+    /// <summary>
+    /// Input name → muted. Concurrent: written by obs-websocket worker threads,
+    /// read by the UI thread while painting tiles.
+    /// </summary>
+    public readonly ConcurrentDictionary<string, bool> InputMuted = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Connection + request/event layer between the Streaming widget and OBS's built-in
+/// WebSocket server (v5, obs-websocket-dotnet). Design points:
+///  - Auto-reconnect: OBS is usually started AFTER the clipper, may close or restart
+///    at any time. A 5 s timer retries while enabled; buttons arm only when connected.
+///  - Every request is guarded — a dead connection degrades to an ActionError toast,
+///    never an exception on the UI path.
+///  - Library events arrive on socket worker threads; consumers get a single
+///    StatusChanged and marshal to their dispatcher themselves.
+/// </summary>
+public sealed class ObsWebSocketService : IDisposable
+{
+    private readonly SettingsService _settings;
+    private readonly OBSWebsocket _obs = new();
+    private readonly System.Timers.Timer _reconnect = new(5000) { AutoReset = true };
+    private volatile bool _wantConnected;
+    private long _connectingSince; // ticks; 0 = not connecting
+
+    public ObsStatus Status { get; } = new();
+    public bool IsConnected => _obs.IsConnected;
+
+    /// <summary>Connection or any OBS state changed (worker thread!).</summary>
+    public event Action? StatusChanged;
+    /// <summary>A button action failed (worker thread!) — localized message for a toast.</summary>
+    public event Action<string>? ActionError;
+
+    public ObsWebSocketService(SettingsService settings)
+    {
+        _settings = settings;
+
+        _obs.Connected += (_, _) =>
+        {
+            Interlocked.Exchange(ref _connectingSince, 0);
+            Logger.Info("OBS connected.");
+            try { PullFullStatus(); }
+            catch (Exception ex) { Logger.Warn("OBS initial status pull failed: " + ex.Message); }
+            Status.Connected = true;
+            StatusChanged?.Invoke();
+        };
+        _obs.Disconnected += (_, e) =>
+        {
+            Interlocked.Exchange(ref _connectingSince, 0);
+            bool wasConnected = Status.Connected;
+            Status.Connected = false;
+            if (wasConnected) Logger.Info($"OBS disconnected: {e?.DisconnectReason ?? "unknown"}");
+            StatusChanged?.Invoke();
+        };
+
+        // --- live state events → mirror into Status ---
+        _obs.CurrentProgramSceneChanged += (_, e) => { Status.CurrentScene = e.SceneName; StatusChanged?.Invoke(); };
+        _obs.StreamStateChanged += (_, e) => { Status.Streaming = e.OutputState.IsActive; StatusChanged?.Invoke(); };
+        _obs.RecordStateChanged += (_, e) =>
+        {
+            Status.Recording = e.OutputState.IsActive;
+            if (!e.OutputState.IsActive) Status.RecordPaused = false;
+            StatusChanged?.Invoke();
+        };
+        _obs.ReplayBufferStateChanged += (_, e) => { Status.ReplayBufferActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
+        _obs.VirtualcamStateChanged += (_, e) => { Status.VirtualCamActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
+        _obs.InputMuteStateChanged += (_, e) => { Status.InputMuted[e.InputName] = e.InputMuted; StatusChanged?.Invoke(); };
+
+        _reconnect.Elapsed += (_, _) => TryConnectTick();
+    }
+
+    // ---- lifecycle ----
+
+    /// <summary>Enable the connection (starts the reconnect loop). Reads settings fresh each attempt.</summary>
+    public void Enable()
+    {
+        _wantConnected = true;
+        _reconnect.Start();
+        TryConnectTick();
+    }
+
+    /// <summary>Disable and drop the connection (user pressed "Trennen").</summary>
+    public void Disable()
+    {
+        _wantConnected = false;
+        _reconnect.Stop();
+        try { if (_obs.IsConnected) _obs.Disconnect(); } catch { }
+    }
+
+    private void TryConnectTick()
+    {
+        if (!_wantConnected || _obs.IsConnected) return;
+
+        // Don't stack connection attempts; a stuck one times out after 10 s.
+        long since = Interlocked.Read(ref _connectingSince);
+        if (since != 0 && (DateTime.UtcNow.Ticks - since) < TimeSpan.FromSeconds(10).Ticks) return;
+        Interlocked.Exchange(ref _connectingSince, DateTime.UtcNow.Ticks);
+
+        var o = _settings.Current.Streaming.Obs;
+        string url = $"ws://{o.Host}:{o.Port}";
+        string password = SecretProtector.Unprotect(o.PasswordProtected) ?? "";
+        try { _obs.ConnectAsync(url, password); }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref _connectingSince, 0);
+            Logger.Warn("OBS ConnectAsync threw: " + ex.Message);
+        }
+    }
+
+    /// <summary>Initial state after connecting — events only cover changes from here on.</summary>
+    private void PullFullStatus()
+    {
+        Status.CurrentScene = _obs.GetCurrentProgramScene();
+        var stream = _obs.GetStreamStatus();
+        Status.Streaming = stream.IsActive;
+        var rec = _obs.GetRecordStatus();
+        Status.Recording = rec.IsRecording;
+        Status.RecordPaused = rec.IsRecordingPaused;
+        try { Status.ReplayBufferActive = _obs.GetReplayBufferStatus(); } catch { Status.ReplayBufferActive = false; }
+        try { Status.VirtualCamActive = _obs.GetVirtualCamStatus().IsActive; } catch { Status.VirtualCamActive = false; }
+
+        Status.InputMuted.Clear();
+        foreach (var name in ListInputNames())
+        {
+            try { Status.InputMuted[name] = _obs.GetInputMute(name); }
+            catch { /* input without mute (e.g. non-audio) — skip */ }
+        }
+    }
+
+    // ---- catalog queries for the button config dialog (call off the UI thread) ----
+
+    public List<string> ListScenes()
+    {
+        try { return _obs.GetSceneList().Scenes.Select(s => s.Name).ToList(); }
+        catch (Exception ex) { Logger.Warn("GetSceneList failed: " + ex.Message); return new(); }
+    }
+
+    public List<string> ListInputNames()
+    {
+        try { return _obs.GetInputList().Select(i => i.InputName).ToList(); }
+        catch (Exception ex) { Logger.Warn("GetInputList failed: " + ex.Message); return new(); }
+    }
+
+    public List<string> ListSceneItems(string sceneName)
+    {
+        try { return _obs.GetSceneItemList(sceneName).Select(i => i.SourceName).ToList(); }
+        catch (Exception ex) { Logger.Warn("GetSceneItemList failed: " + ex.Message); return new(); }
+    }
+
+    // ---- button execution ----
+
+    /// <summary>Executes the button in slot <paramref name="slot"/> (hotkey path).</summary>
+    public Task ExecuteSlotAsync(int slot)
+    {
+        var btn = _settings.Current.Streaming.Buttons.FirstOrDefault(b => b.Slot == slot);
+        if (btn is null) return Task.CompletedTask;
+        return ExecuteAsync(btn);
+    }
+
+    /// <summary>
+    /// Runs the button's OBS request on a worker thread. Failures surface as
+    /// ActionError (→ toast), never as exceptions.
+    /// </summary>
+    public Task ExecuteAsync(StreamButtonConfig btn) => Task.Run(() =>
+    {
+        if (!_obs.IsConnected)
+        {
+            ActionError?.Invoke(L.T("OBS ist nicht verbunden.", "OBS is not connected."));
+            return;
+        }
+        try
+        {
+            switch (btn.Action)
+            {
+                case StreamAction.SetScene:
+                    Require(btn.Param, out var scene);
+                    _obs.SetCurrentProgramScene(scene);
+                    break;
+                case StreamAction.ToggleStream: _obs.ToggleStream(); break;
+                case StreamAction.StartStream: _obs.StartStream(); break;
+                case StreamAction.StopStream: _obs.StopStream(); break;
+                case StreamAction.ToggleRecord: _obs.ToggleRecord(); break;
+                case StreamAction.PauseResumeRecord:
+                {
+                    var rec = _obs.GetRecordStatus();
+                    if (!rec.IsRecording)
+                    {
+                        ActionError?.Invoke(L.T("OBS nimmt gerade nicht auf.", "OBS is not recording."));
+                        return;
+                    }
+                    if (rec.IsRecordingPaused) _obs.ResumeRecord(); else _obs.PauseRecord();
+                    Status.RecordPaused = !rec.IsRecordingPaused;
+                    StatusChanged?.Invoke();
+                    break;
+                }
+                case StreamAction.SaveReplayBuffer: _obs.SaveReplayBuffer(); break;
+                case StreamAction.ToggleReplayBuffer:
+                    if (_obs.GetReplayBufferStatus()) _obs.StopReplayBuffer(); else _obs.StartReplayBuffer();
+                    break;
+                case StreamAction.ToggleInputMute:
+                    Require(btn.Param, out var input);
+                    _obs.ToggleInputMute(input);
+                    break;
+                case StreamAction.ToggleSceneItem:
+                {
+                    Require(btn.Param, out var itemScene);
+                    Require(btn.Param2, out var itemName);
+                    int id = _obs.GetSceneItemId(itemScene, itemName, 0);
+                    bool enabled = _obs.GetSceneItemEnabled(itemScene, id);
+                    _obs.SetSceneItemEnabled(itemScene, id, !enabled);
+                    break;
+                }
+                case StreamAction.ToggleVirtualCam: _obs.ToggleVirtualCam(); break;
+                case StreamAction.StudioModeTransition: _obs.TriggerStudioModeTransition(); break;
+            }
+            Logger.Info($"OBS action ok: {btn.Action} ({btn.Param ?? "-"})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"OBS action failed: {btn.Action} — {ex.Message}");
+            ActionError?.Invoke(L.T($"OBS-Aktion fehlgeschlagen: {ex.Message}",
+                                    $"OBS action failed: {ex.Message}"));
+        }
+    });
+
+    private static void Require(string? value, out string result)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException(L.T("Button ist unvollständig konfiguriert (Parameter fehlt).",
+                                                    "Button is not fully configured (missing parameter)."));
+        result = value;
+    }
+
+    public void Dispose()
+    {
+        _wantConnected = false;
+        _reconnect.Stop();
+        _reconnect.Dispose();
+        try { if (_obs.IsConnected) _obs.Disconnect(); } catch { }
+    }
+}

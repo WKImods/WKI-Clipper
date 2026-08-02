@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -155,6 +155,17 @@ public sealed class SettingsService
             s.SchemaVersion = 4;
             changed = true;
             Logger.Info("Settings migrated to schema v4: GIF hotkey ensured");
+        }
+
+        // v4 → v5: Streaming widget (software stream deck for OBS). Ensure the
+        // section exists with an empty grid and the widget appears in the layout.
+        if (s.SchemaVersion < 5)
+        {
+            s.Streaming ??= new StreamingSettings();
+            s.Widgets.GetOrAdd(WidgetId.Streaming);
+            s.SchemaVersion = 5;
+            changed = true;
+            Logger.Info("Settings migrated to schema v5: streaming section + widget ensured");
         }
 
         return changed;

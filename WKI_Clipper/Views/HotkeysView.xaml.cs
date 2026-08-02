@@ -179,11 +179,21 @@ public partial class HotkeysView : UserControl
                 return;
             }
 
-            host.Settings.Current.Hotkeys[action] = new HotkeyBinding
+            // Symmetric collision guard: also refuses combos taken by stream-deck
+            // tiles — otherwise the clipper registers first and silently "steals"
+            // the tile's key while the tile still looks bound.
+            var candidate = new HotkeyBinding { Modifiers = modifiers, Key = (uint)vk };
+            var clash = HotkeyService.FindCollision(host.Settings.Current, candidate, excludeAction: action);
+            if (clash != null)
             {
-                Modifiers = modifiers,
-                Key = (uint)vk
-            };
+                btn.Content = L.T($"Belegt durch {clash}", $"Taken by {clash}");
+                btn.Background = defaultBg;
+                Cleanup();
+                e.Handled = true;
+                return;
+            }
+
+            host.Settings.Current.Hotkeys[action] = candidate;
             host.Settings.Save();
             host.Hotkeys.RegisterAll();
 

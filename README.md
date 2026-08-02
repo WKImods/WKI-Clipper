@@ -28,6 +28,7 @@ while you play, or close it. Layout, size, pin and visibility are remembered per
 | **Gallery** | Clips, recordings and screenshots with search and favorites |
 | **Performance** | Live CPU / GPU / RAM / VRAM usage (polled only while visible) |
 | **Crosshair** | PNG crosshair overlay — see below |
+| **Streaming** | Software stream deck for OBS — see below |
 | **Settings** | Video, hotkeys, paths and about |
 
 ## Crosshair overlay
@@ -43,6 +44,25 @@ folder, so the originals can move or disappear). Pick one, place it, and toggle 
 - **Image controls**: size, opacity, brightness, contrast, saturation and per-channel
   red/green/blue gain. Import white crosshairs for maximum tinting freedom — the gains are
   multiplicative, so a channel that is zero in the source cannot be recovered.
+
+## Streaming widget (software stream deck)
+
+A configurable button grid that drives OBS over its built-in WebSocket server (v5,
+OBS 28+) — no Elgato hardware or software, everything is built into the clipper.
+
+- **Actions**: switch scene, start/stop/toggle stream, toggle/pause OBS recording,
+  save/toggle the OBS replay buffer, mute inputs, toggle scene items, virtual camera,
+  studio-mode transition. OBS's replay buffer is deliberately labeled "OBS: …" —
+  it is a separate system from the clipper's own F9 replay.
+- **Per-tile config**: label, color, action with parameters (scenes/inputs are loaded
+  live from OBS; names can be typed while OBS is offline), and an optional **global
+  hotkey** (press-to-bind, with collision checks against every other binding).
+- **Live state on the tiles**: active scene highlighted, LIVE/REC/MUTE/BUFFER badges
+  from OBS events; the grid greys out while disconnected.
+- **Auto-reconnect**: OBS can start after the clipper (or restart mid-session) — the
+  connection re-establishes by itself.
+- Setup: OBS → Tools → WebSocket Server Settings (default port 4455). The password is
+  stored DPAPI-encrypted, never as plaintext.
 
 ## Capture modes
 
@@ -161,6 +181,7 @@ WKI_Clipper.exe (.NET 8 / WPF)
   +-- SettingsService         JSON config in %APPDATA% (versioned + migrated)
   +-- WidgetHost              owns the widget board, pinning and the crosshair overlay
   +-- CrosshairLibraryService PNG crosshair library (copies + JSON index)
+  +-- ObsWebSocketService     OBS control via obs-websocket v5 (auto-reconnect, live events)
   +-- PerformanceMonitorService  CPU/GPU/RAM/VRAM counters, 1 Hz, only while visible
 ```
 

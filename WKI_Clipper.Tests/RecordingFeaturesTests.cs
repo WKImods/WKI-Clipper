@@ -134,7 +134,8 @@ public sealed class RecordingFeaturesTests
         bool changed = SettingsService.MigrateIfNeeded(s);
 
         Assert.True(changed);
-        Assert.Equal(4, s.SchemaVersion);
+        // Migration runs to the latest schema; the GIF hotkey is merged on the way.
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
         Assert.True(s.Hotkeys.ContainsKey(HotkeyActions.SaveGif));
         Assert.Equal(0x77u, s.Hotkeys[HotkeyActions.SaveGif].Key);   // F8
     }

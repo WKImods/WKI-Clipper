@@ -59,9 +59,10 @@ public partial class App : Application
             Host.Hotkeys.HotkeyRegistrationFailed += (_, action) =>
             {
                 Logger.Error($"Hotkey registration failed for action: {action} (already taken by another app?)");
+                var actionName = HotkeyService.DescribeAction(Host.Settings.Current, action);
                 ToastService.Show(Views.ToastKind.Warning, L.T("Hotkey-Konflikt", "Hotkey conflict"),
-                    L.T("Aktion '" + action + "' ist bereits durch eine andere App belegt.",
-                        "Action '" + action + "' is already taken by another app."),
+                    L.T($"Hotkey für {actionName} konnte nicht registriert werden (schon belegt).",
+                        $"Could not register the hotkey for {actionName} (already taken)."),
                     durationSeconds: 6.0);
             };
 
@@ -154,6 +155,14 @@ public partial class App : Application
         Logger.Info($"Hotkey fired: {action}");
         try
         {
+            // Stream-deck tile hotkeys: "StreamButton:{slot}" → run the tile's OBS action.
+            if (action.StartsWith(HotkeyService.StreamButtonPrefix, StringComparison.Ordinal)
+                && int.TryParse(action.AsSpan(HotkeyService.StreamButtonPrefix.Length), out int slot))
+            {
+                await Host.Obs.ExecuteSlotAsync(slot);
+                return;
+            }
+
             switch (action)
             {
                 case HotkeyActions.SaveReplay:
