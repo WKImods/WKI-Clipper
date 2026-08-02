@@ -77,8 +77,12 @@
                            FontWeight="SemiBold" FontSize="12"
                            Foreground="{StaticResource TextBrush}" />
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,4,0">
-                    <Button x:Name="OpacityButton" Style="{StaticResource ChromeButton}"
-                            Content="◐" FontSize="13" Click="OnOpacityClick" />
+                    <!-- Always-visible opacity slider — anchored in the title bar so
+                         adjusting transparency is one drag, no popup to open first. -->
+                    <TextBlock Text="◐" FontSize="11" VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}" Margin="0,0,5,0" />
+                    <Slider x:Name="OpacitySlider" Width="72" Minimum="0.3" Maximum="1.0"
+                            VerticalAlignment="Center" Margin="0,0,8,0" />
                     <ToggleButton x:Name="PinButton" Style="{StaticResource PinToggle}"
                                   ToolTip="Pin"
                                   Checked="OnPinChanged" Unchecked="OnPinChanged" />
@@ -86,24 +90,6 @@
                             Content="✕" FontSize="13" Click="OnClose" />
                 </StackPanel>
             </Grid>
-
-            <!-- Opacity slider popup (anchored to the ◐ chrome button) -->
-            <Popup x:Name="OpacityPopup" StaysOpen="False" AllowsTransparency="True"
-                   Placement="Bottom" PlacementTarget="{Binding ElementName=OpacityButton}">
-                <Border Background="#FF23232A" BorderBrush="{StaticResource BorderBrush}"
-                        BorderThickness="1" CornerRadius="6" Padding="12,8">
-                    <StackPanel Orientation="Horizontal">
-                        <!-- ValueChanged is attached in code AFTER InitializeComponent:
-                             setting Minimum during XAML parse coerces Value and would
-                             fire the handler while OpacityValueText is still null. -->
-                        <Slider x:Name="OpacitySlider" Width="130" Minimum="0.3" Maximum="1.0"
-                                VerticalAlignment="Center" />
-                        <TextBlock x:Name="OpacityValueText" MinWidth="38" Margin="10,0,0,0"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextBrush}" />
-                    </StackPanel>
-                </Border>
-            </Popup>
 
             <!-- Content host -->
             <Border x:Name="ContentHost" Grid.Row="1" Padding="12" />

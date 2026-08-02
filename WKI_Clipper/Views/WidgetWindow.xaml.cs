@@ -46,10 +46,11 @@ public partial class WidgetWindow : Window
         TitleText.Text = title;
         WidgetContent = content;
         ContentHost.Child = content;
-        OpacityButton.ToolTip = Services.L.T("Transparenz", "Transparency");
+        // ValueChanged is attached AFTER InitializeComponent: setting Minimum during
+        // the XAML parse coerces the value and would fire into a half-built window.
         OpacitySlider.Value = _configuredOpacity;
         OpacitySlider.ValueChanged += OnOpacitySliderChanged;
-        UpdateOpacityLabel();
+        UpdateOpacityTooltip();
     }
 
     public bool IsPinned
@@ -68,28 +69,25 @@ public partial class WidgetWindow : Window
         OpacitySlider.ValueChanged -= OnOpacitySliderChanged;
         OpacitySlider.Value = _configuredOpacity;
         OpacitySlider.ValueChanged += OnOpacitySliderChanged;
-        UpdateOpacityLabel();
+        UpdateOpacityTooltip();
         if (!_hoverBoost) Opacity = _configuredOpacity;
     }
-
-    private void OnOpacityClick(object sender, RoutedEventArgs e)
-        => OpacityPopup.IsOpen = !OpacityPopup.IsOpen;
 
     private void OnOpacitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         _configuredOpacity = Math.Clamp(e.NewValue, 0.3, 1.0);
-        UpdateOpacityLabel();
-        // While the slider is being dragged the cursor is over the window, so the
-        // hover boost would mask the change — show the real value during adjustment.
+        UpdateOpacityTooltip();
+        // While dragging the cursor is over the window, so the hover boost would mask
+        // the change — show the real value during adjustment.
         Opacity = _configuredOpacity;
         OpacityChanged?.Invoke(this);
     }
 
-    private void UpdateOpacityLabel()
+    private void UpdateOpacityTooltip()
     {
-        // Defensive: never let a XAML-parse-order event kill the constructor again.
-        if (OpacityValueText != null)
-            OpacityValueText.Text = $"{(int)Math.Round(_configuredOpacity * 100)} %";
+        if (OpacitySlider != null)
+            OpacitySlider.ToolTip = Services.L.T("Transparenz: ", "Transparency: ")
+                                    + $"{(int)Math.Round(_configuredOpacity * 100)} %";
     }
 
     // Hover = temporarily fully visible; leaving fades back to the chosen value.
@@ -107,7 +105,6 @@ public partial class WidgetWindow : Window
         base.OnMouseLeave(e);
         if (!_hoverBoost) return;
         _hoverBoost = false;
-        if (OpacityPopup.IsOpen) OpacityPopup.IsOpen = false;
         AnimateOpacityTo(_configuredOpacity);
     }
 
