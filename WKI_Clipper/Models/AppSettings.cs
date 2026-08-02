@@ -385,6 +385,11 @@ public sealed class WidgetState
     public double Height { get; set; }
     /// <summary>Device name of the monitor the position is relative to. null = primary.</summary>
     public string? MonitorDeviceName { get; set; }
+    /// <summary>
+    /// Window opacity 0.3–1.0 (property initializer = default for settings files
+    /// written before this existed). Hovering temporarily restores full opacity.
+    /// </summary>
+    public double Opacity { get; set; } = 1.0;
 }
 
 public sealed class WidgetSettings

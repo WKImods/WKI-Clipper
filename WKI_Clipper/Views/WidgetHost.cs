@@ -25,6 +25,17 @@ public sealed class WidgetHost : IDisposable
     private WidgetLauncherWindow? _launcher;
     private bool _boardOpen;
     private bool _suppressToggle;
+    private System.Windows.Threading.DispatcherTimer? _opacitySaveTimer;
+
+    private System.Windows.Threading.DispatcherTimer CreateOpacitySaveTimer()
+    {
+        var t = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(400)
+        };
+        t.Tick += (_, _) => { t.Stop(); _host.Settings.Save(); };
+        return t;
+    }
 
     private CrosshairOverlayWindow? _crosshair;
 
@@ -244,6 +255,7 @@ public sealed class WidgetHost : IDisposable
         w.Height = st.Height > 0 ? st.Height : 400;
         PositionWindow(w, st, defaultScreen, index);
         w.IsPinned = st.Pinned;
+        w.SetConfiguredOpacity(st.Opacity);
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
         if (_boardOpen) BumpTopmost(w); // re-assert above the just-activated backdrop
@@ -291,6 +303,15 @@ public sealed class WidgetHost : IDisposable
         w.PinToggled += OnPinToggled;
         w.CloseRequested += OnWidgetClosed;
         w.GeometryChanged += ww => CaptureGeometry(id, ww);
+        w.OpacityChanged += ww =>
+        {
+            // Slider drags fire per pixel — update in memory immediately, write the
+            // settings file debounced.
+            Settings.GetOrAdd(id).Opacity = ww.ConfiguredOpacity;
+            _opacitySaveTimer ??= CreateOpacitySaveTimer();
+            _opacitySaveTimer.Stop();
+            _opacitySaveTimer.Start();
+        };
         _windows[id] = w;
         return w;
     }

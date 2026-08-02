@@ -28,9 +28,13 @@ public partial class WidgetWindow : Window
     public event Action<WidgetWindow>? CloseRequested;
     /// <summary>Raised after a drag/resize settles, so the host can persist geometry.</summary>
     public event Action<WidgetWindow>? GeometryChanged;
+    /// <summary>Raised when the user picks a new opacity, so the host can persist it.</summary>
+    public event Action<WidgetWindow>? OpacityChanged;
 
     private IntPtr _hwnd;
     private bool _boardOpen = true;
+    private double _configuredOpacity = 1.0;
+    private bool _hoverBoost;
 
     /// <summary>The hosted widget UserControl (lets the host talk to it directly).</summary>
     public FrameworkElement WidgetContent { get; }
@@ -42,12 +46,75 @@ public partial class WidgetWindow : Window
         TitleText.Text = title;
         WidgetContent = content;
         ContentHost.Child = content;
+        OpacityButton.ToolTip = Services.L.T("Transparenz", "Transparency");
+        UpdateOpacityLabel();
     }
 
     public bool IsPinned
     {
         get => PinButton.IsChecked == true;
         set => PinButton.IsChecked = value;
+    }
+
+    /// <summary>The persisted opacity choice (0.3–1.0), independent of the hover boost.</summary>
+    public double ConfiguredOpacity => _configuredOpacity;
+
+    /// <summary>Applies a stored opacity without raising OpacityChanged (host restore path).</summary>
+    public void SetConfiguredOpacity(double value)
+    {
+        _configuredOpacity = Math.Clamp(value, 0.3, 1.0);
+        OpacitySlider.ValueChanged -= OnOpacitySliderChanged;
+        OpacitySlider.Value = _configuredOpacity;
+        OpacitySlider.ValueChanged += OnOpacitySliderChanged;
+        UpdateOpacityLabel();
+        if (!_hoverBoost) Opacity = _configuredOpacity;
+    }
+
+    private void OnOpacityClick(object sender, RoutedEventArgs e)
+        => OpacityPopup.IsOpen = !OpacityPopup.IsOpen;
+
+    private void OnOpacitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _configuredOpacity = Math.Clamp(e.NewValue, 0.3, 1.0);
+        UpdateOpacityLabel();
+        // While the slider is being dragged the cursor is over the window, so the
+        // hover boost would mask the change — show the real value during adjustment.
+        Opacity = _configuredOpacity;
+        OpacityChanged?.Invoke(this);
+    }
+
+    private void UpdateOpacityLabel()
+        => OpacityValueText.Text = $"{(int)Math.Round(_configuredOpacity * 100)} %";
+
+    // Hover = temporarily fully visible; leaving fades back to the chosen value.
+    // Only active when the user actually dialed transparency in.
+    protected override void OnMouseEnter(System.Windows.Input.MouseEventArgs e)
+    {
+        base.OnMouseEnter(e);
+        if (_configuredOpacity >= 0.999) return;
+        _hoverBoost = true;
+        AnimateOpacityTo(1.0);
+    }
+
+    protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (!_hoverBoost) return;
+        _hoverBoost = false;
+        if (OpacityPopup.IsOpen) OpacityPopup.IsOpen = false;
+        AnimateOpacityTo(_configuredOpacity);
+    }
+
+    private void AnimateOpacityTo(double target)
+    {
+        var anim = new System.Windows.Media.Animation.DoubleAnimation
+        {
+            To = target,
+            Duration = TimeSpan.FromMilliseconds(150),
+            FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+        };
+        anim.Completed += (_, _) => Opacity = target;
+        BeginAnimation(OpacityProperty, anim);
     }
 
     protected override void OnSourceInitialized(EventArgs e)

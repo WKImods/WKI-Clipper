@@ -86,6 +86,21 @@ public sealed class SettingsMigrationTests
     }
 
     [Fact]
+    public void Widget_opacity_persists_and_defaults_to_opaque_for_old_files()
+    {
+        // Old settings.json without the Opacity property → property initializer wins.
+        var legacyJson = "{\"Id\":\"Capture\",\"Visible\":true,\"X\":10,\"Y\":10,\"Width\":300,\"Height\":300}";
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<WidgetState>(legacyJson)!;
+        Assert.Equal(1.0, legacy.Opacity);
+
+        // A chosen value survives the roundtrip.
+        var w = new WidgetState { Id = WidgetId.Performance, Opacity = 0.55 };
+        var back = System.Text.Json.JsonSerializer.Deserialize<WidgetState>(
+            System.Text.Json.JsonSerializer.Serialize(w))!;
+        Assert.Equal(0.55, back.Opacity);
+    }
+
+    [Fact]
     public void Default_widget_layout_has_the_builtins()
     {
         var layout = WidgetSettings.DefaultLayout();
