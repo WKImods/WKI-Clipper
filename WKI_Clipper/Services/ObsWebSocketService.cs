@@ -70,6 +70,7 @@ public sealed class ObsWebSocketService : IDisposable
     private long _connectingSince; // ticks; 0 = not connecting
     private StreamSample? _prevSample;
     private long _lastHealthWarnTicks;
+    private int _pollBusy;   // 0/1 — keeps requests from stacking if OBS stops answering
 
     public ObsStatus Status { get; } = new();
     public bool IsConnected => _obs.IsConnected;
@@ -160,6 +161,9 @@ public sealed class ObsWebSocketService : IDisposable
     private void PollStatsTick()
     {
         if (!_obs.IsConnected) return;
+        // The timer keeps firing every 2 s regardless of how long a request takes; without
+        // this guard a hung OBS would pile up thread-pool work every tick.
+        if (Interlocked.Exchange(ref _pollBusy, 1) == 1) return;
         try
         {
             var s = _obs.GetStreamStatus();
@@ -183,6 +187,10 @@ public sealed class ObsWebSocketService : IDisposable
         catch (Exception ex)
         {
             Logger.Warn("OBS GetStreamStatus failed: " + ex.Message);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _pollBusy, 0);
         }
     }
 
