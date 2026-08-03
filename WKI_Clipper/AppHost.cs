@@ -22,6 +22,8 @@ public sealed class AppHost : IDisposable
     public PerformanceMonitorService Performance { get; }
     public GalleryMetaService GalleryMeta { get; }
     public ObsWebSocketService Obs { get; }
+    public TwitchChatService Chat { get; }
+    public MusicPlayerService Music { get; }
     public CrosshairLibraryService Crosshairs { get; }
 
     /// <summary>
@@ -57,6 +59,8 @@ public sealed class AppHost : IDisposable
         Performance = new PerformanceMonitorService();
         GalleryMeta = new GalleryMetaService();
         Obs = new ObsWebSocketService(Settings);
+        Chat = new TwitchChatService(Settings);
+        Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
 
         ResolveDefaultAudioDevices();
@@ -109,6 +113,10 @@ public sealed class AppHost : IDisposable
         // retrying every 5 s until the user starts OBS.
         if (Settings.Current.Streaming.Obs.AutoConnect)
             Obs.Enable();
+
+        // Chat reads a public channel anonymously; reconnects itself if Twitch is down.
+        if (Settings.Current.Chat.AutoConnect)
+            Chat.Restart();
 
         Foreground = new ForegroundTracker(Settings);
         Foreground.RetargetRequested += name =>
@@ -246,6 +254,8 @@ public sealed class AppHost : IDisposable
         Performance.Dispose();
         Crosshairs.Dispose();
         Obs.Dispose();
+        Chat.Dispose();
+        Music.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

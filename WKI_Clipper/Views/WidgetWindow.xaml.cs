@@ -136,15 +136,25 @@ public partial class WidgetWindow : Window
         if (_hwnd != IntPtr.Zero) ApplyActivationStyle();
     }
 
+    /// <summary>
+    /// Click-through while pinned with the board closed (read-only overlays like chat):
+    /// clicks land on the game underneath instead of the widget.
+    /// </summary>
+    public bool ClickThroughWhenPinned { get; set; }
+
     private void ApplyActivationStyle()
     {
         // When the board is closed, the widget must not steal focus from the game.
         // When open, allow normal interaction (sliders, text boxes need focus).
         int ex = User32.GetWindowLong(_hwnd, User32.GWL_EXSTYLE);
         if (_boardOpen)
-            ex &= ~(User32.WS_EX_NOACTIVATE | User32.WS_EX_TOOLWINDOW);
+            ex &= ~(User32.WS_EX_NOACTIVATE | User32.WS_EX_TOOLWINDOW | User32.WS_EX_TRANSPARENT);
         else
+        {
             ex |= User32.WS_EX_NOACTIVATE | User32.WS_EX_TOOLWINDOW;
+            if (ClickThroughWhenPinned) ex |= User32.WS_EX_TRANSPARENT;
+            else ex &= ~User32.WS_EX_TRANSPARENT;
+        }
         User32.SetWindowLong(_hwnd, User32.GWL_EXSTYLE, ex);
     }
 

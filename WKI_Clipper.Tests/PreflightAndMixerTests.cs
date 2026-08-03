@@ -101,7 +101,7 @@ public sealed class PreflightAndMixerTests
         s.Widgets.Widgets.RemoveAll(w => w.Id is WidgetId.Mixer or WidgetId.Preflight);
 
         Assert.True(SettingsService.MigrateIfNeeded(s));
-        Assert.Equal(6, s.SchemaVersion);
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);   // migrates all the way up
         Assert.Contains(s.Widgets.Widgets, w => w.Id == WidgetId.Mixer);
         Assert.Contains(s.Widgets.Widgets, w => w.Id == WidgetId.Preflight);
         Assert.NotNull(s.Streaming.Preflight);

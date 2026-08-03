@@ -22,6 +22,8 @@ public sealed class AppSettings
     public CrosshairSettings Crosshair { get; set; } = new();
     public GifSettings Gif { get; set; } = new();
     public StreamingSettings Streaming { get; set; } = new();
+    public ChatSettings Chat { get; set; } = new();
+    public MusicSettings Music { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -260,6 +262,40 @@ public sealed class StreamingSettings
     public PreflightSettings Preflight { get; set; } = new();
 }
 
+/// <summary>Read-only Twitch chat overlay (anonymous IRC — no account or key needed).</summary>
+public sealed class ChatSettings
+{
+    /// <summary>Twitch channel to read, without the leading '#'.</summary>
+    public string Channel { get; set; } = "oskar_blitz";
+    public int MaxMessages { get; set; } = 200;
+    public double FontSize { get; set; } = 13;
+    /// <summary>Connect on app start (the service reconnects on its own if Twitch is down).</summary>
+    public bool AutoConnect { get; set; } = true;
+}
+
+/// <summary>
+/// Stream music player. The main output feeds the stream (usually a virtual cable);
+/// the optional monitor output lets the streamer hear the same track, with its own level.
+/// </summary>
+public sealed class MusicSettings
+{
+    public string Folder { get; set; } = @"D:\Desktop\Stream\Musik";
+    /// <summary>MMDevice id of the stream output (VB-Cable). null = system default.</summary>
+    public string? OutputDeviceId { get; set; }
+    /// <summary>Second output so you hear the music yourself.</summary>
+    public bool MonitorEnabled { get; set; }
+    public string? MonitorDeviceId { get; set; }
+    /// <summary>Level of what listeners hear (0…1).</summary>
+    public float Volume { get; set; } = 0.5f;
+    /// <summary>Level of what YOU hear — independent of the stream level.</summary>
+    public float MonitorVolume { get; set; } = 0.5f;
+    public bool Shuffle { get; set; } = true;
+    public bool Repeat { get; set; } = true;
+    /// <summary>Text file an OBS text source can read.</summary>
+    public string NowPlayingFile { get; set; } = @"%APPDATA%\WKI_Clipper\now_playing.txt";
+    public string NowPlayingTemplate { get; set; } = "{artist} - {title}";
+}
+
 /// <summary>Go-live checklist + the automated start sequence.</summary>
 public sealed class PreflightSettings
 {
@@ -340,7 +376,7 @@ public sealed class HotkeyBinding
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight }
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight, Chat, Music }
 
 /// <summary>
 /// The PNG crosshair overlay: which image from the library is active, where it sits
@@ -406,6 +442,11 @@ public sealed class WidgetState
     /// written before this existed). Hovering temporarily restores full opacity.
     /// </summary>
     public double Opacity { get; set; } = 1.0;
+    /// <summary>
+    /// When pinned and the board is closed, let mouse clicks pass straight through to
+    /// whatever is underneath (WS_EX_TRANSPARENT). For read-only overlays like chat.
+    /// </summary>
+    public bool ClickThrough { get; set; }
 }
 
 public sealed class WidgetSettings
@@ -428,6 +469,9 @@ public sealed class WidgetSettings
         new WidgetState { Id = WidgetId.Streaming,   Visible = false, Width = 460, Height = 520 },
         new WidgetState { Id = WidgetId.Mixer,       Visible = false, Width = 400, Height = 340 },
         new WidgetState { Id = WidgetId.Preflight,   Visible = false, Width = 420, Height = 460 },
+        // Chat defaults to click-through: pinned over a game it must never eat a shot.
+        new WidgetState { Id = WidgetId.Chat,        Visible = false, Width = 360, Height = 480, ClickThrough = true },
+        new WidgetState { Id = WidgetId.Music,       Visible = false, Width = 420, Height = 520 },
     };
 
     /// <summary>Returns the stored state for an id, creating a default if missing.</summary>

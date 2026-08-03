@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -177,6 +177,19 @@ public sealed class SettingsService
             s.SchemaVersion = 6;
             changed = true;
             Logger.Info("Settings migrated to schema v6: mixer + preflight widgets ensured");
+        }
+
+        // v6 → v7: Twitch chat + music player widgets.
+        if (s.SchemaVersion < 7)
+        {
+            s.Chat ??= new ChatSettings();
+            s.Music ??= new MusicSettings();
+            // Chat is click-through by default so a pinned overlay can't swallow clicks.
+            s.Widgets.GetOrAdd(WidgetId.Chat).ClickThrough = true;
+            s.Widgets.GetOrAdd(WidgetId.Music);
+            s.SchemaVersion = 7;
+            changed = true;
+            Logger.Info("Settings migrated to schema v7: chat + music widgets ensured");
         }
 
         return changed;

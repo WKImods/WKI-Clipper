@@ -31,6 +31,8 @@ while you play, or close it. Layout, size, pin and visibility are remembered per
 | **Streaming** | Software stream deck for OBS — see below |
 | **Mixer** | Fader, live dB readout and mute per OBS audio input, synced both ways |
 | **Go Live** | Traffic-light preflight checklist plus a one-click stream start sequence |
+| **Chat** | Read-only Twitch chat, click-through when pinned — see below |
+| **Music** | Stream music player with separate stream and monitor levels — see below |
 | **Settings** | Video, hotkeys, paths and about |
 
 Each widget's title bar carries a **transparency slider** next to the pin and close
@@ -91,6 +93,35 @@ microphone input name are configurable, with scene names pulled live from OBS.
 Because going live is public and hard to take back, the button always asks for
 confirmation first, and the countdown can be cancelled at any point — cancelling never
 stops a stream that is already running.
+
+## Chat widget
+
+Reads a public Twitch chat so it can be followed mid-match without alt-tabbing. The
+connection is **anonymous** (the classic `justinfan` IRC login over WebSocket) — no
+OAuth, no API key, no account, and nothing to configure beyond the channel name.
+
+- Display names in their Twitch colors (dark colors are lifted so they stay readable on
+  the dark overlay) with broadcaster/mod/VIP/sub badges
+- Auto-scrolls to the newest line, and stops doing so while you scroll up to read
+- **Click-through while pinned**: over a game the window passes every click to whatever
+  is underneath, so it can never swallow a shot. Fully interactive again as soon as the
+  widget board is open.
+- Reconnects on its own with a backoff (Twitch drops idle connections)
+
+## Music widget
+
+Plays a folder of tracks straight into the stream, so no second program is needed for
+music. Built on NAudio, which the clipper already uses.
+
+- Output goes to the **stream device** (typically a virtual audio cable that OBS picks
+  up), with an optional **monitor output** on a second device so you hear the music too.
+  Both sides have their **own independent volume**.
+- Both outputs are fed from one decoder (the monitor is tapped off the main pull), so
+  the two can never drift apart.
+- Shuffle, repeat, auto-advance, click-to-play track list, folder picker
+- **Now playing** is written to a text file for an OBS text source; the file is emptied
+  when playback stops. Artist/title come from the file name (`Artist - Title.mp3`),
+  which is exactly how NCS downloads are named — no tag library needed.
 
 ## Capture modes
 

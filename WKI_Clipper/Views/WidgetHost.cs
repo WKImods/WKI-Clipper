@@ -141,7 +141,8 @@ public sealed class WidgetHost : IDisposable
     /// <summary>Order of widgets in the launcher; also the stagger order for default placement.</summary>
     private static readonly WidgetId[] Order =
         { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair,
-          WidgetId.Streaming, WidgetId.Mixer, WidgetId.Preflight, WidgetId.Settings };
+          WidgetId.Streaming, WidgetId.Mixer, WidgetId.Preflight, WidgetId.Chat, WidgetId.Music,
+          WidgetId.Settings };
 
     private WidgetSettings Settings => _host.Settings.Current.Widgets;
 
@@ -155,6 +156,8 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Streaming   => "Streaming",
         WidgetId.Mixer       => L.T("Mixer", "Mixer"),
         WidgetId.Preflight   => L.T("Go Live", "Go Live"),
+        WidgetId.Chat        => "Chat",
+        WidgetId.Music       => L.T("Musik", "Music"),
         WidgetId.Settings    => L.T("Einstellungen", "Settings"),
         _                    => id.ToString()
     };
@@ -169,6 +172,8 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Streaming   => new StreamingView(),
         WidgetId.Mixer       => new MixerView(),
         WidgetId.Preflight   => new PreflightView(),
+        WidgetId.Chat        => new ChatView(),
+        WidgetId.Music       => new MusicView(),
         WidgetId.Settings    => new SettingsWidgetView(),
         _                    => new System.Windows.Controls.Control()
     };
@@ -260,6 +265,7 @@ public sealed class WidgetHost : IDisposable
         w.Height = st.Height > 0 ? st.Height : 400;
         PositionWindow(w, st, defaultScreen, index);
         w.IsPinned = st.Pinned;
+        w.ClickThroughWhenPinned = st.ClickThrough;
         w.SetConfiguredOpacity(st.Opacity);
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
