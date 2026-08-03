@@ -29,7 +29,13 @@ while you play, or close it. Layout, size, pin and visibility are remembered per
 | **Performance** | Live CPU / GPU / RAM / VRAM usage (polled only while visible) |
 | **Crosshair** | PNG crosshair overlay — see below |
 | **Streaming** | Software stream deck for OBS — see below |
+| **Mixer** | Fader, live dB readout and mute per OBS audio input, synced both ways |
+| **Go Live** | Traffic-light preflight checklist plus a one-click stream start sequence |
 | **Settings** | Video, hotkeys, paths and about |
+
+Each widget's title bar carries a **transparency slider** next to the pin and close
+buttons — dial a pinned widget down so it does not cover the game, and it fades back to
+fully opaque while the pointer is over it. The level is remembered per widget.
 
 ## Crosshair overlay
 
@@ -63,6 +69,28 @@ OBS 28+) — no Elgato hardware or software, everything is built into the clippe
   connection re-establishes by itself.
 - Setup: OBS → Tools → WebSocket Server Settings (default port 4455). The password is
   stored DPAPI-encrypted, never as plaintext.
+
+## Mixer widget
+
+A mini audio mixer for OBS, so levels can be changed without focusing OBS. One row per
+audio input with a fader, a live dB readout and a mute button. The inputs are read from
+OBS at runtime — nothing is hardcoded. Sync goes both ways: a fader moved in OBS moves
+here too. Fader drags are coalesced into one request instead of one per pixel, and
+incoming updates never yank the knob while you are dragging it.
+
+## Go Live widget (preflight)
+
+A traffic-light checklist for the moments before a stream: OBS connected · microphone
+not muted · OBS replay buffer · current scene · clipper replay buffer · free disk space.
+Red blocks going live, amber only warns.
+
+The **Go live** button then runs the whole start sequence: start scene → start stream →
+replay buffer on → visible countdown → target scene. Scenes, countdown length and the
+microphone input name are configurable, with scene names pulled live from OBS.
+
+Because going live is public and hard to take back, the button always asks for
+confirmation first, and the countdown can be cancelled at any point — cancelling never
+stops a stream that is already running.
 
 ## Capture modes
 
@@ -183,6 +211,7 @@ WKI_Clipper.exe (.NET 8 / WPF)
   +-- CrosshairLibraryService PNG crosshair library (copies + JSON index)
   +-- ObsWebSocketService     OBS control via obs-websocket v5 (auto-reconnect, live events)
   +-- PerformanceMonitorService  CPU/GPU/RAM/VRAM counters, 1 Hz, only while visible
+  +-- PreflightChecks         pure go-live checklist evaluation (unit-tested)
 ```
 
 Window capture runs through Windows.Graphics.Capture (occlusion-proof, survives covered windows); full-monitor capture uses `ddagrab` (Desktop Duplication API). Audio is captured in-process via NAudio (WASAPI), mixed, and fed to FFmpeg through a named pipe.
