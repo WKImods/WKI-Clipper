@@ -257,6 +257,22 @@ public sealed class StreamingSettings
     public int GridColumns { get; set; } = 4;
     public int GridRows { get; set; } = 3;
     public List<StreamButtonConfig> Buttons { get; set; } = new();
+    public PreflightSettings Preflight { get; set; } = new();
+}
+
+/// <summary>Go-live checklist + the automated start sequence.</summary>
+public sealed class PreflightSettings
+{
+    /// <summary>OBS audio input treated as "the microphone" in the checklist.</summary>
+    public string MicInputName { get; set; } = "Mikrofon";
+    /// <summary>Scene shown while the countdown runs (your "Starting Soon" screen).</summary>
+    public string StartScene { get; set; } = "Start";
+    /// <summary>Scene switched to after the countdown.</summary>
+    public string TargetScene { get; set; } = "Arma Reforger";
+    /// <summary>Seconds between going live and the switch to the target scene.</summary>
+    public int CountdownSeconds { get; set; } = 30;
+    /// <summary>Turn OBS's replay buffer on as part of the sequence.</summary>
+    public bool StartReplayBuffer { get; set; } = true;
 }
 
 public sealed class ObsConnectionSettings
@@ -324,7 +340,7 @@ public sealed class HotkeyBinding
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming }
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight }
 
 /// <summary>
 /// The PNG crosshair overlay: which image from the library is active, where it sits
@@ -410,6 +426,8 @@ public sealed class WidgetSettings
         new WidgetState { Id = WidgetId.Settings,    Visible = false, Width = 480, Height = 540 },
         new WidgetState { Id = WidgetId.Crosshair,   Visible = false, Width = 400, Height = 560 },
         new WidgetState { Id = WidgetId.Streaming,   Visible = false, Width = 460, Height = 520 },
+        new WidgetState { Id = WidgetId.Mixer,       Visible = false, Width = 400, Height = 340 },
+        new WidgetState { Id = WidgetId.Preflight,   Visible = false, Width = 420, Height = 460 },
     };
 
     /// <summary>Returns the stored state for an id, creating a default if missing.</summary>

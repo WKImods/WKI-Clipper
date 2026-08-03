@@ -22,7 +22,7 @@ public sealed class SettingsMigrationTests
         Assert.Equal(CaptureMode.Window, s.Capture.Mode);
         Assert.Equal("arma", s.Capture.TargetProcessName);
         Assert.True(s.Capture.CoupleAudio);
-        Assert.Equal(7, s.Widgets.Widgets.Count); // default widget layout ensured
+        Assert.Equal(9, s.Widgets.Widgets.Count); // default widget layout ensured
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class SettingsMigrationTests
         Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
         Assert.Equal(CaptureMode.Monitor, s.Capture.Mode);   // unchanged
         Assert.False(s.Capture.CoupleAudio);                 // unchanged
-        Assert.Equal(7, s.Widgets.Widgets.Count);            // default layout ensured
+        Assert.Equal(9, s.Widgets.Widgets.Count);            // default layout ensured
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class SettingsMigrationTests
     public void Default_widget_layout_has_the_builtins()
     {
         var layout = WidgetSettings.DefaultLayout();
-        Assert.Equal(7, layout.Count);
+        Assert.Equal(9, layout.Count);
         Assert.Contains(layout, w => w.Id == WidgetId.Crosshair);
         Assert.Contains(layout, w => w.Id == WidgetId.Capture);
         Assert.Contains(layout, w => w.Id == WidgetId.Audio);

@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -166,6 +166,17 @@ public sealed class SettingsService
             s.SchemaVersion = 5;
             changed = true;
             Logger.Info("Settings migrated to schema v5: streaming section + widget ensured");
+        }
+
+        // v5 → v6: OBS mixer + go-live preflight widgets.
+        if (s.SchemaVersion < 6)
+        {
+            s.Streaming.Preflight ??= new PreflightSettings();
+            s.Widgets.GetOrAdd(WidgetId.Mixer);
+            s.Widgets.GetOrAdd(WidgetId.Preflight);
+            s.SchemaVersion = 6;
+            changed = true;
+            Logger.Info("Settings migrated to schema v6: mixer + preflight widgets ensured");
         }
 
         return changed;

@@ -59,6 +59,26 @@ public sealed class ObsLiveIntegrationTests
         var inputs = svc.ListInputNames();
         Assert.NotEmpty(inputs);
 
+        // --- mixer: fader roundtrip on a real audio input (no stream is ever started) ---
+        var audioInputs = svc.ListAudioInputNames();
+        Assert.NotEmpty(audioInputs);
+        var mixTarget = audioInputs[0];
+        float originalVol = svc.Status.InputVolume[mixTarget];
+        float testVol = originalVol > 0.5f ? 0.25f : 0.75f;
+
+        var volEvent = new TaskCompletionSource();
+        svc.StatusChanged += () =>
+        {
+            if (svc.Status.InputVolume.TryGetValue(mixTarget, out float v) && Math.Abs(v - testVol) < 0.02f)
+                volEvent.TrySetResult();
+        };
+        await svc.SetInputVolumeMulAsync(mixTarget, testVol);
+        var volDone = await Task.WhenAny(volEvent.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.True(volDone == volEvent.Task, $"InputVolumeChanged for '{mixTarget}' did not arrive.");
+
+        await svc.SetInputVolumeMulAsync(mixTarget, originalVol);   // restore
+        await Task.Delay(400);
+
         // Restore the original scene — also event-based: the user's OBS uses a
         // stinger transition, so the scene change lands well after the request.
         var restored = new TaskCompletionSource();

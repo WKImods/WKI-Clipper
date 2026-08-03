@@ -24,6 +24,22 @@ public sealed class ObsStatus
     /// read by the UI thread while painting tiles.
     /// </summary>
     public readonly ConcurrentDictionary<string, bool> InputMuted = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Input name → linear volume multiplier (1.0 = 0 dB). Same threading as InputMuted.</summary>
+    public readonly ConcurrentDictionary<string, float> InputVolume = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Linear multiplier ↔ decibel helpers for the mixer faders (pure, unit-tested).</summary>
+public static class ObsVolume
+{
+    /// <summary>Multiplier → dB. 0 (or below) maps to negative infinity.</summary>
+    public static double MulToDb(double mul) => mul <= 0 ? double.NegativeInfinity : 20.0 * Math.Log10(mul);
+
+    /// <summary>Fader label: "-6.0 dB", or "-∞" at silence.</summary>
+    public static string FormatDb(double mul)
+    {
+        double db = MulToDb(mul);
+        return double.IsNegativeInfinity(db) ? "-∞" : $"{db:0.0} dB";
+    }
 }
 
 /// <summary>
@@ -86,6 +102,13 @@ public sealed class ObsWebSocketService : IDisposable
         _obs.ReplayBufferStateChanged += (_, e) => { Status.ReplayBufferActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
         _obs.VirtualcamStateChanged += (_, e) => { Status.VirtualCamActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
         _obs.InputMuteStateChanged += (_, e) => { Status.InputMuted[e.InputName] = e.InputMuted; StatusChanged?.Invoke(); };
+        _obs.InputVolumeChanged += (_, e) =>
+        {
+            // Mirror OBS-side fader moves so our slider follows when volume is
+            // changed in OBS itself (or by another stream-deck client).
+            Status.InputVolume[e.Volume.InputName] = (float)e.Volume.InputVolumeMul;
+            StatusChanged?.Invoke();
+        };
 
         _reconnect.Elapsed += (_, _) => TryConnectTick();
     }
@@ -141,12 +164,52 @@ public sealed class ObsWebSocketService : IDisposable
         try { Status.VirtualCamActive = _obs.GetVirtualCamStatus().IsActive; } catch { Status.VirtualCamActive = false; }
 
         Status.InputMuted.Clear();
+        Status.InputVolume.Clear();
         foreach (var name in ListInputNames())
         {
             try { Status.InputMuted[name] = _obs.GetInputMute(name); }
             catch { /* input without mute (e.g. non-audio) — skip */ }
+            try { Status.InputVolume[name] = (float)_obs.GetInputVolume(name).VolumeMul; }
+            catch { /* non-audio input has no volume — skip */ }
         }
     }
+
+    /// <summary>Audio inputs OBS reports (those that actually have a volume), sorted.</summary>
+    public List<string> ListAudioInputNames()
+        => Status.InputVolume.Keys.OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
+
+    /// <summary>Sets an input's linear volume. Fire-and-forget on a worker thread, guarded like ExecuteAsync.</summary>
+    public Task SetInputVolumeMulAsync(string inputName, float mul) => Task.Run(() =>
+    {
+        if (!_obs.IsConnected)
+        {
+            ActionError?.Invoke(L.T("OBS ist nicht verbunden.", "OBS is not connected."));
+            return;
+        }
+        try
+        {
+            _obs.SetInputVolume(inputName, Math.Clamp(mul, 0f, 1f), false);
+            Status.InputVolume[inputName] = mul;   // echo event confirms it shortly after
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"OBS SetInputVolume failed for '{inputName}': {ex.Message}");
+            ActionError?.Invoke(L.T($"Lautstärke konnte nicht gesetzt werden: {ex.Message}",
+                                    $"Could not set volume: {ex.Message}"));
+        }
+    });
+
+    /// <summary>Toggles an input's mute (mixer row button).</summary>
+    public Task ToggleInputMuteAsync(string inputName) => Task.Run(() =>
+    {
+        if (!_obs.IsConnected)
+        {
+            ActionError?.Invoke(L.T("OBS ist nicht verbunden.", "OBS is not connected."));
+            return;
+        }
+        try { _obs.ToggleInputMute(inputName); }
+        catch (Exception ex) { Logger.Warn($"OBS ToggleInputMute failed for '{inputName}': {ex.Message}"); }
+    });
 
     // ---- catalog queries for the button config dialog (call off the UI thread) ----
 

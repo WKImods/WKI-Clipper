@@ -18,7 +18,7 @@ public sealed class StreamingSettingsTests
         bool changed = SettingsService.MigrateIfNeeded(s);
 
         Assert.True(changed);
-        Assert.Equal(5, s.SchemaVersion);
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);  // migrates all the way up
         Assert.NotNull(s.Streaming);
         Assert.Empty(s.Streaming.Buttons);                    // default = empty grid
         Assert.Equal(4455, s.Streaming.Obs.Port);
