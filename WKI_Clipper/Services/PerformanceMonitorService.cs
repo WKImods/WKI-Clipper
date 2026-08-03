@@ -31,6 +31,18 @@ public sealed class PerformanceMonitorService : IDisposable
 
     private PerformanceCounter? _cpu;
 
+    // GPU engine counters MUST be kept alive between polls: "Utilization Percentage" is
+    // a rate counter, and the first NextValue() on a fresh instance always returns 0.
+    // Creating them per poll (as this did originally) therefore reported 0 % forever.
+    private readonly Dictionary<string, PerformanceCounter> _gpuCounters = new();
+    // Reading all ~250 engine instances costs ~190 ms — far too much every second for an
+    // overlay that must not cost FPS. So the full sweep runs rarely and only marks which
+    // engines are actually busy; the 1 Hz poll then reads just those few.
+    private readonly HashSet<string> _gpuActive = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _gpuInstancesRefreshed = DateTime.MinValue;
+    /// <summary>How often the expensive all-instance sweep runs (seconds).</summary>
+    private const int SweepIntervalSec = 5;
+
     public event Action<PerfSample>? Sampled;
     public PerfSample Last { get; private set; }
 
@@ -91,7 +103,7 @@ public sealed class PerformanceMonitorService : IDisposable
         try
         {
             double cpu = ReadCpu();
-            double gpu = ReadGpuUtilization();
+            double gpu = ReadGpu();
             (ulong ramUsed, ulong ramTotal) = ReadRam();
             ulong vram = ReadVram();
 
@@ -107,31 +119,99 @@ public sealed class PerformanceMonitorService : IDisposable
 
     private double ReadCpu()
     {
-        try { return _cpu?.NextValue() ?? 0; }
+        try
+        {
+            // "% Processor Utility" can exceed 100 % — it relates work done to the
+            // NOMINAL clock, so a turbo-boosted core reports e.g. 124 %. Clamp it.
+            return Math.Clamp(_cpu?.NextValue() ?? 0, 0, 100);
+        }
         catch { return 0; }
     }
 
-    /// <summary>Sum of all 3D GPU-engine instances — the Task-Manager approach.</summary>
-    private static double ReadGpuUtilization()
+    /// <summary>
+    /// Sum of all 3D GPU-engine instances (the Task-Manager approach). The instances are
+    /// per process, so the set changes as apps come and go — the list is refreshed
+    /// periodically while the counters themselves stay alive so their rates keep working.
+    /// </summary>
+    private double ReadGpu()
     {
         try
         {
-            if (!PerformanceCounterCategory.Exists("GPU Engine")) return 0;
-            var cat = new PerformanceCounterCategory("GPU Engine");
+            if (RefreshGpuCountersIfDue() is { } sweepTotal)
+                return sweepTotal;   // the sweep already read everything — use its result
+
             double total = 0;
-            foreach (var inst in cat.GetInstanceNames())
+            List<string>? dead = null;
+            foreach (var name in _gpuActive)
             {
-                if (!inst.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)) continue;
-                try
-                {
-                    using var c = new PerformanceCounter("GPU Engine", "Utilization Percentage", inst, readOnly: true);
-                    total += c.NextValue();
-                }
-                catch { /* instance vanished between enum and read */ }
+                if (!_gpuCounters.TryGetValue(name, out var counter)) continue;
+                try { total += counter.NextValue(); }
+                catch { (dead ??= new()).Add(name); }   // process ended mid-poll
             }
-            return Math.Min(total, 100);
+            if (dead != null)
+                foreach (var d in dead)
+                {
+                    try { _gpuCounters[d].Dispose(); } catch { }
+                    _gpuCounters.Remove(d);
+                    _gpuActive.Remove(d);
+                }
+
+            return Math.Clamp(total, 0, 100);
         }
         catch { return 0; }
+    }
+
+    /// <summary>
+    /// Full sweep over every 3D engine instance: keeps the counter cache in sync with the
+    /// running processes and re-picks the "active" set the cheap 1 Hz polls read. Returns
+    /// the total it measured (so the caller doesn't read everything twice), or null when
+    /// no sweep was due.
+    /// </summary>
+    private double? RefreshGpuCountersIfDue()
+    {
+        if ((DateTime.UtcNow - _gpuInstancesRefreshed).TotalSeconds < SweepIntervalSec) return null;
+        _gpuInstancesRefreshed = DateTime.UtcNow;
+
+        if (!PerformanceCounterCategory.Exists("GPU Engine")) return null;
+        var cat = new PerformanceCounterCategory("GPU Engine");
+        var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var inst in cat.GetInstanceNames())
+        {
+            if (!inst.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)) continue;
+            live.Add(inst);
+            if (_gpuCounters.ContainsKey(inst)) continue;
+            try
+            {
+                var c = new PerformanceCounter("GPU Engine", "Utilization Percentage", inst, readOnly: true);
+                c.NextValue();               // prime: the first read of a rate counter is always 0
+                _gpuCounters[inst] = c;
+            }
+            catch { /* instance vanished between enumeration and creation */ }
+        }
+
+        foreach (var gone in _gpuCounters.Keys.Where(k => !live.Contains(k)).ToList())
+        {
+            try { _gpuCounters[gone].Dispose(); } catch { }
+            _gpuCounters.Remove(gone);
+            _gpuActive.Remove(gone);
+        }
+
+        // Read everything once and remember who is actually doing work. A newly started
+        // game joins the active set at the next sweep, i.e. within a few seconds.
+        double total = 0;
+        _gpuActive.Clear();
+        foreach (var (name, counter) in _gpuCounters)
+        {
+            try
+            {
+                float v = counter.NextValue();
+                total += v;
+                if (v > 0.05f) _gpuActive.Add(name);
+            }
+            catch { /* dropped on the next sweep */ }
+        }
+        return Math.Clamp(total, 0, 100);
     }
 
     private static (ulong used, ulong total) ReadRam()
@@ -173,5 +253,7 @@ public sealed class PerformanceMonitorService : IDisposable
         _timer.Stop();
         _timer.Dispose();
         try { _cpu?.Dispose(); } catch { }
+        foreach (var c in _gpuCounters.Values) { try { c.Dispose(); } catch { } }
+        _gpuCounters.Clear();
     }
 }
