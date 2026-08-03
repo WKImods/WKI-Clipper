@@ -86,13 +86,23 @@ A traffic-light checklist for the moments before a stream: OBS connected · micr
 not muted · OBS replay buffer · current scene · clipper replay buffer · free disk space.
 Red blocks going live, amber only warns.
 
+Free space is checked on **both** volumes that can lose footage — the clipper's clips
+folder and OBS's own recording folder, which usually live on different drives. A second
+row appears only when they really are different.
+
+While live, the widget also shows **stream health**: uptime, current bitrate and the
+share of frames dropped *right now*. The recent share matters more than the cumulative
+one OBS displays, because a connection that starts breaking up two hours in barely moves
+the total. Sustained drops raise a popup even when the widget is closed.
+
 The **Go live** button then runs the whole start sequence: start scene → start stream →
 replay buffer on → visible countdown → target scene. Scenes, countdown length and the
 microphone input name are configurable, with scene names pulled live from OBS.
 
 Because going live is public and hard to take back, the button always asks for
 confirmation first, and the countdown can be cancelled at any point — cancelling never
-stops a stream that is already running.
+stops a stream that is already running. **End stream** is the deliberate counterpart: it
+appears only while live and confirms before it ends the broadcast.
 
 ## Chat widget
 
@@ -102,11 +112,19 @@ OAuth, no API key, no account, and nothing to configure beyond the channel name.
 
 - Display names in their Twitch colors (dark colors are lifted so they stay readable on
   the dark overlay) with broadcaster/mod/VIP/sub badges
+- **Raids, subs, gifted subs and announcements** appear as highlighted blocks instead of
+  being dropped, and cheered bits are marked on the message that carried them
+- An optional popup for raids and gift bombs — the two events worth interrupting a match
+  for — which also fires while the chat window is closed
 - Auto-scrolls to the newest line, and stops doing so while you scroll up to read
 - **Click-through while pinned**: over a game the window passes every click to whatever
   is underneath, so it can never swallow a shot. Fully interactive again as soon as the
   widget board is open.
 - Reconnects on its own with a backoff (Twitch drops idle connections)
+- **The status dot reports what arrives, not just that a socket exists.** A WebSocket can
+  sit open and silent for hours; the connection is pinged every minute and the dot turns
+  amber once nothing has been received for a while, so a frozen chat is visible instead
+  of looking healthy.
 
 ## Music widget
 
@@ -243,6 +261,7 @@ WKI_Clipper.exe (.NET 8 / WPF)
   +-- ObsWebSocketService     OBS control via obs-websocket v5 (auto-reconnect, live events)
   +-- PerformanceMonitorService  CPU/GPU/RAM/VRAM counters, 1 Hz, only while visible
   +-- PreflightChecks         pure go-live checklist evaluation (unit-tested)
+  +-- StreamHealth            pure output-stats math: uptime, bitrate, recent drops
 ```
 
 Window capture runs through Windows.Graphics.Capture (occlusion-proof, survives covered windows); full-monitor capture uses `ddagrab` (Desktop Duplication API). Audio is captured in-process via NAudio (WASAPI), mixed, and fed to FFmpeg through a named pipe.

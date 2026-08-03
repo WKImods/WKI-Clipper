@@ -44,6 +44,7 @@ public partial class PreflightView : UserControl
 
         GoLiveBtn.Content = L.T("🔴  Live gehen", "🔴  Go live");
         CancelBtn.Content = L.T("Abbrechen", "Cancel");
+        EndBtn.Content = L.T("⏹  Stream beenden", "⏹  End stream");
         ConfigExpander.Header = L.T("Ablauf einstellen", "Configure sequence");
         if (ConfigPanel.Children.Count == 0) BuildConfig(host);
 
@@ -74,12 +75,16 @@ public partial class PreflightView : UserControl
         ChecksPanel.Children.Clear();
         foreach (var c in checks) ChecksPanel.Children.Add(BuildCheckRow(c));
 
+        bool live = host.Obs.Status.Streaming;
         bool blocked = !PreflightChecks.CanGoLive(checks);
         bool running = _sequenceCts != null;
-        GoLiveBtn.IsEnabled = !blocked && !running && host.Obs.IsConnected;
-        GoLiveBtn.ToolTip = blocked
-            ? L.T("Mindestens eine Prüfung ist rot.", "At least one check is red.")
-            : null;
+        GoLiveBtn.IsEnabled = !blocked && !running && !live && host.Obs.IsConnected;
+        GoLiveBtn.ToolTip = live
+            ? L.T("Du bist bereits live.", "You are already live.")
+            : blocked ? L.T("Mindestens eine Prüfung ist rot.", "At least one check is red.") : null;
+
+        // The counterpart to Go Live — only offered while there is something to end.
+        EndBtn.Visibility = live && !running ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static PreflightInput BuildInput(AppHost host)
@@ -88,18 +93,18 @@ public partial class PreflightView : UserControl
         string mic = Cfg.MicInputName;
         bool micKnown = st.InputMuted.ContainsKey(mic);
 
-        double freeGb = 0;
-        try
+        // Two drives matter: the clipper's clips folder and OBS's recording folder.
+        // They are usually different, and only one of them being full still loses footage.
+        double freeGb = FreeGb(SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder),
+                               out string? clipperRoot);
+        double obsGb = 0;
+        bool obsSeparate = false;
+        if (!string.IsNullOrWhiteSpace(st.RecordDirectory))
         {
-            var dir = SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder);
-            var root = Path.GetPathRoot(dir);
-            if (!string.IsNullOrEmpty(root))
-            {
-                var d = new DriveInfo(root);
-                if (d.IsReady) freeGb = d.AvailableFreeSpace / (1024.0 * 1024 * 1024);
-            }
+            obsGb = FreeGb(st.RecordDirectory!, out string? obsRoot);
+            obsSeparate = !string.IsNullOrEmpty(obsRoot)
+                          && !string.Equals(obsRoot, clipperRoot, StringComparison.OrdinalIgnoreCase);
         }
-        catch { /* unknown → reported as "—" */ }
 
         return new PreflightInput(
             ObsConnected: host.Obs.IsConnected,
@@ -110,7 +115,24 @@ public partial class PreflightView : UserControl
             MicMuted: micKnown && st.InputMuted[mic],
             MicInputName: mic,
             ClipperBufferRunning: host.ReplayBuffer.IsRunning,
-            FreeDiskGb: freeGb);
+            FreeDiskGb: freeGb,
+            ObsFreeDiskGb: obsGb,
+            ObsDiskSeparate: obsSeparate,
+            Health: st.Health);
+    }
+
+    /// <summary>Free gigabytes on the volume holding <paramref name="dir"/>; 0 when unknown.</summary>
+    private static double FreeGb(string dir, out string? root)
+    {
+        root = null;
+        try
+        {
+            root = Path.GetPathRoot(dir);
+            if (string.IsNullOrEmpty(root)) return 0;
+            var d = new DriveInfo(root);
+            return d.IsReady ? d.AvailableFreeSpace / (1024.0 * 1024 * 1024) : 0;
+        }
+        catch { return 0; }   // unreachable network path etc. → reported as "—"
     }
 
     private FrameworkElement BuildCheckRow(CheckResult c)
@@ -280,4 +302,26 @@ public partial class PreflightView : UserControl
     }
 
     private void OnCancelSequence(object sender, RoutedEventArgs e) => _sequenceCts?.Cancel();
+
+    /// <summary>Counterpart to Go Live. Ends a public broadcast, so it confirms first.</summary>
+    private async void OnEndStream(object sender, RoutedEventArgs e)
+    {
+        var host = App.Host;
+        if (host is null || !host.Obs.Status.Streaming) return;
+
+        bool alsoBuffer = Cfg.StartReplayBuffer && host.Obs.Status.ReplayBufferActive;
+        var msg = L.T("Stream jetzt beenden?" + (alsoBuffer ? "\n\nDer OBS-Replay-Buffer wird mit gestoppt." : ""),
+                      "End the stream now?" + (alsoBuffer ? "\n\nThe OBS replay buffer will be stopped as well." : ""));
+        if (MessageBox.Show(msg, L.T("Stream beenden", "End stream"),
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+
+        await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.StopStream });
+        if (alsoBuffer)
+            await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.ToggleReplayBuffer });
+
+        CountdownText.Visibility = Visibility.Visible;
+        CountdownText.Text = L.T("Stream beendet.", "Stream ended.");
+        Refresh();
+    }
 }

@@ -271,6 +271,12 @@ public sealed class ChatSettings
     public double FontSize { get; set; } = 13;
     /// <summary>Connect on app start (the service reconnects on its own if Twitch is down).</summary>
     public bool AutoConnect { get; set; } = true;
+    /// <summary>
+    /// Toast on raids and gifted subs, so they are not missed while the chat widget is
+    /// closed. Deliberately limited to those two — a toast per regular sub or message
+    /// would cover the game.
+    /// </summary>
+    public bool EventToasts { get; set; } = true;
 }
 
 /// <summary>

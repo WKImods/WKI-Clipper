@@ -21,7 +21,14 @@ public readonly record struct PreflightInput(
     bool MicMuted,
     string MicInputName,
     bool ClipperBufferRunning,
-    double FreeDiskGb);
+    double FreeDiskGb,
+    // Optional so older call sites (and the pre-health tests) stay valid.
+    /// <summary>Free space where OBS writes its recordings; ≤ 0 = unknown.</summary>
+    double ObsFreeDiskGb = 0,
+    /// <summary>True when OBS records to a different volume than the clipper — then both are shown.</summary>
+    bool ObsDiskSeparate = false,
+    /// <summary>Live output health, null when not streaming or not yet measured.</summary>
+    StreamHealthReading? Health = null);
 
 /// <summary>
 /// Turns the current OBS + clipper state into a traffic-light checklist. Pure so every
@@ -80,17 +87,45 @@ public static class PreflightChecks
                 ? L.T("Läuft — F9 speichert.", "Running — F9 saves.")
                 : L.T("Aus — Strg+F10 schaltet ihn ein.", "Off — Ctrl+F10 turns it on.")));
 
-        list.Add(new CheckResult(L.T("Freier Speicher", "Free disk space"),
-            s.FreeDiskGb <= 0 ? CheckState.Unknown : s.FreeDiskGb < LowDiskGb ? CheckState.Warn : CheckState.Ok,
-            s.FreeDiskGb <= 0 ? "—" : $"{s.FreeDiskGb:0.0} GB"));
+        // OBS usually records to a different drive than the clipper, so checking only
+        // the clipper's folder can report plenty of space while OBS's drive is full.
+        list.Add(new CheckResult(
+            s.ObsDiskSeparate ? L.T("Freier Speicher (Clipper)", "Free disk space (clipper)")
+                              : L.T("Freier Speicher", "Free disk space"),
+            DiskState(s.FreeDiskGb), FormatGb(s.FreeDiskGb)));
+
+        if (s.ObsDiskSeparate)
+            list.Add(new CheckResult(L.T("Freier Speicher (OBS)", "Free disk space (OBS)"),
+                DiskState(s.ObsFreeDiskGb), FormatGb(s.ObsFreeDiskGb)));
 
         // Already live? Then say so instead of pretending this is a pre-check.
         if (s.Streaming)
-            list.Insert(1, new CheckResult(L.T("Stream", "Stream"), CheckState.Ok,
-                L.T("Du bist LIVE.", "You are LIVE.")));
+        {
+            string live = s.Health is { } h
+                ? L.T($"Du bist LIVE — seit {StreamHealth.FormatUptime(h.Uptime)}.",
+                      $"You are LIVE — for {StreamHealth.FormatUptime(h.Uptime)}.")
+                : L.T("Du bist LIVE.", "You are LIVE.");
+            list.Insert(1, new CheckResult(L.T("Stream", "Stream"), CheckState.Ok, live));
+            list.Insert(2, HealthRow(s.Health));
+        }
 
         return list;
     }
+
+    /// <summary>Dropped frames + bitrate — the row that tells you the stream is breaking up.</summary>
+    private static CheckResult HealthRow(StreamHealthReading? h)
+    {
+        string detail = h is null || !h.HasRate
+            ? L.T("Wird gemessen…", "Measuring…")
+            : L.T($"{h.RecentDropPercent:0.0} % verworfene Frames · {StreamHealth.FormatBitrate(h.Kbps)}",
+                  $"{h.RecentDropPercent:0.0} % dropped frames · {StreamHealth.FormatBitrate(h.Kbps)}");
+        return new CheckResult(L.T("Stream-Qualität", "Stream health"), StreamHealth.Rate(h), detail);
+    }
+
+    private static CheckState DiskState(double gb)
+        => gb <= 0 ? CheckState.Unknown : gb < LowDiskGb ? CheckState.Warn : CheckState.Ok;
+
+    private static string FormatGb(double gb) => gb <= 0 ? "—" : $"{gb:0.0} GB";
 
     /// <summary>True when nothing blocks going live (warnings are allowed).</summary>
     public static bool CanGoLive(IReadOnlyList<CheckResult> checks)

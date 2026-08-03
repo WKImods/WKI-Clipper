@@ -20,10 +20,16 @@ public sealed class TwitchChatService : IDisposable
     private readonly SettingsService _settings;
     private readonly object _gate = new();
     private readonly LinkedList<ChatMessage> _history = new();
+    /// <summary>No traffic for this long → send our own PING to prove the link is alive.</summary>
+    private static readonly TimeSpan SilenceBeforePing = TimeSpan.FromSeconds(60);
+    /// <summary>That many unanswered rounds → the socket is dead, reconnect.</summary>
+    private const int SilentRoundsBeforeReconnect = 3;
+
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private volatile bool _connected;
     private string _joinedChannel = "";
+    private long _lastRxTicks;
 
     /// <summary>New chat line (worker thread!).</summary>
     public event Action<ChatMessage>? MessageReceived;
@@ -32,6 +38,20 @@ public sealed class TwitchChatService : IDisposable
 
     public bool IsConnected => _connected;
     public string Channel => _joinedChannel;
+
+    /// <summary>
+    /// When the last byte arrived from Twitch, or null before the first one. A socket can
+    /// go silent without ever reporting an error, so "connected" alone is not proof that
+    /// the chat is still live — the UI shows this age instead of a permanently green dot.
+    /// </summary>
+    public DateTime? LastReceivedUtc
+    {
+        get
+        {
+            long t = Interlocked.Read(ref _lastRxTicks);
+            return t == 0 ? null : new DateTime(t, DateTimeKind.Utc);
+        }
+    }
 
     public TwitchChatService(SettingsService settings) => _settings = settings;
 
@@ -48,6 +68,7 @@ public sealed class TwitchChatService : IDisposable
         var channel = (_settings.Current.Chat.Channel ?? "").Trim().TrimStart('#').ToLowerInvariant();
         if (channel.Length == 0) return;
 
+        Interlocked.Exchange(ref _lastRxTicks, 0);   // the previous channel's age means nothing here
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _loop = Task.Run(() => RunAsync(channel, ct), ct);
@@ -107,10 +128,38 @@ public sealed class TwitchChatService : IDisposable
     {
         var buffer = new byte[8192];
         var pending = new StringBuilder();
+        Task<WebSocketReceiveResult>? receive = null;
+        int silentRounds = 0;
 
         while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
         {
-            var res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct).ConfigureAwait(false);
+            // Never cancel the receive on a timeout — that would abort the socket. Race it
+            // against a timer instead, keep the same pending receive, and prod the server
+            // with a PING. A silent connection is the failure mode that used to leave the
+            // widget showing "connected" for hours while no message ever arrived again.
+            receive ??= ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+            using (var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                var winner = await Task.WhenAny(receive, Task.Delay(SilenceBeforePing, delayCts.Token))
+                                       .ConfigureAwait(false);
+                delayCts.Cancel();   // stop the timer when data won the race
+
+                if (winner != receive)
+                {
+                    if (++silentRounds >= SilentRoundsBeforeReconnect)
+                    {
+                        Logger.Warn($"Twitch chat silent for {SilenceBeforePing.TotalSeconds * silentRounds:0} s — reconnecting.");
+                        return;   // outer loop rebuilds the connection
+                    }
+                    await SendAsync(ws, "PING :tmi.twitch.tv", ct).ConfigureAwait(false);
+                    continue;
+                }
+            }
+
+            var res = await receive.ConfigureAwait(false);
+            receive = null;
+            silentRounds = 0;
+            Interlocked.Exchange(ref _lastRxTicks, DateTime.UtcNow.Ticks);
             if (res.MessageType == WebSocketMessageType.Close) return;
 
             pending.Append(Encoding.UTF8.GetString(buffer, 0, res.Count));
@@ -130,7 +179,7 @@ public sealed class TwitchChatService : IDisposable
                     await SendAsync(ws, IrcParser.PongFor(l), ct).ConfigureAwait(false);
                     continue;
                 }
-                var msg = IrcParser.ParsePrivmsg(l);
+                var msg = IrcParser.ParseLine(l);
                 if (msg is null) continue;
 
                 lock (_gate)

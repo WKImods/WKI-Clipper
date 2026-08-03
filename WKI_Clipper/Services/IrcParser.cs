@@ -4,6 +4,10 @@ using System.Linq;
 
 namespace WKI_Clipper.Services;
 
+/// <summary>What a chat line represents. Everything but <see cref="Message"/> and
+/// <see cref="Bits"/> comes from USERNOTICE and is rendered as a highlighted event.</summary>
+public enum ChatKind { Message, Bits, Raid, Sub, SubGift, Announcement, Other }
+
 /// <summary>One chat line ready for display.</summary>
 public sealed class ChatMessage
 {
@@ -16,6 +20,17 @@ public sealed class ChatMessage
     public bool IsVip { get; init; }
     public bool IsBroadcaster { get; init; }
     public DateTime ReceivedLocal { get; init; } = DateTime.Now;
+
+    public ChatKind Kind { get; init; } = ChatKind.Message;
+    /// <summary>Cheered bits on a PRIVMSG, 0 otherwise.</summary>
+    public int Bits { get; init; }
+    /// <summary>Twitch's own wording for an event ("X is raiding with a party of 42").</summary>
+    public string? SystemText { get; init; }
+    /// <summary>Incoming raiders, 0 when not a raid.</summary>
+    public int RaidViewers { get; init; }
+
+    /// <summary>True for raids/subs/announcements — the lines worth looking up from a game.</summary>
+    public bool IsEvent => Kind is not (ChatKind.Message or ChatKind.Bits);
 }
 
 /// <summary>
@@ -27,9 +42,21 @@ public static class IrcParser
 {
     /// <summary>
     /// Parses a PRIVMSG line into a <see cref="ChatMessage"/>. Returns null for every
-    /// other line type (JOIN, NOTICE, PING, …) so callers can simply ignore those.
+    /// other line type (JOIN, NOTICE, PING, USERNOTICE …) so callers can ignore those.
     /// </summary>
     public static ChatMessage? ParsePrivmsg(string? line)
+    {
+        var msg = ParseLine(line);
+        // Only PRIVMSG produces these two kinds.
+        return msg is null || msg.IsEvent ? null : msg;
+    }
+
+    /// <summary>
+    /// Parses any displayable line — chat messages (PRIVMSG) and channel events
+    /// (USERNOTICE: raids, subs, gifts, announcements). Returns null for protocol
+    /// chatter the widget has no use for.
+    /// </summary>
+    public static ChatMessage? ParseLine(string? line)
     {
         if (string.IsNullOrWhiteSpace(line)) return null;
 
@@ -44,23 +71,52 @@ public static class IrcParser
             rest = rest[(sp + 1)..];
         }
 
-        // :nick!user@host PRIVMSG #channel :message
+        // :nick!user@host COMMAND #channel :message   (USERNOTICE's prefix is tmi.twitch.tv)
         if (rest.Length == 0 || rest[0] != ':') return null;
         int prefixEnd = rest.IndexOf(' ');
         if (prefixEnd < 0) return null;
         string prefix = rest[1..prefixEnd];
         rest = rest[(prefixEnd + 1)..];
 
-        if (!rest.StartsWith("PRIVMSG ", StringComparison.Ordinal)) return null;
+        int cmdEnd = rest.IndexOf(' ');
+        string command = cmdEnd < 0 ? rest : rest[..cmdEnd];
 
-        // The message body starts at the FIRST " :" after the command — everything
-        // after it is literal text and may itself contain colons.
+        // The body starts at the FIRST " :" after the command — everything after it is
+        // literal text and may itself contain colons.
         int bodyStart = rest.IndexOf(" :", StringComparison.Ordinal);
-        if (bodyStart < 0) return null;
-        string text = rest[(bodyStart + 2)..].TrimEnd('\r', '\n');
+        string text = bodyStart < 0 ? "" : rest[(bodyStart + 2)..].TrimEnd('\r', '\n');
+
+        var kind = ChatKind.Message;
+        int bits = 0, raiders = 0;
+        string? systemText = null;
+
+        if (command.Equals("PRIVMSG", StringComparison.Ordinal))
+        {
+            if (bodyStart < 0) return null;   // a PRIVMSG without text is malformed
+            if (int.TryParse(Tag(tags, "bits"), out bits) && bits > 0) kind = ChatKind.Bits;
+        }
+        else if (command.Equals("USERNOTICE", StringComparison.Ordinal))
+        {
+            systemText = Tag(tags, "system-msg");
+            kind = (Tag(tags, "msg-id") ?? "").ToLowerInvariant() switch
+            {
+                "raid" => ChatKind.Raid,
+                "sub" or "resub" => ChatKind.Sub,
+                "subgift" or "submysterygift" or "giftpaidupgrade" or "anongiftpaidupgrade"
+                    => ChatKind.SubGift,
+                "announcement" => ChatKind.Announcement,
+                _ => ChatKind.Other
+            };
+            int.TryParse(Tag(tags, "msg-param-viewerCount"), out raiders);
+            // Announcements carry their content in the body, not in system-msg.
+            if (string.IsNullOrWhiteSpace(systemText)) systemText = text;
+            if (string.IsNullOrWhiteSpace(systemText)) return null;   // nothing to show
+        }
+        else return null;
 
         string nick = prefix.Split('!')[0];
-        string user = Tag(tags, "display-name") is { Length: > 0 } dn ? dn : nick;
+        // USERNOTICE has no user in the prefix — the login lives in the tags.
+        string user = FirstNonEmpty(Tag(tags, "display-name"), Tag(tags, "login"), nick) ?? nick;
         var badges = ParseBadges(Tag(tags, "badges"));
 
         return new ChatMessage
@@ -71,8 +127,18 @@ public static class IrcParser
             IsMod = badges.Contains("moderator") || Tag(tags, "mod") == "1",
             IsSub = badges.Contains("subscriber") || Tag(tags, "subscriber") == "1",
             IsVip = badges.Contains("vip"),
-            IsBroadcaster = badges.Contains("broadcaster")
+            IsBroadcaster = badges.Contains("broadcaster"),
+            Kind = kind,
+            Bits = bits,
+            SystemText = systemText,
+            RaidViewers = raiders
         };
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values) if (!string.IsNullOrWhiteSpace(v)) return v;
+        return null;
     }
 
     /// <summary>True for a server PING — the caller must answer with PONG or get dropped.</summary>

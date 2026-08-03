@@ -26,6 +26,13 @@ public sealed class ObsStatus
     public readonly ConcurrentDictionary<string, bool> InputMuted = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Input name → linear volume multiplier (1.0 = 0 dB). Same threading as InputMuted.</summary>
     public readonly ConcurrentDictionary<string, float> InputVolume = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Live output health while streaming, null otherwise. Immutable record, so the
+    /// poll thread can publish it and the UI thread read it without tearing.
+    /// </summary>
+    public StreamHealthReading? Health;
+    /// <summary>Where OBS writes recordings — often a different drive than the clipper's.</summary>
+    public string? RecordDirectory;
 }
 
 /// <summary>Linear multiplier ↔ decibel helpers for the mixer faders (pure, unit-tested).</summary>
@@ -57,8 +64,12 @@ public sealed class ObsWebSocketService : IDisposable
     private readonly SettingsService _settings;
     private readonly OBSWebsocket _obs = new();
     private readonly System.Timers.Timer _reconnect = new(5000) { AutoReset = true };
+    /// <summary>Polls output stats while live — obs-websocket pushes no stats events.</summary>
+    private readonly System.Timers.Timer _statsPoll = new(2000) { AutoReset = true };
     private volatile bool _wantConnected;
     private long _connectingSince; // ticks; 0 = not connecting
+    private StreamSample? _prevSample;
+    private long _lastHealthWarnTicks;
 
     public ObsStatus Status { get; } = new();
     public bool IsConnected => _obs.IsConnected;
@@ -67,6 +78,8 @@ public sealed class ObsWebSocketService : IDisposable
     public event Action? StatusChanged;
     /// <summary>A button action failed (worker thread!) — localized message for a toast.</summary>
     public event Action<string>? ActionError;
+    /// <summary>The live stream started dropping frames badly (worker thread!), rate-limited.</summary>
+    public event Action<StreamHealthReading>? HealthWarning;
 
     public ObsWebSocketService(SettingsService settings)
     {
@@ -79,6 +92,7 @@ public sealed class ObsWebSocketService : IDisposable
             try { PullFullStatus(); }
             catch (Exception ex) { Logger.Warn("OBS initial status pull failed: " + ex.Message); }
             Status.Connected = true;
+            UpdateStatsPolling();
             StatusChanged?.Invoke();
         };
         _obs.Disconnected += (_, e) =>
@@ -86,17 +100,25 @@ public sealed class ObsWebSocketService : IDisposable
             Interlocked.Exchange(ref _connectingSince, 0);
             bool wasConnected = Status.Connected;
             Status.Connected = false;
+            UpdateStatsPolling();
             if (wasConnected) Logger.Info($"OBS disconnected: {e?.DisconnectReason ?? "unknown"}");
             StatusChanged?.Invoke();
         };
 
         // --- live state events → mirror into Status ---
         _obs.CurrentProgramSceneChanged += (_, e) => { Status.CurrentScene = e.SceneName; StatusChanged?.Invoke(); };
-        _obs.StreamStateChanged += (_, e) => { Status.Streaming = e.OutputState.IsActive; StatusChanged?.Invoke(); };
+        _obs.StreamStateChanged += (_, e) =>
+        {
+            Status.Streaming = e.OutputState.IsActive;
+            UpdateStatsPolling();
+            StatusChanged?.Invoke();
+        };
         _obs.RecordStateChanged += (_, e) =>
         {
             Status.Recording = e.OutputState.IsActive;
             if (!e.OutputState.IsActive) Status.RecordPaused = false;
+            // The output folder can be repointed between takes — refresh when one starts.
+            if (e.OutputState.IsActive) PullRecordDirectory();
             StatusChanged?.Invoke();
         };
         _obs.ReplayBufferStateChanged += (_, e) => { Status.ReplayBufferActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
@@ -111,6 +133,74 @@ public sealed class ObsWebSocketService : IDisposable
         };
 
         _reconnect.Elapsed += (_, _) => TryConnectTick();
+        _statsPoll.Elapsed += (_, _) => PollStatsTick();
+    }
+
+    // ---- live stream health ----
+
+    /// <summary>Stats polling runs only while actually live — no traffic when idle.</summary>
+    private void UpdateStatsPolling()
+    {
+        if (Status.Connected && Status.Streaming)
+        {
+            if (!_statsPoll.Enabled) { _prevSample = null; _statsPoll.Start(); }
+        }
+        else
+        {
+            _statsPoll.Stop();
+            _prevSample = null;
+            Status.Health = null;
+        }
+    }
+
+    /// <summary>
+    /// Samples the output and derives uptime/bitrate/recent drops. Only the timer thread
+    /// touches _prevSample, so no lock is needed.
+    /// </summary>
+    private void PollStatsTick()
+    {
+        if (!_obs.IsConnected) return;
+        try
+        {
+            var s = _obs.GetStreamStatus();
+            if (!s.IsActive)
+            {
+                // The stream ended without us seeing the event — stop polling.
+                Status.Streaming = false;
+                UpdateStatsPolling();
+                StatusChanged?.Invoke();
+                return;
+            }
+
+            var cur = new StreamSample(DateTime.UtcNow.Ticks, s.BytesSent, s.TotalFrames, s.SkippedFrames, s.Duration);
+            var reading = StreamHealth.Compute(_prevSample, cur);
+            _prevSample = cur;
+            Status.Health = reading;
+
+            if (StreamHealth.Rate(reading) == CheckState.Fail) RaiseHealthWarning(reading);
+            StatusChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("OBS GetStreamStatus failed: " + ex.Message);
+        }
+    }
+
+    /// <summary>At most one warning per minute — a bad connection would otherwise spam toasts.</summary>
+    private void RaiseHealthWarning(StreamHealthReading r)
+    {
+        long now = DateTime.UtcNow.Ticks;
+        long last = Interlocked.Read(ref _lastHealthWarnTicks);
+        if (last != 0 && now - last < TimeSpan.FromSeconds(60).Ticks) return;
+        Interlocked.Exchange(ref _lastHealthWarnTicks, now);
+        Logger.Warn($"Stream health: {r.RecentDropPercent:0.0} % frames dropped, {r.Kbps:0} kbit/s");
+        HealthWarning?.Invoke(r);
+    }
+
+    private void PullRecordDirectory()
+    {
+        try { Status.RecordDirectory = _obs.GetRecordDirectory(); }
+        catch (Exception ex) { Logger.Warn("OBS GetRecordDirectory failed: " + ex.Message); }
     }
 
     // ---- lifecycle ----
@@ -162,6 +252,7 @@ public sealed class ObsWebSocketService : IDisposable
         Status.RecordPaused = rec.IsRecordingPaused;
         try { Status.ReplayBufferActive = _obs.GetReplayBufferStatus(); } catch { Status.ReplayBufferActive = false; }
         try { Status.VirtualCamActive = _obs.GetVirtualCamStatus().IsActive; } catch { Status.VirtualCamActive = false; }
+        PullRecordDirectory();
 
         Status.InputMuted.Clear();
         Status.InputVolume.Clear();
@@ -320,6 +411,8 @@ public sealed class ObsWebSocketService : IDisposable
         _wantConnected = false;
         _reconnect.Stop();
         _reconnect.Dispose();
+        _statsPoll.Stop();
+        _statsPoll.Dispose();
         try { if (_obs.IsConnected) _obs.Disconnect(); } catch { }
     }
 }

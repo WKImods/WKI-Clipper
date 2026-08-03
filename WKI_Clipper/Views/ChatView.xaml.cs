@@ -16,14 +16,23 @@ namespace WKI_Clipper.Views;
 /// </summary>
 public partial class ChatView : UserControl
 {
+    /// <summary>Data older than this means the connection is suspect, not healthy.</summary>
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(2.5);
+
     private bool _subscribed;
     private bool _autoScroll = true;
+    /// <summary>True while the UI is being filled from settings — writes back are then noise.</summary>
+    private bool _syncingUi;
+    /// <summary>The dot ages on its own — without a tick it would stay green after a stall.</summary>
+    private readonly System.Windows.Threading.DispatcherTimer _statusTick =
+        new() { Interval = TimeSpan.FromSeconds(10) };
 
     public ChatView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        _statusTick.Tick += (_, _) => UpdateStatus();
     }
 
     private static ChatSettings Cfg => App.Host!.Settings.Current.Chat;
@@ -36,6 +45,12 @@ public partial class ChatView : UserControl
         ChannelBox.Text = Cfg.Channel;
         ChannelBox.ToolTip = L.T("Twitch-Kanal (Enter zum Übernehmen)", "Twitch channel (press Enter to apply)");
         ReconnectBtn.Content = L.T("Neu verbinden", "Reconnect");
+        ToastsBox.Content = L.T("Raid-Hinweis", "Raid alert");
+        ToastsBox.ToolTip = L.T("Einblendung bei Raids und Sub-Geschenken — auch wenn dieses Fenster zu ist.",
+                                "Popup on raids and gifted subs — even while this window is closed.");
+        _syncingUi = true;
+        ToastsBox.IsChecked = Cfg.EventToasts;
+        _syncingUi = false;
 
         if (!_subscribed)
         {
@@ -49,6 +64,7 @@ public partial class ChatView : UserControl
         foreach (var m in host.Chat.History()) Messages.Children.Add(BuildLine(m));
         ScrollToEnd();
         UpdateStatus();
+        _statusTick.Start();
 
         if (!host.Chat.IsConnected && Cfg.AutoConnect) host.Chat.Restart();
     }
@@ -62,6 +78,7 @@ public partial class ChatView : UserControl
             host.Chat.StatusChanged -= OnStatus;
             _subscribed = false;
         }
+        _statusTick.Stop();
     }
 
     // Both events come off the socket worker thread.
@@ -76,21 +93,48 @@ public partial class ChatView : UserControl
 
     private void OnStatus() => Dispatcher.BeginInvoke(new Action(UpdateStatus));
 
+    /// <summary>
+    /// The dot reports what actually arrives, not just whether a socket object exists.
+    /// A WebSocket can sit open and silent for hours; a permanently green dot in that
+    /// state is a lie, so anything older than <see cref="StaleAfter"/> turns amber.
+    /// </summary>
     private void UpdateStatus()
     {
         var host = App.Host;
         if (host is null) return;
-        bool on = host.Chat.IsConnected;
-        ConnDot.Fill = new SolidColorBrush(on
-            ? Color.FromRgb(0x4A, 0xD8, 0x6A)
-            : Color.FromRgb(0x55, 0x55, 0x55));
-        ConnDot.ToolTip = on
-            ? L.T($"Verbunden mit #{host.Chat.Channel}", $"Connected to #{host.Chat.Channel}")
-            : L.T("Nicht verbunden — versucht es weiter.", "Not connected — keeps retrying.");
+
+        Color color;
+        string tip;
+        if (!host.Chat.IsConnected)
+        {
+            color = Color.FromRgb(0x55, 0x55, 0x55);
+            tip = L.T("Nicht verbunden — versucht es weiter.", "Not connected — keeps retrying.");
+        }
+        else if (host.Chat.LastReceivedUtc is not { } last)
+        {
+            color = Color.FromRgb(0xE0, 0xA8, 0x40);
+            tip = L.T("Verbunden — wartet auf die ersten Daten.", "Connected — waiting for first data.");
+        }
+        else
+        {
+            var age = DateTime.UtcNow - last;
+            bool stale = age > StaleAfter;
+            color = stale ? Color.FromRgb(0xE0, 0xA8, 0x40) : Color.FromRgb(0x4A, 0xD8, 0x6A);
+            tip = stale
+                ? L.T($"Seit {age.TotalMinutes:0} min keine Daten — Verbindung wird geprüft.",
+                      $"No data for {age.TotalMinutes:0} min — checking the connection.")
+                : L.T($"Verbunden mit #{host.Chat.Channel} · letzte Daten vor {age.TotalSeconds:0}s",
+                      $"Connected to #{host.Chat.Channel} · last data {age.TotalSeconds:0}s ago");
+        }
+
+        ConnDot.Fill = new SolidColorBrush(color);
+        ConnDot.ToolTip = tip;
     }
 
     private FrameworkElement BuildLine(ChatMessage m)
     {
+        if (m.IsEvent) return BuildEventLine(m);
+
         var tb = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -111,8 +155,60 @@ public partial class ChatView : UserControl
             FontWeight = FontWeights.Bold,
             Foreground = ParseColor(m.Color) ?? (Brush)FindResource("AccentBrush")
         });
+        if (m.Bits > 0)
+            tb.Inlines.Add(new Run($"[{m.Bits} Bits] ")
+            {
+                FontWeight = FontWeights.Bold,
+                Foreground = (Brush)FindResource("AccentBrush")
+            });
         tb.Inlines.Add(new Run(m.Text) { Foreground = (Brush)FindResource("TextBrush") });
         return tb;
+    }
+
+    /// <summary>
+    /// Raids, subs and announcements get a tinted block so they are visible at a glance
+    /// while a fast chat scrolls past — these are the lines worth reacting to mid-game.
+    /// </summary>
+    private FrameworkElement BuildEventLine(ChatMessage m)
+    {
+        double size = Math.Clamp(Cfg.FontSize, 9, 28);
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock
+        {
+            Text = m.SystemText ?? m.Text,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = size,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)FindResource("AccentBrush")
+        });
+
+        // A resub/raid may carry the viewer's own message — announcements do not, their
+        // text IS the system message and would otherwise be printed twice.
+        if (!string.IsNullOrWhiteSpace(m.Text) && m.Kind != ChatKind.Announcement)
+            panel.Children.Add(new TextBlock
+            {
+                Text = m.Text,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = size,
+                Foreground = (Brush)FindResource("TextBrush"),
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+
+        return new Border
+        {
+            Background = AccentTint(),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(7, 5, 7, 5),
+            Margin = new Thickness(0, 2, 0, 4),
+            Child = panel
+        };
+    }
+
+    private Brush AccentTint()
+    {
+        if (FindResource("AccentBrush") is SolidColorBrush a)
+            return new SolidColorBrush(Color.FromArgb(0x2E, a.Color.R, a.Color.G, a.Color.B));
+        return new SolidColorBrush(Color.FromArgb(0x2E, 0xFF, 0x6A, 0x2C));
     }
 
     /// <summary>Twitch colors are #RRGGBB; a too-dark one is lifted so it stays readable.</summary>
@@ -164,4 +260,12 @@ public partial class ChatView : UserControl
     }
 
     private void OnReconnect(object sender, RoutedEventArgs e) => App.Host?.Chat.Restart();
+
+    private void OnToastsChanged(object sender, RoutedEventArgs e)
+    {
+        var host = App.Host;
+        if (host is null || _syncingUi) return;   // ignore the initial IsChecked assignment
+        Cfg.EventToasts = ToastsBox.IsChecked == true;
+        host.Settings.Save();
+    }
 }

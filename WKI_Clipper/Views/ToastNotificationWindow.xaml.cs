@@ -40,6 +40,8 @@ public partial class ToastNotificationWindow : Window
             ToastKind.Clip       => System.Windows.Media.Color.FromRgb(0xFF, 0x6A, 0x2C),
             ToastKind.Screenshot => System.Windows.Media.Color.FromRgb(0x4A, 0xD8, 0x6A),
             ToastKind.Warning    => System.Windows.Media.Color.FromRgb(0xE0, 0xA8, 0x40),
+            // Info shares no colour with "clip saved" — a raid must not look like a clip.
+            ToastKind.Info       => System.Windows.Media.Color.FromRgb(0x4A, 0x9E, 0xE0),
             _                    => System.Windows.Media.Color.FromRgb(0xFF, 0x6A, 0x2C)
         };
         AccentStripe.Fill = new SolidColorBrush(color);

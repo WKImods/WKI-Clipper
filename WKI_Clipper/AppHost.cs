@@ -59,7 +59,23 @@ public sealed class AppHost : IDisposable
         Performance = new PerformanceMonitorService();
         GalleryMeta = new GalleryMetaService();
         Obs = new ObsWebSocketService(Settings);
+        // A stream that starts breaking up has to reach you even when the preflight
+        // widget is closed — that is the whole point of noticing it before chat does.
+        Obs.HealthWarning += r => ToastService.Show(ToastKind.Warning,
+            L.T("Stream verliert Frames", "Stream is dropping frames"),
+            L.T($"{r.RecentDropPercent:0.0} % verworfen · {StreamHealth.FormatBitrate(r.Kbps)} — Encoder oder Upload prüfen.",
+                $"{r.RecentDropPercent:0.0} % dropped · {StreamHealth.FormatBitrate(r.Kbps)} — check encoder or upload."),
+            durationSeconds: 8);
         Chat = new TwitchChatService(Settings);
+        // Raids and gift bombs are the two things worth interrupting a game for.
+        Chat.MessageReceived += m =>
+        {
+            if (!Settings.Current.Chat.EventToasts) return;
+            if (m.Kind is not (ChatKind.Raid or ChatKind.SubGift)) return;
+            ToastService.Show(ToastKind.Info,
+                m.Kind == ChatKind.Raid ? L.T("Raid!", "Raid!") : L.T("Sub-Geschenk", "Gifted subs"),
+                m.SystemText ?? m.User, durationSeconds: 8);
+        };
         Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
 

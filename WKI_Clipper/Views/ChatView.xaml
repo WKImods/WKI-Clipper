@@ -12,6 +12,9 @@
                      Margin="0,0,7,0" Fill="#555555" />
             <Button x:Name="ReconnectBtn" DockPanel.Dock="Right" Padding="8,3"
                     Click="OnReconnect" />
+            <CheckBox x:Name="ToastsBox" DockPanel.Dock="Right" VerticalAlignment="Center"
+                      Margin="0,0,8,0" Foreground="{StaticResource MutedBrush}"
+                      Checked="OnToastsChanged" Unchecked="OnToastsChanged" />
             <TextBox x:Name="ChannelBox" MinWidth="90" Margin="0,0,6,0"
                      KeyDown="OnChannelKey" LostFocus="OnChannelCommit" />
         </DockPanel>
