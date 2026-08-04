@@ -42,6 +42,12 @@ public partial class MixerView : UserControl
     {
         var host = App.Host;
         if (host is null) return;
+
+        // These faders are OBS's own, and OBS monitoring is off by default — you can pull a
+        // source down without hearing any difference yourself. Say whose ears are affected.
+        ScopeLine.Text = L.T("🎧 OBS — was die Zuschauer hören. Wirkt nicht auf deine F9-Clips.",
+                             "🎧 OBS — what viewers hear. Does not affect your F9 clips.");
+
         if (!_subscribed) { host.Obs.StatusChanged += OnStatus; _subscribed = true; }
         Rebuild();
     }
