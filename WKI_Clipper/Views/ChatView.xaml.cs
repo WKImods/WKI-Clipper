@@ -162,7 +162,21 @@ public partial class ChatView : UserControl
                 Foreground = (Brush)FindResource("AccentBrush")
             });
         tb.Inlines.Add(new Run(m.Text) { Foreground = (Brush)FindResource("TextBrush") });
-        return tb;
+
+        // Someone talking TO you is the one line you must not scroll past mid-match.
+        // The target is simply the channel — on your own stream that is your name.
+        string me = App.Host?.Chat.Channel is { Length: > 0 } c ? c : Cfg.Channel;
+        if (!ChatFilter.IsMention(m.Text, me)) return tb;
+
+        return new Border
+        {
+            // Blue, so a mention never reads as a raid (accent-tinted) at a glance.
+            Background = new SolidColorBrush(Color.FromArgb(0x33, 0x4A, 0x9E, 0xE0)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(7, 4, 7, 4),
+            Margin = new Thickness(0, 2, 0, 3),
+            Child = tb
+        };
     }
 
     /// <summary>

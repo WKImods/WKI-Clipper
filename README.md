@@ -116,6 +116,9 @@ OAuth, no API key, no account, and nothing to configure beyond the channel name.
   being dropped, and cheered bits are marked on the message that carried them
 - An optional popup for raids and gift bombs — the two events worth interrupting a match
   for — which also fires while the chat window is closed
+- **Messages addressing you are tinted blue.** The name comes from the channel, so there is
+  nothing to configure, and matching stops at name boundaries — `oskar_blitzz` is somebody
+  else and does not light up
 - Auto-scrolls to the newest line, and stops doing so while you scroll up to read
 - **Click-through while pinned**: over a game the window passes every click to whatever
   is underneath, so it can never swallow a shot. Fully interactive again as soon as the
