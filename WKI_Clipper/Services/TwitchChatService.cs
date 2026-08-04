@@ -69,6 +69,13 @@ public sealed class TwitchChatService : IDisposable
         if (channel.Length == 0) return;
 
         Interlocked.Exchange(ref _lastRxTicks, 0);   // the previous channel's age means nothing here
+
+        // Dropping the backlog on a CHANNEL CHANGE only — a plain reconnect keeps it, which is
+        // the point of the history. Kept lines would otherwise be replayed into every freshly
+        // built ChatView (e.g. after a language switch) as if they belonged to the new channel,
+        // and the mention highlight would re-check them against the new channel's name.
+        if (!string.Equals(channel, _joinedChannel, StringComparison.OrdinalIgnoreCase))
+            lock (_gate) _history.Clear();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _loop = Task.Run(() => RunAsync(channel, ct), ct);
@@ -127,7 +134,7 @@ public sealed class TwitchChatService : IDisposable
     private async Task ReadLoopAsync(ClientWebSocket ws, CancellationToken ct)
     {
         var buffer = new byte[8192];
-        var pending = new StringBuilder();
+        var assembler = new Utf8LineAssembler();
         Task<WebSocketReceiveResult>? receive = null;
         int silentRounds = 0;
 
@@ -162,18 +169,10 @@ public sealed class TwitchChatService : IDisposable
             Interlocked.Exchange(ref _lastRxTicks, DateTime.UtcNow.Ticks);
             if (res.MessageType == WebSocketMessageType.Close) return;
 
-            pending.Append(Encoding.UTF8.GetString(buffer, 0, res.Count));
-
-            // A frame can carry several lines, or half of one — only process complete lines.
-            string all = pending.ToString();
-            int lastNl = all.LastIndexOf('\n');
-            if (lastNl < 0) continue;
-            pending.Clear();
-            pending.Append(all[(lastNl + 1)..]);
-
-            foreach (var line in all[..lastNl].Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            // A chunk can carry several lines, half a line, or half a character — the
+            // assembler owns all three cases so this loop only sees finished lines.
+            foreach (var l in assembler.Append(buffer, res.Count))
             {
-                var l = line.TrimEnd('\r');
                 if (IrcParser.IsPing(l))
                 {
                     await SendAsync(ws, IrcParser.PongFor(l), ct).ConfigureAwait(false);
