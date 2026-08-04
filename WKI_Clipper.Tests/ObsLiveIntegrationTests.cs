@@ -91,4 +91,40 @@ public sealed class ObsLiveIntegrationTests
         var restoredDone = await Task.WhenAny(restored.Task, Task.Delay(TimeSpan.FromSeconds(8)));
         Assert.True(restoredDone == restored.Task, "restore scene change event did not arrive");
     }
+
+    /// <summary>
+    /// The preflight's free-space check is only worth anything if it looks at the drive OBS
+    /// actually writes to. That path comes from GetRecordDirectory on connect — this proves
+    /// the request works and returns a usable, existing directory. No stream is started.
+    /// </summary>
+    [Fact]
+    public async Task Reports_the_folder_obs_records_into()
+    {
+        if (!Enabled) return;
+
+        var settings = new SettingsService();
+        settings.Load();
+        using var svc = new ObsWebSocketService(settings);
+
+        var connected = new TaskCompletionSource();
+        svc.StatusChanged += () => { if (svc.IsConnected) connected.TrySetResult(); };
+        svc.Enable();
+        await Task.WhenAny(connected.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.True(svc.IsConnected, "OBS at 127.0.0.1:4455 not reachable.");
+
+        var dir = svc.Status.RecordDirectory;
+        Assert.False(string.IsNullOrWhiteSpace(dir), "GetRecordDirectory returned nothing");
+        Assert.True(System.IO.Directory.Exists(dir), $"OBS reports a recording folder that does not exist: {dir}");
+
+        // The free-space lookup the preflight performs must succeed on that path.
+        var root = System.IO.Path.GetPathRoot(dir);
+        Assert.False(string.IsNullOrEmpty(root));
+        var drive = new System.IO.DriveInfo(root!);
+        Assert.True(drive.IsReady);
+        Assert.True(drive.AvailableFreeSpace > 0);
+
+        // Not streaming, so there must be no health reading pretending otherwise.
+        Assert.False(svc.Status.Streaming);
+        Assert.Null(svc.Status.Health);
+    }
 }
