@@ -54,6 +54,8 @@ public sealed class ReplayBufferService : IDisposable
     private CancellationTokenSource? _restartDebounceCts;
     // Reentrancy guard for SaveLastAsync (0 = idle, 1 = saving).
     private int _saving;
+    // When the current generation's ffmpeg started — the stall check needs a grace period.
+    private DateTime _genStartedUtc = DateTime.MaxValue;
 
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
@@ -257,6 +259,7 @@ public sealed class ReplayBufferService : IDisposable
         try
         {
             _ffmpeg.Start(args);
+            _genStartedUtc = DateTime.UtcNow;
             BufferStateChanged?.Invoke(this, true);
             StartWatchdog();
         }
@@ -477,9 +480,15 @@ public sealed class ReplayBufferService : IDisposable
             int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
             int neededSegments = (int)Math.Ceiling((double)targetSec / segSec);
 
-            var pick = CollectRecentSegments(neededSegments);
+            var pick = CollectRecentSegments(neededSegments, out var material);
+            if (material == BufferMaterial.Stalled)
+            {
+                ReportStalled();
+                return null;
+            }
             if (pick.Count == 0)
             {
+                Logger.Info("SaveLast: no complete segments yet.");
                 BufferInfo?.Invoke(this,
                     L.T("Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.",
                         "Buffer just restarted — not enough material yet. Try again shortly."));
@@ -520,6 +529,12 @@ public sealed class ReplayBufferService : IDisposable
             int exitCode = await tcs.Task.ConfigureAwait(false);
             if (exitCode == 0 && File.Exists(outputPath))
             {
+                // F9 used to leave no trace at all, which turned one bad clip into file
+                // forensics. One line is enough to answer "what did it actually grab".
+                double covered = (pick[^1].LastWriteTimeUtc - pick[0].LastWriteTimeUtc).TotalSeconds + segSec;
+                double ageSec = (DateTime.UtcNow - pick[^1].LastWriteTimeUtc).TotalSeconds;
+                Logger.Info($"SaveLast: {pick.Count} segments ≈{covered:0}s (newest {ageSec:0.0}s old) → " +
+                            $"{Path.GetFileName(outputPath)} ({new FileInfo(outputPath).Length / (1024 * 1024)} MB)");
                 ReplaySaved?.Invoke(this, outputPath);
                 return outputPath;
             }
@@ -538,13 +553,63 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
+    /// The ring stopped turning. Refusing is better than handing out an old clip that looks
+    /// real, and a restart is the only recovery — the ffmpeg process is still alive, so
+    /// nothing times out or crashes on its own.
+    /// </summary>
+    private void ReportStalled()
+    {
+        Logger.Warn("Replay buffer is stale — no new completed segment. Refusing the clip and restarting.");
+        BufferError?.Invoke(this, L.T(
+            "Der Buffer liefert keine neuen Daten mehr — der Clip wäre veraltet. Buffer wird neu gestartet.",
+            "The buffer stopped producing data — the clip would be stale. Restarting the buffer."));
+        RequestRestart();
+    }
+
+    /// <summary>
+    /// True when the ring has stopped producing completed segments. Deliberately measured on
+    /// the newest COMPLETED segment: the open one keeps its timestamp fresh while it grows,
+    /// so it would report health right up to a 46 MB segment nobody can use.
+    /// </summary>
+    private bool IsStalled(out TimeSpan age)
+    {
+        age = TimeSpan.Zero;
+        if (!IsRunning || string.IsNullOrEmpty(_bufferDir)) return false;
+        try
+        {
+            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+            var stale = BufferHealth.StaleAfter(segSec);
+
+            // A fresh generation needs time to complete its first segment.
+            var sinceStart = DateTime.UtcNow - _genStartedUtc;
+            if (sinceStart < stale + TimeSpan.FromSeconds(segSec)) return false;
+
+            var times = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
+                .Select(p => new FileInfo(p))
+                .Where(fi => fi.Length > 1024 && IsCurrentIdentity(fi.Name))
+                .Select(fi => fi.LastWriteTimeUtc)
+                .OrderBy(t => t)
+                .ToList();
+
+            // Fewer than two files after the grace period means nothing ever completed.
+            if (times.Count < 2) { age = sinceStart; return true; }
+
+            age = DateTime.UtcNow - times[^2];
+            return age > stale;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
     /// The most recent COMPLETE segments of the current identity, oldest→newest, capped
     /// to <paramref name="neededSegments"/>. Excludes the segment ffmpeg is still writing
     /// (no moov atom yet) and files from a previous session/monitor. Empty = not enough
     /// material yet. Assumes the buffer is running and <see cref="_bufferDir"/> is set.
     /// </summary>
-    private List<FileInfo> CollectRecentSegments(int neededSegments)
+    private List<FileInfo> CollectRecentSegments(int neededSegments, out BufferMaterial material)
     {
+        material = BufferMaterial.NotEnoughYet;
+
         var segments = Directory.EnumerateFiles(_bufferDir!, "seg_*.mp4")
             .Select(p => new FileInfo(p))
             .Where(fi => fi.Length > 1024
@@ -554,6 +619,26 @@ public sealed class ReplayBufferService : IDisposable
             .ToList();
         // The newest file is the one being written — exclude it.
         if (segments.Count > 1) segments.RemoveAt(segments.Count - 1);
+        if (segments.Count == 0) return segments;
+
+        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+
+        // _sessionStartUtc is the only other time filter, and after hours of uptime it lets
+        // everything through. A ring that stopped turning therefore used to be served as
+        // "the last N seconds": one real case handed out a single 15-hour-old segment, and
+        // did so identically on every press because nothing on disk changed any more.
+        if (BufferHealth.Judge(segments[^1].LastWriteTimeUtc, DateTime.UtcNow, segSec) == BufferMaterial.Stalled)
+        {
+            material = BufferMaterial.Stalled;
+            return new List<FileInfo>();
+        }
+
+        // Only the newest uninterrupted run counts as "just now".
+        int start = BufferHealth.ContiguousTailStart(
+            segments.Select(f => f.LastWriteTimeUtc).ToList(), segSec);
+        if (start > 0) segments.RemoveRange(0, start);
+
+        material = BufferMaterial.Ok;
         return segments.TakeLast(Math.Max(1, neededSegments)).ToList();
     }
 
@@ -585,7 +670,12 @@ public sealed class ReplayBufferService : IDisposable
             int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
             int neededSegments = (int)Math.Ceiling((double)gifSec / segSec) + 1; // +1 so the trim has enough material
 
-            var pick = CollectRecentSegments(neededSegments);
+            var pick = CollectRecentSegments(neededSegments, out var gifMaterial);
+            if (gifMaterial == BufferMaterial.Stalled)
+            {
+                ReportStalled();
+                return null;
+            }
             if (pick.Count == 0)
             {
                 BufferInfo?.Invoke(this, L.T("Noch nicht genug Material für ein GIF. Gleich nochmal.",
@@ -654,6 +744,20 @@ public sealed class ReplayBufferService : IDisposable
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+
+                    // A wedged ffmpeg does not exit, so nothing else here would ever notice:
+                    // the process lives, the open segment keeps growing, and every F9 then
+                    // returns the same stale footage. Restarting is the only way back.
+                    if (IsStalled(out var stalledFor))
+                    {
+                        Logger.Warn($"Replay buffer stalled: no completed segment for {stalledFor.TotalSeconds:0}s — restarting.");
+                        BufferError?.Invoke(this, L.T(
+                            $"Buffer lieferte {stalledFor.TotalSeconds:0}s lang keine neuen Daten — wurde neu gestartet.",
+                            $"Buffer produced no new data for {stalledFor.TotalSeconds:0}s — restarted."));
+                        await RestartIfRunningAsync().ConfigureAwait(false);
+                        return;   // the restart starts a fresh watchdog
+                    }
+
                     PruneOldSegments();
                     long total = 0;
                     foreach (var f in Directory.EnumerateFiles(_bufferDir, "seg_*.mp4"))
