@@ -20,6 +20,10 @@ namespace WKI_Clipper.Views;
 ///  - board OPEN  → draggable (a faint frame shows the hit area) so it can be placed
 ///  - board CLOSED → WS_EX_TRANSPARENT + NOACTIVATE: clicks pass straight through to
 ///    the game, so aiming still works with the crosshair on top.
+///
+/// Marked WDA_EXCLUDEFROMCAPTURE: an aiming aid belongs on the screen, not in the footage.
+/// This also hides it from OBS and the Snipping Tool, which is the accepted trade-off —
+/// there is no per-capture opt-out, since F9 saves seconds that are already recorded.
 /// </summary>
 public sealed class CrosshairOverlayWindow : Window
 {
@@ -174,6 +178,13 @@ public sealed class CrosshairOverlayWindow : Window
     {
         base.OnSourceInitialized(e);
         _hwnd = new WindowInteropHelper(this).Handle;
+
+        // Keep the crosshair out of every screen capture. Hiding it just before a capture
+        // would not work for F9: that saves the PAST 60 seconds, which already contain the
+        // overlay. The exclusion therefore has to be permanent, not momentary.
+        try { User32.SetWindowDisplayAffinity(_hwnd, User32.WDA_EXCLUDEFROMCAPTURE); }
+        catch { /* pre-2004 Windows: the crosshair stays visible in clips, nothing breaks */ }
+
         ApplyClickThrough();
     }
 }
