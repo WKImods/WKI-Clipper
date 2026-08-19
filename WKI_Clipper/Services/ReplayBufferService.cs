@@ -74,12 +74,37 @@ public sealed class ReplayBufferService : IDisposable
     /// <summary>Cold start: clears the buffer directory and starts a fresh generation.</summary>
     public void Start() => _ = StartInternalAsync(clearHistory: true);
 
+    /// <summary>
+    /// True while something else needs the capture hardware exclusively (a manual
+    /// recording). The buffer then stays down even if a debounced restart fires.
+    /// </summary>
+    public bool Suspended { get; private set; }
+
+    /// <summary>
+    /// Steps aside for a manual recording. AMF's capture component only allows one
+    /// instance — a second one fails outright — and running two capture+encode pipelines
+    /// at once was costing far more in-game FPS than anything else the app does.
+    /// </summary>
+    public async Task SuspendAsync()
+    {
+        Suspended = true;
+        await StopAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Comes back after the recording, keeping the segments from before the pause.</summary>
+    public void Resume()
+    {
+        Suspended = false;
+        _ = StartInternalAsync(clearHistory: false);
+    }
+
     private async Task StartInternalAsync(bool clearHistory)
     {
         await _lifecycleLock.WaitAsync().ConfigureAwait(false);
         try
         {
             if (IsRunning) return;
+            if (Suspended) return;
             if (!_settings.Current.ReplayBuffer.Enabled) return;
             StartCore(clearHistory);
         }

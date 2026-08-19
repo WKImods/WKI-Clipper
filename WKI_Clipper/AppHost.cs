@@ -79,7 +79,39 @@ public sealed class AppHost : IDisposable
         Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
 
+        WireCaptureExclusivity();
         ResolveDefaultAudioDevices();
+    }
+
+    // True while the buffer was taken down for a manual recording, so it only comes back
+    // if it was actually running before.
+    private bool _bufferPausedForRecording;
+
+    /// <summary>
+    /// Only one screen capture at a time. AMF's capture component refuses a second
+    /// instance outright, and two capture+encode pipelines cost far more in-game FPS than
+    /// anything else the app does — so the replay buffer steps aside for a manual
+    /// recording and comes back afterwards.
+    /// </summary>
+    private void WireCaptureExclusivity()
+    {
+        ManualRecording.SuspendCompetingCapture = async () =>
+        {
+            _bufferPausedForRecording = ReplayBuffer.IsRunning;
+            if (!_bufferPausedForRecording) return;
+            Logger.Info("Pausing the replay buffer for a manual recording.");
+            await ReplayBuffer.SuspendAsync().ConfigureAwait(false);
+        };
+
+        // Resume on the EVENT, not in the toggle: this also covers a recording that ends
+        // by itself (ffmpeg error, disk full), where nobody presses stop.
+        ManualRecording.RecordingStopped += (_, _) =>
+        {
+            if (!_bufferPausedForRecording) return;
+            _bufferPausedForRecording = false;
+            Logger.Info("Resuming the replay buffer after the recording.");
+            ReplayBuffer.Resume();
+        };
     }
 
     private void ResolveDefaultAudioDevices()

@@ -183,10 +183,25 @@ public sealed class ManualRecordingService : IDisposable
         await _ffmpeg.StopAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>
+    /// Awaited before a recording starts, so the composition root can free the capture
+    /// hardware. AMF's capture component is exclusive: a second instance fails with
+    /// "Failed to initialize capture component", and even on the older ddagrab path two
+    /// simultaneous capture+encode pipelines were the biggest single cost to in-game FPS.
+    /// </summary>
+    public Func<Task>? SuspendCompetingCapture { get; set; }
+
     public async Task ToggleAsync()
     {
-        if (IsRecording) await StopAsync();
-        else Start();
+        if (IsRecording) { await StopAsync(); return; }
+
+        if (SuspendCompetingCapture is { } suspend)
+        {
+            // A failure here must not block the recording — worst case both run, as before.
+            try { await suspend().ConfigureAwait(false); }
+            catch (Exception ex) { Logger.Warn("Could not free the capture for recording: " + ex.Message); }
+        }
+        Start();
     }
 
     /// <summary>
