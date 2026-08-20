@@ -265,6 +265,18 @@ public partial class PreflightView : UserControl
             CountdownText.Text = L.T("Stream startet…", "Starting stream…");
             await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.StartStream });
 
+            // ExecuteAsync never faults — a rejected StartStream (missing stream key, dead
+            // uplink) only raises a toast. The sequence has to SEE the stream actually
+            // running, or it would count down and announce "You're live" over nothing.
+            if (!await WaitForStatusAsync(host, () => host.Obs.Status.Streaming,
+                                          TimeSpan.FromSeconds(12), ct))
+            {
+                CountdownText.Text = L.T(
+                    "Stream-Start fehlgeschlagen — OBS meldet nicht LIVE. Stream-Key/Verbindung prüfen.",
+                    "Stream start failed — OBS does not report LIVE. Check stream key/connection.");
+                return;
+            }
+
             if (Cfg.StartReplayBuffer && !host.Obs.Status.ReplayBufferActive)
                 await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.ToggleReplayBuffer });
 
@@ -317,11 +329,40 @@ public partial class PreflightView : UserControl
             return;
 
         await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.StopStream });
-        if (alsoBuffer)
+
+        // Same honesty rule as Go Live: report success only after OBS confirms it.
+        bool ended = await WaitForStatusAsync(host, () => !host.Obs.Status.Streaming,
+                                              TimeSpan.FromSeconds(10), CancellationToken.None);
+        if (ended && alsoBuffer)
             await host.Obs.ExecuteAsync(new StreamButtonConfig { Action = StreamAction.ToggleReplayBuffer });
 
         CountdownText.Visibility = Visibility.Visible;
-        CountdownText.Text = L.T("Stream beendet.", "Stream ended.");
+        CountdownText.Text = ended
+            ? L.T("Stream beendet.", "Stream ended.")
+            : L.T("Stopp nicht bestätigt — bitte direkt in OBS prüfen.", "Stop not confirmed — check OBS directly.");
         Refresh();
+    }
+
+    /// <summary>
+    /// Waits until the mirrored OBS state satisfies <paramref name="condition"/>, driven by
+    /// StatusChanged events (no polling). Needed because ExecuteAsync deliberately never
+    /// faults — request errors only surface as toasts, so sequences must watch the state.
+    /// </summary>
+    private static async Task<bool> WaitForStatusAsync(AppHost host, Func<bool> condition,
+                                                       TimeSpan timeout, CancellationToken ct)
+    {
+        if (condition()) return true;
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action onStatus = () => { if (condition()) tcs.TrySetResult(); };
+        host.Obs.StatusChanged += onStatus;
+        try
+        {
+            if (condition()) return true;   // may have flipped between check and subscribe
+            var done = await Task.WhenAny(tcs.Task, Task.Delay(timeout, ct));
+            if (done == tcs.Task) return true;
+            ct.ThrowIfCancellationRequested();   // countdown cancel → the OCE handler above
+            return condition();
+        }
+        finally { host.Obs.StatusChanged -= onStatus; }
     }
 }

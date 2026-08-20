@@ -27,9 +27,26 @@ public sealed class Playlist
 
     public void SetTracks(IEnumerable<string> tracks, bool shuffle)
     {
+        // A rescan while music plays must not lose the playing track: indices shift when
+        // files are added/removed, so the rematch has to go by PATH. Without it the UI
+        // highlighted order[0] while another track was audible, and auto-advance continued
+        // from the top of the list instead of after the playing track.
+        string? playing = Current;
+
         Tracks = tracks.ToList();
         Shuffle = shuffle;
         Rebuild(keepCurrent: false);
+
+        if (playing is null) return;
+        for (int i = 0; i < Tracks.Count; i++)
+        {
+            if (string.Equals(Tracks[i], playing, StringComparison.OrdinalIgnoreCase))
+            {
+                JumpTo(i);
+                return;
+            }
+        }
+        // Playing track no longer exists → position 0 is the honest fallback.
     }
 
     public void SetShuffle(bool shuffle)

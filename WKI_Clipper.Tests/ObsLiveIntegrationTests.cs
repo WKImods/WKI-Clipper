@@ -93,6 +93,64 @@ public sealed class ObsLiveIntegrationTests
     }
 
     /// <summary>
+    /// Sources widget path: list the current scene's items with their visibility, toggle
+    /// one off and on again, and require BOTH changes to come back as events (that is what
+    /// keeps the widget in sync when something is toggled in OBS itself). No stream runs.
+    /// </summary>
+    [Fact]
+    public async Task Lists_scene_items_and_roundtrips_a_visibility_toggle()
+    {
+        if (!Enabled) return;
+
+        var settings = new SettingsService();
+        settings.Load();
+        using var svc = new ObsWebSocketService(settings);
+
+        var connected = new TaskCompletionSource();
+        svc.StatusChanged += () => { if (svc.IsConnected) connected.TrySetResult(); };
+        svc.Enable();
+        await Task.WhenAny(connected.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.True(svc.IsConnected, "OBS at 127.0.0.1:4455 not reachable.");
+
+        var scene = svc.Status.CurrentScene;
+        Assert.False(string.IsNullOrEmpty(scene));
+
+        var items = svc.ListSceneItemsDetailed(scene!);
+        Assert.NotEmpty(items);
+        var target = items[0];
+
+        async Task<bool> ToggleAndAwaitEvent(bool enable)
+        {
+            var evt = new TaskCompletionSource();
+            Action h = () => evt.TrySetResult();
+            svc.SceneItemsChanged += h;
+            try
+            {
+                await svc.SetSceneItemEnabledAsync(scene!, target.ItemId, enable);
+                var done = await Task.WhenAny(evt.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+                return done == evt.Task;
+            }
+            finally { svc.SceneItemsChanged -= h; }
+        }
+
+        try
+        {
+            Assert.True(await ToggleAndAwaitEvent(!target.Enabled),
+                "SceneItemsChanged event did not arrive after the first toggle.");
+            var after = svc.ListSceneItemsDetailed(scene!).First(i => i.ItemId == target.ItemId);
+            Assert.Equal(!target.Enabled, after.Enabled);
+        }
+        finally
+        {
+            // Restore, also event-confirmed, so the user's scene is untouched afterwards.
+            await ToggleAndAwaitEvent(target.Enabled);
+        }
+
+        var restored = svc.ListSceneItemsDetailed(scene!).First(i => i.ItemId == target.ItemId);
+        Assert.Equal(target.Enabled, restored.Enabled);
+    }
+
+    /// <summary>
     /// The preflight's free-space check is only worth anything if it looks at the drive OBS
     /// actually writes to. That path comes from GetRecordDirectory on connect — this proves
     /// the request works and returns a usable, existing directory. No stream is started.

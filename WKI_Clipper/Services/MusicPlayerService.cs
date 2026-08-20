@@ -194,15 +194,29 @@ public sealed class MusicPlayerService : IDisposable
         {
             Logger.Warn("Music playback failed: " + ex.Message);
             DisposePlayback();
+            // The file still holds the PREVIOUS track's text at this point.
+            WriteNowPlaying(null);
         }
         StateChanged?.Invoke();
     }
 
     private void OnMainStopped(object? sender, StoppedEventArgs e)
     {
+        // NAudio posts a snapshot of this delegate through the dispatcher, so a stale
+        // event from an already-disposed output can still arrive AFTER unsubscribing —
+        // acting on it would double-advance, or restart music right after Stop.
+        if (!ReferenceEquals(sender, _mainOut)) return;
         // Only auto-advance on a natural end, not when we tore the graph down ourselves.
         if (_stopping) return;
-        if (e.Exception != null) { Logger.Warn("Music output stopped: " + e.Exception.Message); return; }
+        if (e.Exception != null)
+        {
+            Logger.Warn("Music output stopped: " + e.Exception.Message);
+            // Output device died mid-track — without this the OBS overlay keeps showing
+            // the dead track's title for the rest of the stream.
+            WriteNowPlaying(null);
+            StateChanged?.Invoke();
+            return;
+        }
         if (_playlist.Next() is null) { Stop(); return; }
         StartCurrent();
     }

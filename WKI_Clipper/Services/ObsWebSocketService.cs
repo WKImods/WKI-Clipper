@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using OBSWebsocketDotNet;
+using OBSWebsocketDotNet.Types;
 using WKI_Clipper.Models;
 
 namespace WKI_Clipper.Services;
@@ -34,6 +35,9 @@ public sealed class ObsStatus
     /// <summary>Where OBS writes recordings — often a different drive than the clipper's.</summary>
     public string? RecordDirectory;
 }
+
+/// <summary>One source in a scene, as the sources widget shows it.</summary>
+public sealed record SceneItemRow(int ItemId, string Name, bool Enabled);
 
 /// <summary>Linear multiplier ↔ decibel helpers for the mixer faders (pure, unit-tested).</summary>
 public static class ObsVolume
@@ -81,6 +85,8 @@ public sealed class ObsWebSocketService : IDisposable
     public event Action<string>? ActionError;
     /// <summary>The live stream started dropping frames badly (worker thread!), rate-limited.</summary>
     public event Action<StreamHealthReading>? HealthWarning;
+    /// <summary>Scene items appeared/vanished or changed visibility (worker thread!).</summary>
+    public event Action? SceneItemsChanged;
 
     public ObsWebSocketService(SettingsService settings)
     {
@@ -101,6 +107,15 @@ public sealed class ObsWebSocketService : IDisposable
             Interlocked.Exchange(ref _connectingSince, 0);
             bool wasConnected = Status.Connected;
             Status.Connected = false;
+            // Every "output is live" claim is unverifiable without the socket — and leaving
+            // them set had the preflight showing a green "You are LIVE" (with a working
+            // End-stream button) after an OBS crash mid-stream.
+            Status.Streaming = false;
+            Status.Recording = false;
+            Status.RecordPaused = false;
+            Status.ReplayBufferActive = false;
+            Status.VirtualCamActive = false;
+            Status.CurrentScene = null;
             UpdateStatsPolling();
             if (wasConnected) Logger.Info($"OBS disconnected: {e?.DisconnectReason ?? "unknown"}");
             StatusChanged?.Invoke();
@@ -116,10 +131,29 @@ public sealed class ObsWebSocketService : IDisposable
         };
         _obs.RecordStateChanged += (_, e) =>
         {
-            Status.Recording = e.OutputState.IsActive;
-            if (!e.OutputState.IsActive) Status.RecordPaused = false;
-            // The output folder can be repointed between takes — refresh when one starts.
-            if (e.OutputState.IsActive) PullRecordDirectory();
+            // outputActive is false for PAUSED as well (verified in the obs-websocket
+            // server source), so keying "recording" off IsActive turned every pause into
+            // "not recording" in the UI. The State value tells the truth.
+            switch (e.OutputState.State)
+            {
+                case OutputState.OBS_WEBSOCKET_OUTPUT_STARTED:
+                case OutputState.OBS_WEBSOCKET_OUTPUT_RESUMED:
+                    Status.Recording = true;
+                    Status.RecordPaused = false;
+                    // The output folder can be repointed between takes — refresh on start.
+                    if (e.OutputState.State == OutputState.OBS_WEBSOCKET_OUTPUT_STARTED)
+                        PullRecordDirectory();
+                    break;
+                case OutputState.OBS_WEBSOCKET_OUTPUT_PAUSED:
+                    Status.Recording = true;
+                    Status.RecordPaused = true;
+                    break;
+                case OutputState.OBS_WEBSOCKET_OUTPUT_STOPPED:
+                    Status.Recording = false;
+                    Status.RecordPaused = false;
+                    break;
+                // STARTING/STOPPING are transitions — keep the last settled state.
+            }
             StatusChanged?.Invoke();
         };
         _obs.ReplayBufferStateChanged += (_, e) => { Status.ReplayBufferActive = e.OutputState.IsActive; StatusChanged?.Invoke(); };
@@ -132,6 +166,44 @@ public sealed class ObsWebSocketService : IDisposable
             Status.InputVolume[e.Volume.InputName] = (float)e.Volume.InputVolumeMul;
             StatusChanged?.Invoke();
         };
+
+        // --- input lifecycle → without these, the mixer/preflight kept judging inputs
+        // that no longer existed, and new inputs never appeared until their volume
+        // happened to change. The dictionaries must follow OBS, not just the connect. ---
+        _obs.InputCreated += (_, e) =>
+        {
+            try { Status.InputMuted[e.InputName] = _obs.GetInputMute(e.InputName); } catch { }
+            try { Status.InputVolume[e.InputName] = (float)_obs.GetInputVolume(e.InputName).VolumeMul; } catch { }
+            StatusChanged?.Invoke();
+        };
+        _obs.InputRemoved += (_, e) =>
+        {
+            // NOTE: "out _" would bind to the lambda's sender parameter here, not a discard.
+            Status.InputMuted.TryRemove(e.InputName, out bool removedMute);
+            Status.InputVolume.TryRemove(e.InputName, out float removedVol);
+            StatusChanged?.Invoke();
+        };
+        _obs.InputNameChanged += (_, e) =>
+        {
+            if (Status.InputMuted.TryRemove(e.OldInputName, out bool m)) Status.InputMuted[e.InputName] = m;
+            if (Status.InputVolume.TryRemove(e.OldInputName, out float v)) Status.InputVolume[e.InputName] = v;
+            StatusChanged?.Invoke();
+        };
+        _obs.CurrentSceneCollectionChanged += (_, _) =>
+        {
+            // A collection switch replaces scenes AND inputs wholesale; OBS suppresses
+            // the individual events during the load, so a full re-pull is the only way
+            // to a correct mirror.
+            try { PullFullStatus(); }
+            catch (Exception ex) { Logger.Warn("OBS re-pull after scene-collection switch failed: " + ex.Message); }
+            StatusChanged?.Invoke();
+            SceneItemsChanged?.Invoke();
+        };
+
+        // --- scene item visibility (the "sources" widget) ---
+        _obs.SceneItemEnableStateChanged += (_, _) => SceneItemsChanged?.Invoke();
+        _obs.SceneItemCreated += (_, _) => SceneItemsChanged?.Invoke();
+        _obs.SceneItemRemoved += (_, _) => SceneItemsChanged?.Invoke();
 
         _reconnect.Elapsed += (_, _) => TryConnectTick();
         _statsPoll.Elapsed += (_, _) => PollStatsTick();
@@ -329,6 +401,45 @@ public sealed class ObsWebSocketService : IDisposable
         try { return _obs.GetSceneItemList(sceneName).Select(i => i.SourceName).ToList(); }
         catch (Exception ex) { Logger.Warn("GetSceneItemList failed: " + ex.Message); return new(); }
     }
+
+    /// <summary>
+    /// Items of one scene with their visibility, top of the list first (call off the UI
+    /// thread — blocking WS requests). The list request itself does not carry the enabled
+    /// flag in this library, hence the per-item query.
+    /// </summary>
+    public List<SceneItemRow> ListSceneItemsDetailed(string sceneName)
+    {
+        try
+        {
+            var rows = new List<SceneItemRow>();
+            foreach (var it in _obs.GetSceneItemList(sceneName))
+            {
+                bool enabled = true;
+                try { enabled = _obs.GetSceneItemEnabled(sceneName, it.ItemId); }
+                catch { /* item vanished between the two calls — show it as-is */ }
+                rows.Add(new SceneItemRow(it.ItemId, it.SourceName, enabled));
+            }
+            return rows;
+        }
+        catch (Exception ex) { Logger.Warn("GetSceneItemList failed: " + ex.Message); return new(); }
+    }
+
+    /// <summary>Shows/hides one source in a scene (sources widget checkbox).</summary>
+    public Task SetSceneItemEnabledAsync(string sceneName, int itemId, bool enabled) => Task.Run(() =>
+    {
+        if (!_obs.IsConnected)
+        {
+            ActionError?.Invoke(L.T("OBS ist nicht verbunden.", "OBS is not connected."));
+            return;
+        }
+        try { _obs.SetSceneItemEnabled(sceneName, itemId, enabled); }
+        catch (Exception ex)
+        {
+            Logger.Warn($"SetSceneItemEnabled failed for item {itemId} in '{sceneName}': {ex.Message}");
+            ActionError?.Invoke(L.T($"Quelle konnte nicht umgeschaltet werden: {ex.Message}",
+                                    $"Could not toggle the source: {ex.Message}"));
+        }
+    });
 
     // ---- button execution ----
 

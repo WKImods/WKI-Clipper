@@ -30,6 +30,7 @@ while you play, or close it. Layout, size, pin and visibility are remembered per
 | **Crosshair** | PNG crosshair overlay — see below |
 | **Streaming** | Software stream deck for OBS — see below |
 | **Mixer** | Fader, live dB readout and mute per OBS audio input, synced both ways |
+| **Sources** | Scene switcher + per-source visibility checkboxes for the current OBS scene |
 | **Go Live** | Traffic-light preflight checklist plus a one-click stream start sequence |
 | **Chat** | Read-only Twitch chat, click-through when pinned — see below |
 | **Music** | Stream music player with separate stream and monitor levels — see below |
@@ -80,6 +81,15 @@ OBS at runtime — nothing is hardcoded. Sync goes both ways: a fader moved in O
 here too. Fader drags are coalesced into one request instead of one per pixel, and
 incoming updates never yank the knob while you are dragging it.
 
+## Sources widget
+
+Scene and source control without focusing OBS: one click switches the program scene
+(current scene highlighted), and every source of that scene gets a checkbox that shows or
+hides it in the stream — the way you would toggle a window capture on and off mid-stream.
+
+Fully event-driven both ways: toggling something in OBS itself updates the widget, and the
+list follows scene switches, added/removed sources and scene-collection changes. No polling.
+
 ## Go Live widget (preflight)
 
 A traffic-light checklist for the moments before a stream: OBS connected · microphone
@@ -96,7 +106,9 @@ one OBS displays, because a connection that starts breaking up two hours in bare
 the total. Sustained drops raise a popup even when the widget is closed.
 
 The **Go live** button then runs the whole start sequence: start scene → start stream →
-replay buffer on → visible countdown → target scene. Scenes, countdown length and the
+replay buffer on → visible countdown → target scene. The sequence only continues once OBS
+actually reports the stream as running — a rejected start (missing stream key, dead uplink)
+aborts with an honest message instead of counting down over nothing. Scenes, countdown length and the
 microphone input name are configurable, with scene names pulled live from OBS.
 
 Because going live is public and hard to take back, the button always asks for

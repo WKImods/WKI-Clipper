@@ -1,4 +1,4 @@
-using WKI_Clipper.Models;
+﻿using WKI_Clipper.Models;
 using WKI_Clipper.Services;
 using Xunit;
 
@@ -22,7 +22,7 @@ public sealed class SettingsMigrationTests
         Assert.Equal(CaptureMode.Window, s.Capture.Mode);
         Assert.Equal("arma", s.Capture.TargetProcessName);
         Assert.True(s.Capture.CoupleAudio);
-        Assert.Equal(11, s.Widgets.Widgets.Count); // default widget layout ensured
+        Assert.Equal(12, s.Widgets.Widgets.Count); // default widget layout ensured
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed class SettingsMigrationTests
         {
             SchemaVersion = 1,
             Capture = new CaptureProfile { Mode = CaptureMode.Monitor, CoupleAudio = false },
-            Widgets = new WidgetSettings { Widgets = new() } // empty → must be filled
+            Widgets = new WidgetSettings { Widgets = new() } // empty â†’ must be filled
         };
 
         bool changed = SettingsService.MigrateIfNeeded(s);
@@ -41,13 +41,13 @@ public sealed class SettingsMigrationTests
         Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
         Assert.Equal(CaptureMode.Monitor, s.Capture.Mode);   // unchanged
         Assert.False(s.Capture.CoupleAudio);                 // unchanged
-        Assert.Equal(11, s.Widgets.Widgets.Count);            // default layout ensured
+        Assert.Equal(12, s.Widgets.Widgets.Count);            // default layout ensured
     }
 
     [Fact]
     public void V2_gets_the_crosshair_hotkey_merged_in()
     {
-        // A v2 file has a saved Hotkeys dictionary without ToggleCrosshair — the
+        // A v2 file has a saved Hotkeys dictionary without ToggleCrosshair â€” the
         // new default would otherwise never reach existing users.
         var s = new AppSettings { SchemaVersion = 2 };
         s.Hotkeys.Remove(HotkeyActions.ToggleCrosshair);
@@ -88,7 +88,7 @@ public sealed class SettingsMigrationTests
     [Fact]
     public void Widget_opacity_persists_and_defaults_to_opaque_for_old_files()
     {
-        // Old settings.json without the Opacity property → property initializer wins.
+        // Old settings.json without the Opacity property â†’ property initializer wins.
         var legacyJson = "{\"Id\":\"Capture\",\"Visible\":true,\"X\":10,\"Y\":10,\"Width\":300,\"Height\":300}";
         var legacy = System.Text.Json.JsonSerializer.Deserialize<WidgetState>(legacyJson)!;
         Assert.Equal(1.0, legacy.Opacity);
@@ -104,7 +104,7 @@ public sealed class SettingsMigrationTests
     public void Default_widget_layout_has_the_builtins()
     {
         var layout = WidgetSettings.DefaultLayout();
-        Assert.Equal(11, layout.Count);
+        Assert.Equal(12, layout.Count);
         Assert.Contains(layout, w => w.Id == WidgetId.Crosshair);
         Assert.Contains(layout, w => w.Id == WidgetId.Capture);
         Assert.Contains(layout, w => w.Id == WidgetId.Audio);
@@ -113,3 +113,4 @@ public sealed class SettingsMigrationTests
         Assert.Contains(layout, w => w.Id == WidgetId.Settings);
     }
 }
+

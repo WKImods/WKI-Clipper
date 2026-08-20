@@ -382,7 +382,7 @@ public sealed class HotkeyBinding
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight, Chat, Music }
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight, Chat, Music, Sources }
 
 /// <summary>
 /// The PNG crosshair overlay: which image from the library is active, where it sits
@@ -474,6 +474,7 @@ public sealed class WidgetSettings
         new WidgetState { Id = WidgetId.Crosshair,   Visible = false, Width = 400, Height = 560 },
         new WidgetState { Id = WidgetId.Streaming,   Visible = false, Width = 460, Height = 520 },
         new WidgetState { Id = WidgetId.Mixer,       Visible = false, Width = 400, Height = 340 },
+        new WidgetState { Id = WidgetId.Sources,     Visible = false, Width = 360, Height = 480 },
         new WidgetState { Id = WidgetId.Preflight,   Visible = false, Width = 420, Height = 460 },
         // Chat defaults to click-through: pinned over a game it must never eat a shot.
         new WidgetState { Id = WidgetId.Chat,        Visible = false, Width = 360, Height = 480, ClickThrough = true },

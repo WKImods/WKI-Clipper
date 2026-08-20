@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 7;
+    public const int CurrentSchemaVersion = 8;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -190,6 +190,15 @@ public sealed class SettingsService
             s.SchemaVersion = 7;
             changed = true;
             Logger.Info("Settings migrated to schema v7: chat + music widgets ensured");
+        }
+
+        // v7 → v8: OBS scenes & sources widget.
+        if (s.SchemaVersion < 8)
+        {
+            s.Widgets.GetOrAdd(WidgetId.Sources);
+            s.SchemaVersion = 8;
+            changed = true;
+            Logger.Info("Settings migrated to schema v8: sources widget ensured");
         }
 
         return changed;

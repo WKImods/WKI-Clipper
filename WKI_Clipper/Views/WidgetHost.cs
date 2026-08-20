@@ -141,8 +141,8 @@ public sealed class WidgetHost : IDisposable
     /// <summary>Order of widgets in the launcher; also the stagger order for default placement.</summary>
     private static readonly WidgetId[] Order =
         { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair,
-          WidgetId.Streaming, WidgetId.Mixer, WidgetId.Preflight, WidgetId.Chat, WidgetId.Music,
-          WidgetId.Settings };
+          WidgetId.Streaming, WidgetId.Mixer, WidgetId.Sources, WidgetId.Preflight, WidgetId.Chat,
+          WidgetId.Music, WidgetId.Settings };
 
     private WidgetSettings Settings => _host.Settings.Current.Widgets;
 
@@ -155,6 +155,7 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Crosshair   => L.T("Crosshair", "Crosshair"),
         WidgetId.Streaming   => "Streaming",
         WidgetId.Mixer       => L.T("Mixer", "Mixer"),
+        WidgetId.Sources     => L.T("Quellen", "Sources"),
         WidgetId.Preflight   => L.T("Go Live", "Go Live"),
         WidgetId.Chat        => "Chat",
         WidgetId.Music       => L.T("Musik", "Music"),
@@ -171,6 +172,7 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Crosshair   => new CrosshairView(),
         WidgetId.Streaming   => new StreamingView(),
         WidgetId.Mixer       => new MixerView(),
+        WidgetId.Sources     => new SourcesView(),
         WidgetId.Preflight   => new PreflightView(),
         WidgetId.Chat        => new ChatView(),
         WidgetId.Music       => new MusicView(),

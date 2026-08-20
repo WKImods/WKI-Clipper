@@ -173,13 +173,24 @@ public sealed class ChatAndMusicTests
         s.Widgets.Widgets.RemoveAll(w => w.Id is WidgetId.Chat or WidgetId.Music);
 
         Assert.True(SettingsService.MigrateIfNeeded(s));
-        Assert.Equal(7, s.SchemaVersion);
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
         Assert.NotNull(s.Chat);
         Assert.NotNull(s.Music);
         Assert.Equal("oskar_blitz", s.Chat.Channel);
         var chat = s.Widgets.Widgets.First(w => w.Id == WidgetId.Chat);
         Assert.True(chat.ClickThrough);           // must not eat clicks over a game
         Assert.Contains(s.Widgets.Widgets, w => w.Id == WidgetId.Music);
+    }
+
+    [Fact]
+    public void V7_gains_the_sources_widget()
+    {
+        var s = new AppSettings { SchemaVersion = 7 };
+        s.Widgets.Widgets.RemoveAll(w => w.Id == WidgetId.Sources);
+
+        Assert.True(SettingsService.MigrateIfNeeded(s));
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
+        Assert.Contains(s.Widgets.Widgets, w => w.Id == WidgetId.Sources);
     }
 
     [Fact]
