@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -22,7 +22,7 @@
     <AssemblyName>WKI_Clipper</AssemblyName>
     <RootNamespace>WKI_Clipper</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.10.0</Version>
+    <Version>0.10.1</Version>
     <Authors>Phillip / WKI</Authors>
     <Product>WKI Clipper</Product>
     <Description>Minimal clipping &amp; replay tool for Windows 11 / AMD</Description>
@@ -52,3 +52,4 @@
   </ItemGroup>
 
 </Project>
+

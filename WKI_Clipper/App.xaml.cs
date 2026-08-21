@@ -137,6 +137,20 @@ public partial class App : Application
             // Board is opened via hotkey / tray — pinned widgets already restored.
 
             TrayHost.Install(Host, _widgetHost);
+
+            // Move the first-open cost of the widget board to startup: without this the
+            // first Ctrl+Alt+G built every window live, which looked like the overlay
+            // opening "window by window". Delayed so the replay buffer's ffmpeg spin-up
+            // gets the machine to itself first.
+            if (Host.Settings.Current.Behavior.PrewarmWidgets)
+            {
+                _ = Dispatcher.InvokeAsync(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(4));
+                    try { await _widgetHost.PrewarmAsync(); }
+                    catch (Exception ex) { Logger.Warn("Widget prewarm failed: " + ex.Message); }
+                });
+            }
             Logger.Info("TrayHost installed.");
 
             Logger.Info("Startup complete.");

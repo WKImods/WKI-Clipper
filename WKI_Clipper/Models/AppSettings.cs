@@ -238,6 +238,11 @@ public sealed class BehaviorSettings
     public AppLanguage Language { get; set; } = AppLanguage.Deutsch;
     public bool StartWithWindows { get; set; } = false;
     public bool StartBufferOnLaunch { get; set; } = true;
+    /// <summary>
+    /// Build all widget windows invisibly shortly after launch, so the FIRST board open
+    /// is as fast as every later one (the cost was XAML/JIT + each view's init work).
+    /// </summary>
+    public bool PrewarmWidgets { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool ShowToastNotifications { get; set; } = true;
     public int OverlayAutoCloseSeconds { get; set; } = 10;

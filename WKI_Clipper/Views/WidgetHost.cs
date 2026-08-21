@@ -190,6 +190,7 @@ public sealed class WidgetHost : IDisposable
 
     public void OpenBoard()
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var screen = WinForms.Screen.FromPoint(WinForms.Cursor.Position);
         _boardOpen = true;
 
@@ -212,7 +213,55 @@ public sealed class WidgetHost : IDisposable
 
         // Crosshair becomes draggable while the board is open.
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
-        Logger.Info("Widget board opened.");
+        // The duration is the whole point of the prewarm work — keep it measurable.
+        Logger.Info($"Widget board opened in {sw.ElapsedMilliseconds} ms.");
+    }
+
+    /// <summary>
+    /// Builds every widget window once, far off-screen, so the FIRST real board open only
+    /// has to make already-built windows visible. The cost being moved here is real: XAML
+    /// inflation and first-use JIT per view, audio device enumeration, performance-counter
+    /// setup, the gallery scan. After a close the windows are only ever hidden — which is
+    /// exactly why the SECOND open was always fast. Prewarming reaches that state before
+    /// the user asks for it.
+    ///
+    /// Safe by construction: windows show at -20000/-20000 with ShowActivated=false, so
+    /// nothing is visible and nothing takes focus; GeometryChanged fires only on user
+    /// drags/deactivation, so stored positions are untouched, and the real open re-places
+    /// every window via PositionWindow anyway.
+    /// </summary>
+    public async Task PrewarmAsync()
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int built = 0;
+        foreach (var id in Order)
+        {
+            // The user beat us to it — everything left will be built visibly right now.
+            if (_boardOpen) { Logger.Info("Widget prewarm stopped — board opened by the user."); return; }
+            if (_windows.ContainsKey(id)) continue;   // pinned widgets already exist
+
+            try
+            {
+                var w = EnsureWindow(id);
+                w.Left = -20000;
+                w.Top = -20000;
+                w.Show();     // raises Loaded → the view runs its init work off-screen
+                // Let render + the view's Loaded handlers settle before hiding.
+                await System.Windows.Threading.Dispatcher.Yield(
+                    System.Windows.Threading.DispatcherPriority.ContextIdle);
+                w.Hide();
+                built++;
+            }
+            catch (Exception ex) { Logger.Warn($"Prewarm of {id} failed: {ex.Message}"); }
+
+            // One window at a time with breathing room — startup must stay responsive.
+            await Task.Delay(120);
+        }
+
+        // Backdrop + launcher are part of the first-open cost too; construct them now.
+        try { _backdrop ??= CreateBackdrop(); EnsureLauncher(); } catch { }
+
+        Logger.Info($"Widget prewarm done: {built} windows built in {sw.ElapsedMilliseconds} ms.");
     }
 
     public void CloseBoard()
