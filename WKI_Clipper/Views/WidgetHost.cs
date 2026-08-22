@@ -38,6 +38,8 @@ public sealed class WidgetHost : IDisposable
     }
 
     private CrosshairOverlayWindow? _crosshair;
+    /// <summary>Last known crosshair on/off, to detect the flip that needs a capture-path switch.</summary>
+    private bool? _lastCrosshairEnabled;
 
     public WidgetHost(AppHost host)
     {
@@ -51,8 +53,9 @@ public sealed class WidgetHost : IDisposable
     /// <summary>
     /// Renders the active crosshair PNG with the current image settings and shows or
     /// hides the overlay. Called on every settings change and on the Ctrl+Alt+C toggle.
-    /// The overlay is NOT part of <see cref="HideDuringCapture"/> — a crosshair is part
-    /// of what the user aims with, so it stays in their own clips/screenshots.
+    /// The overlay is NOT part of <see cref="HideDuringCapture"/>: it is excluded from
+    /// capture permanently via WDA_EXCLUDEFROMCAPTURE instead, because F9 saves seconds
+    /// that were recorded before the key was pressed.
     /// </summary>
     public void ApplyCrosshair()
     {
@@ -68,6 +71,19 @@ public sealed class WidgetHost : IDisposable
         // Keep the config widget's checkbox in sync (hotkey toggles bypass the UI).
         if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
             cv.SyncEnabled(s.Enabled);
+
+        // The capture path depends on this switch: AMF's own capture cannot hide the
+        // crosshair, so turning it on/off has to re-arm the buffer with the matching
+        // pipeline. Only on an actual flip — this method also runs for colour/size edits.
+        if (_lastCrosshairEnabled is not { } was || was != s.Enabled)
+        {
+            if (_lastCrosshairEnabled is not null)
+            {
+                Logger.Info($"Crosshair {(s.Enabled ? "enabled" : "disabled")} — restarting the buffer to switch capture path.");
+                _host.ReplayBuffer.RequestRestart();
+            }
+            _lastCrosshairEnabled = s.Enabled;
+        }
 
         if (!s.Enabled || entry is null)
         {

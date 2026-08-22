@@ -57,7 +57,15 @@ public static class FFmpegCommandBuilder
         // old path, 0.84 s on this one.
         // Restricted to full-monitor capture without downscale: scaling would need vpp_amf
         // (and cannot letterbox), and window capture comes through the rawvideo pipe anyway.
-        bool amfNativeCapture = settings.Video.Codec.Contains("amf") && !rawInput && !needScale;
+        //
+        // Also excluded while the crosshair overlay is on: vsrc_amf IGNORES
+        // WDA_EXCLUDEFROMCAPTURE, so AMF's capture records the aiming overlay into every
+        // clip, while ddagrab honours it. Verified side by side on the same screen at the
+        // same moment - AMF frame had the crosshair, ddagrab frame did not. Correct
+        // footage beats the cheaper capture path.
+        bool crosshairMustBeHidden = settings.Crosshair.Enabled;
+        bool amfNativeCapture = settings.Video.Codec.Contains("amf") && !rawInput && !needScale
+                                && !crosshairMustBeHidden;
 
         if (rawInput)
         {

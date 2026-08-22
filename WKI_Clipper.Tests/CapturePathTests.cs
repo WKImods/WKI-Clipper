@@ -87,6 +87,34 @@ public class CapturePathTests
     }
 
     [Fact]
+    public void An_enabled_crosshair_forces_the_ddagrab_path()
+    {
+        // vsrc_amf ignores WDA_EXCLUDEFROMCAPTURE, so AMF's capture records the aiming
+        // overlay into every clip; ddagrab honours it. Verified side by side on the real
+        // screen. Correct footage wins over the cheaper path.
+        var s = Amf();
+        s.Crosshair.Enabled = true;
+
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
+
+        Assert.Contains("ddagrab", args);
+        Assert.Contains("hwdownload", args);
+        Assert.DoesNotContain("vsrc_amf", args);
+    }
+
+    [Fact]
+    public void Without_a_crosshair_the_fast_path_returns()
+    {
+        var s = Amf();
+        s.Crosshair.Enabled = false;
+
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
+
+        Assert.Contains("vsrc_amf", args);
+        Assert.DoesNotContain("hwdownload", args);
+    }
+
+    [Fact]
     public void Audio_mapping_survives_the_new_video_input()
     {
         var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false,
