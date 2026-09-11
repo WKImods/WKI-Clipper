@@ -15,12 +15,29 @@ namespace WKI_Clipper.Tests;
 /// </summary>
 public class CapturePathTests
 {
+    /// <summary>AMD encoder with the AMF capture path explicitly opted in (it is off by default).</summary>
     private static AppSettings Amf(ResolutionPreset res = ResolutionPreset.Native)
     {
         var s = new AppSettings();
         s.Video.Codec = "h264_amf";
         s.Video.Resolution = res;
+        s.Video.UseAmfCapture = true;
         return s;
+    }
+
+    [Fact]
+    public void The_amf_capture_path_is_off_by_default()
+    {
+        // It is driver-level and has produced effects the app cannot control (crosshair in
+        // clips; a system-wide stutter outliving the process). Safe path wins by default.
+        var s = new AppSettings();
+        s.Video.Codec = "h264_amf";
+        s.Video.Resolution = ResolutionPreset.Native;
+        Assert.False(s.Video.UseAmfCapture);
+
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
+        Assert.Contains("ddagrab", args);
+        Assert.DoesNotContain("vsrc_amf", args);
     }
 
     [Fact]

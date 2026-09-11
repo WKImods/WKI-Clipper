@@ -63,8 +63,13 @@ public static class FFmpegCommandBuilder
         // clip, while ddagrab honours it. Verified side by side on the same screen at the
         // same moment - AMF frame had the crosshair, ddagrab frame did not. Correct
         // footage beats the cheaper capture path.
+        //
+        // On top of that the whole path is opt-in (Video.UseAmfCapture, default off): it is
+        // driver-level, and a system-wide stutter that survived closing the app pointed at
+        // it. ddagrab is the safe default; the speed-up is not worth an unexplained machine.
         bool crosshairMustBeHidden = settings.Crosshair.Enabled;
-        bool amfNativeCapture = settings.Video.Codec.Contains("amf") && !rawInput && !needScale
+        bool amfNativeCapture = settings.Video.UseAmfCapture
+                                && settings.Video.Codec.Contains("amf") && !rawInput && !needScale
                                 && !crosshairMustBeHidden;
 
         if (rawInput)

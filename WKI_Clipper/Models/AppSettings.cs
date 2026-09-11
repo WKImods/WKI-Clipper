@@ -160,6 +160,16 @@ public sealed class VideoSettings
     public QualityPreset Quality { get; set; } = QualityPreset.Mittel;
     public int Bitrate { get; set; } = 25_000_000;   // used when Quality == Custom
     public CaptureSource CaptureSource { get; set; } = CaptureSource.Display;
+
+    /// <summary>
+    /// Use AMF's own screen capture (vsrc_amf) instead of ddagrab. Much cheaper — it keeps
+    /// frames on the GPU — but OFF by default, because it is driver-level and has twice
+    /// shown side effects the app cannot control: it ignores WDA_EXCLUDEFROMCAPTURE (the
+    /// crosshair lands in every clip) and it is suspected of leaving the display pipeline
+    /// in a degraded state that outlives the process, which would explain a system-wide
+    /// stutter persisting until reboot. Opt in only while actually verifying it.
+    /// </summary>
+    public bool UseAmfCapture { get; set; } = false;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]

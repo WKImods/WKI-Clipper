@@ -250,6 +250,18 @@ public partial class App : Application
             on ? L.T("Eingeblendet", "Shown") : L.T("Ausgeblendet", "Hidden"), durationSeconds: 1.6);
     }
 
+    /// <summary>
+    /// Windows is shutting down or logging off. OnExit does NOT reliably run in that case,
+    /// which left the capture pipeline (and its ffmpeg) to be killed mid-flight — exactly
+    /// the unclean teardown suspected of leaving driver-level capture state behind.
+    /// </summary>
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        Logger.Info($"Session ending ({e.ReasonSessionEnding}) — shutting the capture down cleanly.");
+        try { Host?.Dispose(); } catch (Exception ex) { Logger.Warn("Shutdown dispose failed: " + ex.Message); }
+        base.OnSessionEnding(e);
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         Logger.Info("App exiting.");
