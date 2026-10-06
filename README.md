@@ -73,6 +73,26 @@ OBS 28+) — no Elgato hardware or software, everything is built into the clippe
 - Setup: OBS → Tools → WebSocket Server Settings (default port 4455). The password is
   stored DPAPI-encrypted, never as plaintext.
 
+## Per-game folders
+
+Clips, recordings, GIFs and screenshots are filed into one subfolder per game:
+`Clips\Arma Reforger\Clip_….mp4`, `Screenshots\Wardogs\Shot_….png`. On by default; the
+switch lives in the paths settings.
+
+- **Which game** is decided when the key is pressed: a window pinned by window capture
+  names the folder; otherwise the window in front does. If the widget board has focus, the
+  last window before it counts. The desktop, the shell and Windows' own programs share a
+  `Desktop` folder.
+- **The name** comes from the program's version information, not the window title (which
+  changes with every map or editor tab). When one product ships several programs under the
+  same name — Arma Reforger's game and its Workbench both say "Arma Reforger" — the more
+  specific description wins, so modding footage does not mix with gameplay.
+- **Anti-cheat friendly:** the program path is read with the most limited process right
+  Windows offers; the game's memory is never touched.
+- **Nothing is ever lost to sorting:** if a game folder cannot be created, the file goes
+  into the base folder as before. Files saved before the feature stay where they are; the
+  gallery shows both and gained a game filter.
+
 ## Mixer widget
 
 A mini audio mixer for OBS, so levels can be changed without focusing OBS. One row per

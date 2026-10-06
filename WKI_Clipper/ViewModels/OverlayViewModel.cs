@@ -156,7 +156,10 @@ public partial class OverlayViewModel : ObservableObject
         var dir = SettingsService.ExpandPath(Settings.Output.ClipsFolder);
         if (!Directory.Exists(dir)) return;
 
-        var entries = new DirectoryInfo(dir).EnumerateFiles("*.mp4")
+        // Game subfolders included — new captures are sorted into them.
+        var entries = GameFolderNaming.EnumerateMedia(dir,
+                f => f.Extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+            .Select(e => e.File)
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .Take(50)
             .Select(f => new ClipMetadata

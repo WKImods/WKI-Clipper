@@ -238,6 +238,11 @@ public sealed class OutputSettings
     public string ScreenshotsFolder { get; set; } = @"%USERPROFILE%\Videos\WKI_Clipper\Screenshots";
     public string BufferFolder { get; set; } = @"%LOCALAPPDATA%\WKI_Clipper\buffer";
     public string FilenameTemplate { get; set; } = "Clip_{date}_{time}";
+    /// <summary>
+    /// File clips, recordings, GIFs and screenshots into one subfolder per game
+    /// (Clips\Arma Reforger\…). Existing files stay where they are; the gallery reads both.
+    /// </summary>
+    public bool SortByGame { get; set; } = true;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]

@@ -35,10 +35,19 @@ public sealed class ScreenshotService
         _settings = settings;
     }
 
+    /// <summary>
+    /// Names the game folder (set by the composition root). A screenshot is always the
+    /// whole active monitor, so there is no plan — the foreground app names it.
+    /// </summary>
+    public Func<CaptureTargetResolver.CapturePlan?, string>? GameFolderFor { get; set; }
+
     public async Task<string?> CaptureAsync()
     {
-        var outDir = SettingsService.ExpandPath(_settings.Current.Output.ScreenshotsFolder);
-        Directory.CreateDirectory(outDir);
+        // Resolve the folder BEFORE hiding the overlay: that is still the moment the user
+        // pressed the key, with the game in front.
+        var o = _settings.Current.Output;
+        var outDir = GameFolderNaming.PrepareDirectory(o.ScreenshotsFolder, o.SortByGame,
+            GameFolderFor is { } f ? () => f(null) : null);
         var ts = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
 
         var (idx, screen) = CaptureTargetResolver.ResolveActiveMonitor();

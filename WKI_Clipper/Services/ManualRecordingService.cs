@@ -28,19 +28,24 @@ public sealed class ManualRecordingService : IDisposable
         _settings = settings;
     }
 
+    /// <summary>Names the game folder for a recording of the given plan (set by the composition root).</summary>
+    public Func<CaptureTargetResolver.CapturePlan?, string>? GameFolderFor { get; set; }
+
     public string Start()
     {
         if (IsRecording) throw new InvalidOperationException("Recording already in progress.");
 
-        var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
-        Directory.CreateDirectory(clipsDir);
-        var filename = $"Rec_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
-        var path = Path.Combine(clipsDir, filename);
-
         // Same resolver as the buffer: in Auto mode the recording pins the window
         // that is active at Strg+F9 (occlusion-proof WGC) and STAYS on it until
         // the recording is stopped — switching windows afterwards changes nothing.
+        // Resolved BEFORE the path: the plan's pinned window also names the game folder.
         var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+
+        var o = _settings.Current.Output;
+        var clipsDir = GameFolderNaming.PrepareDirectory(o.ClipsFolder, o.SortByGame,
+            GameFolderFor is { } f ? () => f(plan) : null);
+        var filename = $"Rec_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
+        var path = Path.Combine(clipsDir, filename);
         Logger.Info($"ManualRecording target: video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
         // Start the audio pipe FIRST so the named pipe exists before ffmpeg opens

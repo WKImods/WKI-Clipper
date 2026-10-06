@@ -42,4 +42,26 @@ internal static class Kernel32
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    // --- Process image path with minimal rights (game folder detection) ---
+
+    /// <summary>
+    /// The least privileged process right that still yields the image path. Deliberately
+    /// NOT PROCESS_QUERY_INFORMATION/VM_READ (what Process.MainModule needs): games run
+    /// under anti-cheat (BattlEye on Arma), and reading their memory is exactly what such
+    /// software watches for.
+    /// </summary>
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags,
+        System.Text.StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr hObject);
 }

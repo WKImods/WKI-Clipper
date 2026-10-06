@@ -80,7 +80,20 @@ public sealed class AppHost : IDisposable
         Crosshairs = new CrosshairLibraryService();
 
         WireCaptureExclusivity();
+        WireGameFolders();
         ResolveDefaultAudioDevices();
+    }
+
+    /// <summary>Decides which game a capture belongs to (per-game subfolders).</summary>
+    public GameContext Games { get; private set; } = null!;
+
+    private void WireGameFolders()
+    {
+        // Lazy on purpose: the foreground tracker is created later in startup.
+        Games = new GameContext(() => Foreground?.LastExternalForegroundPid);
+        ReplayBuffer.GameFolderFor = Games.ResolveFolder;
+        ManualRecording.GameFolderFor = Games.ResolveFolder;
+        Screenshots.GameFolderFor = Games.ResolveFolder;
     }
 
     // True while the buffer was taken down for a manual recording, so it only comes back

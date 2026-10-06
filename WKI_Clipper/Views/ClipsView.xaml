@@ -18,6 +18,8 @@
                           Padding="10,6" Margin="8,0,0,0"
                           Foreground="{StaticResource TextBrush}" Cursor="Hand"
                           Checked="OnFavOnlyChanged" Unchecked="OnFavOnlyChanged" />
+            <ComboBox x:Name="GameFilter" DockPanel.Dock="Right" MinWidth="150" Margin="8,0,0,0"
+                      SelectionChanged="OnGameFilterChanged" />
             <TextBox x:Name="SearchBox" TextChanged="OnSearchChanged" />
         </DockPanel>
 

@@ -18,6 +18,11 @@ public partial class ClipsView : UserControl
     private readonly Dictionary<Filter, System.Windows.Controls.Button> _filterButtons = new();
     private string _search = "";
     private bool _favOnly;
+    /// <summary>Selected game folder; null = all games.</summary>
+    private string? _game;
+    /// <summary>Label for files saved before per-game sorting existed (they sit in the base folder).</summary>
+    private static string UnsortedLabel => L.T("Ohne Spiel (älter)", "No game (older)");
+    private bool _rebuildingGameFilter;
 
     public ClipsView()
     {
@@ -58,6 +63,39 @@ public partial class ClipsView : UserControl
     {
         _favOnly = FavOnly.IsChecked == true;
         if (App.Host != null && ItemsContainer != null) Reload(App.Host);
+    }
+
+    private void OnGameFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_rebuildingGameFilter) return;
+        _game = GameFilter.SelectedItem is ComboBoxItem { Tag: string g } ? g : null;
+        if (App.Host != null && ItemsContainer != null) Reload(App.Host);
+    }
+
+    /// <summary>
+    /// Refills the game dropdown from what is actually on disk, keeping the current choice
+    /// if that game still exists. Tag "" means "files without a game folder".
+    /// </summary>
+    private void RebuildGameFilter(IEnumerable<string?> games)
+    {
+        _rebuildingGameFilter = true;
+        try
+        {
+            GameFilter.Items.Clear();
+            GameFilter.Items.Add(new ComboBoxItem { Content = L.T("Alle Spiele", "All games"), Tag = null });
+
+            var distinct = games.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var g in distinct.Where(g => g != null).OrderBy(g => g, StringComparer.CurrentCultureIgnoreCase))
+                GameFilter.Items.Add(new ComboBoxItem { Content = g, Tag = g });
+            if (distinct.Contains(null))
+                GameFilter.Items.Add(new ComboBoxItem { Content = UnsortedLabel, Tag = "" });
+
+            var keep = GameFilter.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(i => string.Equals(i.Tag as string, _game, StringComparison.OrdinalIgnoreCase));
+            if (keep is null) _game = null;   // selected game vanished (folder deleted/renamed)
+            GameFilter.SelectedItem = keep ?? GameFilter.Items[0];
+        }
+        finally { _rebuildingGameFilter = false; }
     }
 
     private void BuildFilterButtons()
@@ -106,36 +144,33 @@ public partial class ClipsView : UserControl
 
         var items = new List<MediaEntry>();
 
+        // Base folder AND one level of game subfolders: since per-game sorting, new captures
+        // live in Clips\<Game>\ — a flat scan would silently hide every one of them.
         var clipsDir = SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder);
-        if (Directory.Exists(clipsDir))
+        foreach (var (f, game) in GameFolderNaming.EnumerateMedia(clipsDir, f =>
+                 f.Extension.ToLowerInvariant() is ".gif" or ".mp4" or ".mkv" or ".mov"))
         {
-            foreach (var f in new DirectoryInfo(clipsDir).EnumerateFiles())
-            {
-                var ext = f.Extension.ToLowerInvariant();
-                MediaKind kind;
-                if (ext == ".gif") kind = MediaKind.Gif;
-                else if (ext == ".mp4" || ext == ".mkv" || ext == ".mov")
-                    kind = f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase)
-                        ? MediaKind.Recording : MediaKind.Clip;
-                else continue;
-                items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, kind));
-            }
+            var kind = f.Extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ? MediaKind.Gif
+                     : f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase) ? MediaKind.Recording
+                     : MediaKind.Clip;
+            items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, kind, game));
         }
 
         var shotsDir = SettingsService.ExpandPath(host.Settings.Current.Output.ScreenshotsFolder);
-        if (Directory.Exists(shotsDir))
+        foreach (var (f, game) in GameFolderNaming.EnumerateMedia(shotsDir, f =>
+                 f.Extension.ToLowerInvariant() is ".png" or ".jpg" or ".jpeg"))
         {
-            foreach (var f in new DirectoryInfo(shotsDir).EnumerateFiles())
-            {
-                var ext = f.Extension.ToLowerInvariant();
-                if (ext != ".png" && ext != ".jpg" && ext != ".jpeg") continue;
-                items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, MediaKind.Screenshot));
-            }
+            items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, MediaKind.Screenshot, game));
         }
+
+        RebuildGameFilter(items.Select(i => i.Game));
 
         var meta = host.GalleryMeta;
         var search = _search.Trim();
         var filtered = items
+            .Where(it => _game is null
+                         || (_game.Length == 0 ? it.Game is null
+                                               : string.Equals(it.Game, _game, StringComparison.OrdinalIgnoreCase)))
             .Where(it => _filter switch
             {
                 Filter.All         => true,
@@ -207,7 +242,7 @@ public partial class ClipsView : UserControl
         });
         textStack.Children.Add(new TextBlock
         {
-            Text = $"{it.CreatedAt:dd.MM.yyyy HH:mm:ss}  ·  {FormatSize(it.SizeBytes)}",
+            Text = $"{(it.Game is { } g ? g + "  ·  " : "")}{it.CreatedAt:dd.MM.yyyy HH:mm:ss}  ·  {FormatSize(it.SizeBytes)}",
             Style = (Style)FindResource("MutedStyle")
         });
         Grid.SetColumn(textStack, 1);
@@ -335,5 +370,6 @@ public partial class ClipsView : UserControl
     }
 
     private enum MediaKind { Clip, Recording, Screenshot, Gif }
-    private sealed record MediaEntry(string FilePath, string FileName, DateTime CreatedAt, long SizeBytes, MediaKind Kind);
+    /// <param name="Game">Game subfolder name, or null for files directly in the base folder.</param>
+    private sealed record MediaEntry(string FilePath, string FileName, DateTime CreatedAt, long SizeBytes, MediaKind Kind, string? Game);
 }

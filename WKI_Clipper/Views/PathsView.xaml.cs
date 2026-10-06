@@ -54,6 +54,21 @@ public partial class PathsView : UserControl
             RowsContainer.Children.Add(BuildRow(host, def.kind, def.label, def.description));
         }
 
+        // Per-game subfolders for clips/recordings/GIFs and screenshots.
+        var sortBox = new CheckBox
+        {
+            Content = L.T("Nach Spiel in Unterordner sortieren (z. B. Clips\\Arma Reforger\\)",
+                          "Sort into one subfolder per game (e.g. Clips\\Arma Reforger\\)"),
+            ToolTip = L.T("Gilt für neue Clips, Aufnahmen, GIFs und Screenshots. Bestehende Dateien bleiben, wo sie sind — die Galerie zeigt beides.",
+                          "Applies to new clips, recordings, GIFs and screenshots. Existing files stay where they are — the gallery shows both."),
+            IsChecked = host.Settings.Current.Output.SortByGame,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(28, 14, 0, 0)
+        };
+        sortBox.Checked += (_, _) => { host.Settings.Current.Output.SortByGame = true; host.Settings.Save(); };
+        sortBox.Unchecked += (_, _) => { host.Settings.Current.Output.SortByGame = false; host.Settings.Save(); };
+        RowsContainer.Children.Add(sortBox);
+
         OpenSettingsJsonBtn.Click += (_, _) =>
         {
             try

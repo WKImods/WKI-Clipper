@@ -520,8 +520,7 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
-            var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
-            Directory.CreateDirectory(clipsDir);
+            var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
 
             var listPath = Path.Combine(_bufferDir, "_concat_list.txt");
@@ -575,6 +574,24 @@ public sealed class ReplayBufferService : IDisposable
         {
             Interlocked.Exchange(ref _saving, 0);
         }
+    }
+
+    /// <summary>
+    /// Names the game folder for a capture of the given plan. Set by the composition root;
+    /// without it (or with sorting off) everything lands in the clips folder as before.
+    /// </summary>
+    public Func<CaptureTargetResolver.CapturePlan?, string>? GameFolderFor { get; set; }
+
+    /// <summary>
+    /// Clip/GIF target folder, resolved at press time: the footage is the past seconds,
+    /// and what is on screen when F9 is hit is the best evidence of which game that was.
+    /// </summary>
+    private string OutputDirectory()
+    {
+        var o = _settings.Current.Output;
+        var plan = CurrentPlan;
+        return GameFolderNaming.PrepareDirectory(o.ClipsFolder, o.SortByGame,
+            GameFolderFor is { } f ? () => f(plan) : null);
     }
 
     /// <summary>
@@ -708,8 +725,7 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
-            var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
-            Directory.CreateDirectory(clipsDir);
+            var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
 
             // 1) concat the covering segments into a temp mp4 (stream copy, instant).

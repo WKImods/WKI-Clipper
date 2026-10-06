@@ -33,6 +33,20 @@ public sealed class ForegroundTracker : IDisposable
     /// <summary>The auto-target changed — consumer should re-pin the buffer. Arg: process name.</summary>
     public event Action<string>? RetargetRequested;
 
+    /// <summary>
+    /// PID of the last foreground APP that was not ours (the hook skips our own process).
+    /// Lets a capture triggered while the widget board has focus still be filed under the
+    /// game the user came from. Tracked in every capture mode.
+    ///
+    /// Shell windows are deliberately not recorded: a tray-icon click briefly makes the
+    /// taskbar (explorer) the foreground window, which used to overwrite the game and file
+    /// the next capture under "Desktop".
+    /// </summary>
+    public int? LastExternalForegroundPid => _lastExternalPid == 0 ? null : _lastExternalPid;
+    // Written on the UI thread's hook callback, read from hotkey/worker paths. A volatile
+    // int instead of int? — a Nullable<int> is two fields and its write is not atomic.
+    private volatile int _lastExternalPid;
+
     public ForegroundTracker(SettingsService settings)
     {
         _settings = settings;
@@ -49,27 +63,44 @@ public sealed class ForegroundTracker : IDisposable
         Logger.Info(_hook != IntPtr.Zero
             ? "ForegroundTracker: WinEvent hook installed"
             : "ForegroundTracker: SetWinEventHook FAILED — auto re-pin disabled");
+
+        // The hook only reports CHANGES. Without seeding, a clipper started while the game
+        // already has focus would not know it until the user switched windows once.
+        TryRecordExternal(User32.GetForegroundWindow());
+    }
+
+    /// <summary>Records <paramref name="hwnd"/>'s process if it is a real app, not ours, not shell.</summary>
+    private string? TryRecordExternal(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return null;
+        User32.GetWindowThreadProcessId(hwnd, out uint upid);
+        int pid = (int)upid;
+        if (pid == 0 || pid == Environment.ProcessId) return null;
+
+        string name;
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            name = p.ProcessName;
+        }
+        catch { return null; }
+
+        if (CaptureTargetResolver.IsCouplableApp(name)) _lastExternalPid = pid;
+        return name;
     }
 
     private void OnWinEvent(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         try
         {
-            if (_settings.Current.Capture.Mode != CaptureMode.Auto) return;
-            if (hwnd == IntPtr.Zero) return;
-
+            // Recorded before the mode check: game-folder sorting needs it in every mode.
+            var name = TryRecordExternal(hwnd);
+            if (name is null) return;   // none, ours, or already exited
             User32.GetWindowThreadProcessId(hwnd, out uint upid);
             int pid = (int)upid;
-            if (pid == 0 || pid == Environment.ProcessId) return;
-            if (User32.GetWindowTextLength(hwnd) == 0) return;
 
-            string? name;
-            try
-            {
-                using var p = Process.GetProcessById(pid);
-                name = p.ProcessName;
-            }
-            catch { return; }
+            if (_settings.Current.Capture.Mode != CaptureMode.Auto) return;
+            if (User32.GetWindowTextLength(hwnd) == 0) return;
 
             if (!CaptureTargetResolver.IsCouplableApp(name)) return; // shell/system
             if (_pinnedPid == pid) return;                           // already the target
