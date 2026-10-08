@@ -335,7 +335,10 @@ public static class CaptureTargetResolver
         {
             "explorer", "applicationframehost", "shellexperiencehost", "searchhost",
             "searchapp", "startmenuexperiencehost", "textinputhost", "sihost", "dwm",
-            "lockapp", "wki_clipper"
+            "lockapp", "wki_clipper",
+            // The browser behind our own web widgets (its file and sign-in dialogs would
+            // otherwise become the Auto-mode capture target and the "game" folder).
+            "msedgewebview2"
         };
 
     /// <summary>True for real apps; false for shell/system processes (and us).</summary>

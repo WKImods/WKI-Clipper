@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 8;
+    public const int CurrentSchemaVersion = 9;
 
     public string SettingsFilePath { get; }
     public string AppDataDir { get; }
@@ -199,6 +199,22 @@ public sealed class SettingsService
             s.SchemaVersion = 8;
             changed = true;
             Logger.Info("Settings migrated to schema v8: sources widget ensured");
+        }
+
+        // v8 → v9: Spotify + WhatsApp widgets and the (unbound) Spotify hotkeys.
+        if (s.SchemaVersion < 9)
+        {
+            s.Spotify ??= new SpotifySettings();
+            s.WhatsApp ??= new WhatsAppSettings();
+            foreach (var kv in new AppSettings().Hotkeys)
+                s.Hotkeys.TryAdd(kv.Key, kv.Value);
+            s.Widgets.GetOrAdd(WidgetId.Spotify);
+            // GetOrAdd takes the defaults for a missing entry, so WhatsApp arrives
+            // capture-excluded and click-through.
+            s.Widgets.GetOrAdd(WidgetId.WhatsApp);
+            s.SchemaVersion = 9;
+            changed = true;
+            Logger.Info("Settings migrated to schema v9: Spotify + WhatsApp widgets ensured");
         }
 
         return changed;

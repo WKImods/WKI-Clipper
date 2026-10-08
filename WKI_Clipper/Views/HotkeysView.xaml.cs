@@ -21,6 +21,9 @@ public partial class HotkeysView : UserControl
         (HotkeyActions.ToggleBuffer,    L.T("Replay-Buffer pause/resume", "Replay buffer pause/resume")),
         (HotkeyActions.ToggleCrosshair, L.T("Crosshair ein-/ausblenden", "Show/hide crosshair")),
         (HotkeyActions.SaveGif,         L.T("Sofort-GIF speichern", "Save instant GIF")),
+        (HotkeyActions.SpotifyPlayPause, L.T("Spotify: Abspielen/Pause", "Spotify: play/pause")),
+        (HotkeyActions.SpotifyNext,      L.T("Spotify: Nächster Titel", "Spotify: next track")),
+        (HotkeyActions.SpotifyPrevious,  L.T("Spotify: Vorheriger Titel", "Spotify: previous track")),
     };
 
     public HotkeysView()

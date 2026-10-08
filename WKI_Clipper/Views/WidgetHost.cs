@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using WKI_Clipper.Models;
+using WKI_Clipper.Native;
 using WKI_Clipper.Services;
 using WinForms = System.Windows.Forms;
 
@@ -38,8 +39,14 @@ public sealed class WidgetHost : IDisposable
     }
 
     private CrosshairOverlayWindow? _crosshair;
-    /// <summary>Last known crosshair on/off, to detect the flip that needs a capture-path switch.</summary>
-    private bool? _lastCrosshairEnabled;
+    /// <summary>Last known "an overlay must stay out of capture", to detect the flip that needs a capture-path switch.</summary>
+    private bool? _lastExclusionRequired;
+
+    /// <summary>Foreground window before the board opened — gets the focus back on close.</summary>
+    private IntPtr _returnFocusTo;
+    /// <summary>An external app (Spotify) was launched from the board and may hold the focus.</summary>
+    private bool _externalLaunchDuringBoard;
+    private int _whatsAppUnread;
 
     public WidgetHost(AppHost host)
     {
@@ -72,18 +79,7 @@ public sealed class WidgetHost : IDisposable
         if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
             cv.SyncEnabled(s.Enabled);
 
-        // The capture path depends on this switch: AMF's own capture cannot hide the
-        // crosshair, so turning it on/off has to re-arm the buffer with the matching
-        // pipeline. Only on an actual flip — this method also runs for colour/size edits.
-        if (_lastCrosshairEnabled is not { } was || was != s.Enabled)
-        {
-            if (_lastCrosshairEnabled is not null)
-            {
-                Logger.Info($"Crosshair {(s.Enabled ? "enabled" : "disabled")} — restarting the buffer to switch capture path.");
-                _host.ReplayBuffer.RequestRestart();
-            }
-            _lastCrosshairEnabled = s.Enabled;
-        }
+        ReconcileCapturePath();
 
         if (!s.Enabled || entry is null)
         {
@@ -118,6 +114,24 @@ public sealed class WidgetHost : IDisposable
         BumpTopmost(_crosshair);
     }
 
+    /// <summary>
+    /// AMD's own capture (vsrc_amf) ignores WDA_EXCLUDEFROMCAPTURE, so while the crosshair
+    /// or a capture-excluded widget (WhatsApp) is in use the buffer must run on ddagrab.
+    /// Re-arms the buffer only on an actual flip, and only when the AMF path is even
+    /// enabled — otherwise the pipeline would not change and the restart is pure loss.
+    /// </summary>
+    private void ReconcileCapturePath()
+    {
+        var settings = _host.Settings.Current;
+        bool required = FFmpegCommandBuilder.MustHonorCaptureExclusion(settings);
+        if (_lastExclusionRequired is { } was && was != required && settings.Video.UseAmfCapture)
+        {
+            Logger.Info($"Capture exclusion {(required ? "needed" : "no longer needed")} — restarting the buffer to switch capture path.");
+            _host.ReplayBuffer.RequestRestart();
+        }
+        _lastExclusionRequired = required;
+    }
+
     /// <summary>Ctrl+Alt+C: flip the crosshair on/off and persist.</summary>
     public bool ToggleCrosshair()
     {
@@ -136,14 +150,26 @@ public sealed class WidgetHost : IDisposable
     /// language flip, tear them all down and rebuild so the new language shows
     /// everywhere immediately — no app restart. Geometry/visibility survive via the
     /// persisted <see cref="WidgetState"/>s.
+    ///
+    /// Web widgets are the exception: rebuilding would throw away the page (and with it
+    /// an open WhatsApp chat or a half-typed message). They only get new labels.
     /// </summary>
     private void RebuildForLanguageChange()
     {
         bool wasOpen = _boardOpen;
         foreach (var (id, w) in _windows) CaptureGeometry(id, w);
 
-        foreach (var w in _windows.Values) { try { w.Close(); } catch { } }
-        _windows.Clear();
+        foreach (var (id, w) in _windows.ToList())
+        {
+            if (w.WidgetContent is IWebWidget web)
+            {
+                w.SetTitle(Label(id));
+                web.Relocalize();
+                continue;
+            }
+            try { w.Close(); } catch { }
+            _windows.Remove(id);
+        }
         if (_launcher != null) { try { _launcher.Close(); } catch { } _launcher = null; }
         _toggles.Clear();
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
@@ -158,7 +184,7 @@ public sealed class WidgetHost : IDisposable
     private static readonly WidgetId[] Order =
         { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair,
           WidgetId.Streaming, WidgetId.Mixer, WidgetId.Sources, WidgetId.Preflight, WidgetId.Chat,
-          WidgetId.Music, WidgetId.Settings };
+          WidgetId.WhatsApp, WidgetId.Music, WidgetId.Spotify, WidgetId.Settings };
 
     private WidgetSettings Settings => _host.Settings.Current.Widgets;
 
@@ -174,7 +200,10 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Sources     => L.T("Quellen", "Sources"),
         WidgetId.Preflight   => L.T("Go Live", "Go Live"),
         WidgetId.Chat        => "Chat",
-        WidgetId.Music       => L.T("Musik", "Music"),
+        WidgetId.WhatsApp    => "WhatsApp",
+        // "Stream-Musik" sets the own NCS player apart from Spotify right next to it.
+        WidgetId.Music       => L.T("Stream-Musik", "Stream music"),
+        WidgetId.Spotify     => "Spotify",
         WidgetId.Settings    => L.T("Einstellungen", "Settings"),
         _                    => id.ToString()
     };
@@ -192,6 +221,8 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Preflight   => new PreflightView(),
         WidgetId.Chat        => new ChatView(),
         WidgetId.Music       => new MusicView(),
+        WidgetId.Spotify     => new SpotifyView(),
+        WidgetId.WhatsApp    => new WhatsAppView(),
         WidgetId.Settings    => new SettingsWidgetView(),
         _                    => new System.Windows.Controls.Control()
     };
@@ -208,6 +239,13 @@ public sealed class WidgetHost : IDisposable
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var screen = WinForms.Screen.FromPoint(WinForms.Cursor.Position);
+        // Remember where the keyboard was (normally the game) before the backdrop takes it.
+        if (!_boardOpen)
+        {
+            var fg = User32.GetForegroundWindow();
+            _returnFocusTo = IsOwnWindow(fg) ? IntPtr.Zero : fg;
+            _externalLaunchDuringBoard = false;
+        }
         _boardOpen = true;
 
         _backdrop ??= CreateBackdrop();
@@ -304,7 +342,36 @@ public sealed class WidgetHost : IDisposable
         _crosshair?.SetInteractive(false);
         _host.Settings.Save();
         _boardOpen = false;
+        ReturnFocus();
         Logger.Info("Widget board closed.");
+    }
+
+    /// <summary>
+    /// Gives the keyboard back to the window the user came from. Without this a pinned
+    /// widget that was typed into (WhatsApp, a settings field) stays the foreground
+    /// window after the board closes — and WASD lands in the chat instead of the game.
+    /// Only acts while the focus is still ours (or on Spotify we just launched), so a
+    /// window the user deliberately switched to is left alone.
+    /// </summary>
+    private void ReturnFocus()
+    {
+        System.Windows.Input.Keyboard.ClearFocus();
+        var target = _returnFocusTo;
+        _returnFocusTo = IntPtr.Zero;
+        if (target == IntPtr.Zero || !User32.IsWindow(target)) return;
+
+        var fg = User32.GetForegroundWindow();
+        if (fg == target) return;
+        if (!IsOwnWindow(fg) && !_externalLaunchDuringBoard) return;
+        if (!User32.SetForegroundWindow(target))
+            Logger.Info("Board closed: focus could not be returned to the previous window.");
+    }
+
+    private static bool IsOwnWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        User32.GetWindowThreadProcessId(hwnd, out uint pid);
+        return pid == (uint)Environment.ProcessId;
     }
 
     /// <summary>Show pinned widgets immediately at launch (board stays closed).</summary>
@@ -315,7 +382,9 @@ public sealed class WidgetHost : IDisposable
             var st = Settings.GetOrAdd(id);
             if (st.Pinned && st.Visible)
             {
-                ShowWidget(id, st, PrimaryScreen(), Array.IndexOf(Order, id));
+                // A pinned web widget's browser boots a few seconds later, so it does not
+                // compete with the replay buffer's ffmpeg spin-up at app start.
+                ShowWidget(id, st, PrimaryScreen(), Array.IndexOf(Order, id), startWebDelayed: true);
                 _windows[id].SetBoardOpen(false);
             }
         }
@@ -325,7 +394,8 @@ public sealed class WidgetHost : IDisposable
 
     // ---- Widget window lifecycle ----
 
-    private void ShowWidget(WidgetId id, WidgetState st, WinForms.Screen defaultScreen, int index)
+    private void ShowWidget(WidgetId id, WidgetState st, WinForms.Screen defaultScreen, int index,
+                            bool startWebDelayed = false)
     {
         var w = EnsureWindow(id);
         w.Width = st.Width > 0 ? st.Width : 360;
@@ -333,10 +403,24 @@ public sealed class WidgetHost : IDisposable
         PositionWindow(w, st, defaultScreen, index);
         w.IsPinned = st.Pinned;
         w.ClickThroughWhenPinned = st.ClickThrough;
+        w.ExcludeFromCapture = st.ExcludeFromCapture;
         w.SetConfiguredOpacity(st.Opacity);
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
         if (_boardOpen) BumpTopmost(w); // re-assert above the just-activated backdrop
+
+        // Web widgets boot their browser on the first REAL show — the prewarm path shows
+        // windows off-screen without coming through here.
+        if (w.WidgetContent is IWebWidget web)
+        {
+            if (!startWebDelayed) web.EnsureStarted();
+            else
+            {
+                var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+                timer.Tick += (_, _) => { timer.Stop(); web.EnsureStarted(); };
+                timer.Start();
+            }
+        }
     }
 
     /// <summary>Crosshair glyph for the launcher pill: ring + four ticks + center dot.</summary>
@@ -390,8 +474,98 @@ public sealed class WidgetHost : IDisposable
             _opacitySaveTimer.Stop();
             _opacitySaveTimer.Start();
         };
+
+        if (w.WidgetContent is IWebWidget)
+            w.ContentPadding = new Thickness(6);   // a web page wants every pixel
+        if (w.WidgetContent is WhatsAppView wa)
+        {
+            wa.UnreadChanged += n => Application.Current.Dispatcher.BeginInvoke(new Action(() => SetWhatsAppUnread(n)));
+            wa.CaptureExclusionChanged += on => SetCaptureExclusion(WidgetId.WhatsApp, on);
+        }
+        if (w.WidgetContent is SpotifyView sv)
+        {
+            sv.ViewModeChanged += full => ApplySpotifyViewSize(w, full);
+            sv.ExternalAppLaunched += () => _externalLaunchDuringBoard = true;
+        }
+
         _windows[id] = w;
         return w;
+    }
+
+    /// <summary>Flips "hidden from stream/clips" for a widget — live, no rebuild.</summary>
+    private void SetCaptureExclusion(WidgetId id, bool excluded)
+    {
+        var st = Settings.GetOrAdd(id);
+        st.ExcludeFromCapture = excluded;
+        if (_windows.TryGetValue(id, out var w)) w.ExcludeFromCapture = excluded;
+        _host.Settings.Save();
+        Logger.Info($"Widget {id}: {(excluded ? "hidden from" : "visible in")} screen capture.");
+        ReconcileCapturePath();
+    }
+
+    /// <summary>
+    /// Compact and full Spotify view each keep their own window size: the size of the
+    /// view being left is stored, the other one applied (clamped onto the screen).
+    /// </summary>
+    private void ApplySpotifyViewSize(WidgetWindow w, bool full)
+    {
+        var sp = _host.Settings.Current.Spotify;
+        if (full) { sp.CompactWidth = w.Width; sp.CompactHeight = w.Height; }
+        else      { sp.FullWidth = w.Width;    sp.FullHeight = w.Height; }
+
+        double width = full ? sp.FullWidth : sp.CompactWidth;
+        double height = full ? sp.FullHeight : sp.CompactHeight;
+        w.Width = Math.Max(w.MinWidth, width);
+        w.Height = Math.Max(w.MinHeight, height);
+
+        var wa = WinForms.Screen.FromPoint(new System.Drawing.Point((int)w.Left + 10, (int)w.Top + 10)).WorkingArea;
+        var (x, y) = WidgetLayout.Clamp(w.Left, w.Top, w.Width, w.Height, wa.Left, wa.Top, wa.Right, wa.Bottom);
+        w.Left = x; w.Top = y;
+        CaptureGeometry(WidgetId.Spotify, w);
+        _host.Settings.Save();
+    }
+
+    // ---- WhatsApp unread badge ----
+
+    private void SetWhatsAppUnread(int count)
+    {
+        _whatsAppUnread = Math.Max(0, count);
+        ApplyBadges();
+    }
+
+    /// <summary>
+    /// Count on the WhatsApp button of the launcher. Deliberately the only signal: the
+    /// launcher is visible only with the board open, so nothing ever pops over the game
+    /// or the stream. Re-applied after every launcher rebuild (language switch).
+    /// </summary>
+    private void ApplyBadges()
+    {
+        if (!_toggles.TryGetValue(WidgetId.WhatsApp, out var toggle)) return;
+        if (_whatsAppUnread <= 0)
+        {
+            toggle.Content = Label(WidgetId.WhatsApp);
+            return;
+        }
+        var panel = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        panel.Children.Add(new System.Windows.Controls.TextBlock { Text = Label(WidgetId.WhatsApp), VerticalAlignment = VerticalAlignment.Center });
+        panel.Children.Add(new System.Windows.Controls.Border
+        {
+            Background = (Brush)Application.Current.FindResource("AccentBrush"),
+            CornerRadius = new CornerRadius(8),
+            MinWidth = 18,
+            Padding = new Thickness(5, 0, 5, 1),
+            Margin = new Thickness(6, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new System.Windows.Controls.TextBlock
+            {
+                Text = _whatsAppUnread > 99 ? "99+" : _whatsAppUnread.ToString(),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+            }
+        });
+        toggle.Content = panel;
     }
 
     private void PositionWindow(WidgetWindow w, WidgetState st, WinForms.Screen defaultScreen, int index)
@@ -436,6 +610,7 @@ public sealed class WidgetHost : IDisposable
         w.Hide();
         SyncToggle(w.Id, false);
         _host.Settings.Save();
+        ReconcileCapturePath();
     }
 
     // ---- Launcher ----
@@ -464,6 +639,7 @@ public sealed class WidgetHost : IDisposable
             _toggles[id] = toggle;
             _launcher.WidgetButtons.Children.Add(toggle);
         }
+        ApplyBadges();
     }
 
     private void SetWidgetVisible(WidgetId id, bool visible)
@@ -483,6 +659,7 @@ public sealed class WidgetHost : IDisposable
             w.Hide();
         }
         _host.Settings.Save();
+        ReconcileCapturePath();
     }
 
     /// <summary>Reflect visibility on the launcher toggle without re-triggering it.</summary>
@@ -518,7 +695,8 @@ public sealed class WidgetHost : IDisposable
     /// Temporarily hides all visible overlay windows (widgets + board) so an OWN
     /// screenshot doesn't include them. Returns an IDisposable that restores them, or
     /// null if nothing was visible. Widgets stay capture-visible to external tools
-    /// (Snipping Tool, OBS) — WDA_EXCLUDEFROMCAPTURE is intentionally not used.
+    /// (Snipping Tool, OBS) unless the user excluded them (WhatsApp): those are invisible
+    /// to every capture already and are skipped here — hiding them would only flicker.
     /// </summary>
     public IDisposable? HideDuringCapture()
     {
@@ -530,7 +708,8 @@ public sealed class WidgetHost : IDisposable
         {
             if (w is { IsVisible: true }) { w.Visibility = Visibility.Hidden; hidden.Add(w); }
         }
-        foreach (var w in _windows.Values) HideIfVisible(w);
+        foreach (var w in _windows.Values)
+            if (!w.ExcludeFromCapture) HideIfVisible(w);
         HideIfVisible(_backdrop);
         HideIfVisible(_launcher);
         return hidden.Count == 0 ? null : new CaptureRestore(hidden);
@@ -551,11 +730,20 @@ public sealed class WidgetHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Closes everything. Web widgets dispose their browser explicitly so WebView2 can
+    /// flush cookies/storage (otherwise a fresh WhatsApp login may not survive the exit).
+    /// </summary>
     public void Dispose()
     {
         L.LanguageChanged -= OnLanguageChanged;
         _host.CrosshairRefresh = null;
-        foreach (var w in _windows.Values) { try { w.Close(); } catch { } }
+        foreach (var w in _windows.Values)
+        {
+            if (w.WidgetContent is IDisposable d) { try { d.Dispose(); } catch { } }
+            try { w.Close(); } catch { }
+        }
+        _windows.Clear();
         try { _launcher?.Close(); } catch { }
         try { _backdrop?.Close(); } catch { }
         try { _crosshair?.Close(); } catch { }

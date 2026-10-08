@@ -200,6 +200,15 @@ public partial class App : Application
                 case HotkeyActions.SaveGif:
                     await Host.ReplayBuffer.SaveGifAsync();
                     break;
+                case HotkeyActions.SpotifyPlayPause:
+                    await Host.Spotify.TogglePlayPauseAsync();
+                    break;
+                case HotkeyActions.SpotifyNext:
+                    await Host.Spotify.NextAsync();
+                    break;
+                case HotkeyActions.SpotifyPrevious:
+                    await Host.Spotify.PreviousAsync();
+                    break;
             }
         }
         catch (Exception ex)
@@ -258,6 +267,8 @@ public partial class App : Application
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
         Logger.Info($"Session ending ({e.ReasonSessionEnding}) — shutting the capture down cleanly.");
+        // Widgets first: the web widgets flush their browser storage on dispose.
+        try { _widgetHost?.Dispose(); } catch (Exception ex) { Logger.Warn("Widget dispose failed: " + ex.Message); }
         try { Host?.Dispose(); } catch (Exception ex) { Logger.Warn("Shutdown dispose failed: " + ex.Message); }
         base.OnSessionEnding(e);
     }
@@ -265,6 +276,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Logger.Info("App exiting.");
+        try { _widgetHost?.Dispose(); } catch { }
         try { Host?.Dispose(); } catch { }
         try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
         _singleInstanceMutex?.Dispose();

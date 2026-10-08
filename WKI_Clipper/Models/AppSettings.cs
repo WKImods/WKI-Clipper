@@ -24,9 +24,15 @@ public sealed class AppSettings
     public StreamingSettings Streaming { get; set; } = new();
     public ChatSettings Chat { get; set; } = new();
     public MusicSettings Music { get; set; } = new();
+    public SpotifySettings Spotify { get; set; } = new();
+    public WhatsAppSettings WhatsApp { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
+        // Spotify control is opt-in: Key = 0 means "not bound" (bind in the hotkey tab).
+        [HotkeyActions.SpotifyPlayPause] = new HotkeyBinding(),
+        [HotkeyActions.SpotifyNext]      = new HotkeyBinding(),
+        [HotkeyActions.SpotifyPrevious]  = new HotkeyBinding(),
         [HotkeyActions.SaveReplay]      = new HotkeyBinding { Modifiers = 0,                                Key = 0x78 }, // F9
         [HotkeyActions.Screenshot]      = new HotkeyBinding { Modifiers = 0,                                Key = 0x79 }, // F10
         [HotkeyActions.ToggleRecording] = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x78 }, // Ctrl+F9
@@ -46,6 +52,9 @@ public static class HotkeyActions
     public const string ToggleBuffer = "ToggleBuffer";
     public const string ToggleCrosshair = "ToggleCrosshair";
     public const string SaveGif = "SaveGif";
+    public const string SpotifyPlayPause = "SpotifyPlayPause";
+    public const string SpotifyNext = "SpotifyNext";
+    public const string SpotifyPrevious = "SpotifyPrevious";
 }
 
 public sealed class AudioSettings
@@ -322,6 +331,35 @@ public sealed class MusicSettings
     public string NowPlayingTemplate { get; set; } = "{artist} - {title}";
 }
 
+/// <summary>
+/// Spotify widget. The compact view (cover, transport, volume) drives the user's own
+/// Spotify app through the Windows media session; the full view is the Spotify web
+/// interface. Each view keeps its own window size so switching does not squash one
+/// into the other.
+/// </summary>
+public sealed class SpotifySettings
+{
+    public bool FullView { get; set; }
+    public double CompactWidth { get; set; } = 400;
+    public double CompactHeight { get; set; } = 230;
+    public double FullWidth { get; set; } = 1000;
+    public double FullHeight { get; set; } = 680;
+    /// <summary>Page zoom of the web view (Ctrl + mouse wheel).</summary>
+    public double Zoom { get; set; } = 1.0;
+}
+
+/// <summary>WhatsApp Web widget.</summary>
+public sealed class WhatsAppSettings
+{
+    /// <summary>
+    /// Muted by default: message tones and voice notes would otherwise end up in the
+    /// stream's desktop audio and in clips.
+    /// </summary>
+    public bool Muted { get; set; } = true;
+    /// <summary>Page zoom of the web view (Ctrl + mouse wheel).</summary>
+    public double Zoom { get; set; } = 1.0;
+}
+
 /// <summary>Go-live checklist + the automated start sequence.</summary>
 public sealed class PreflightSettings
 {
@@ -402,7 +440,7 @@ public sealed class HotkeyBinding
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight, Chat, Music, Sources }
+public enum WidgetId { Capture, Audio, Gallery, Performance, Settings, Crosshair, Streaming, Mixer, Preflight, Chat, Music, Sources, Spotify, WhatsApp }
 
 /// <summary>
 /// The PNG crosshair overlay: which image from the library is active, where it sits
@@ -473,6 +511,11 @@ public sealed class WidgetState
     /// whatever is underneath (WS_EX_TRANSPARENT). For read-only overlays like chat.
     /// </summary>
     public bool ClickThrough { get; set; }
+    /// <summary>
+    /// Hidden from every screen capture (stream, clips, recordings, screenshots) via
+    /// WDA_EXCLUDEFROMCAPTURE, while staying visible on the user's own screen.
+    /// </summary>
+    public bool ExcludeFromCapture { get; set; }
 }
 
 public sealed class WidgetSettings
@@ -499,6 +542,11 @@ public sealed class WidgetSettings
         // Chat defaults to click-through: pinned over a game it must never eat a shot.
         new WidgetState { Id = WidgetId.Chat,        Visible = false, Width = 360, Height = 480, ClickThrough = true },
         new WidgetState { Id = WidgetId.Music,       Visible = false, Width = 420, Height = 520 },
+        new WidgetState { Id = WidgetId.Spotify,     Visible = false, Width = 400, Height = 230 },
+        // WhatsApp: private by default (never in stream or clips) and click-through when
+        // pinned, like chat — open the board to type.
+        new WidgetState { Id = WidgetId.WhatsApp,    Visible = false, Width = 1000, Height = 680,
+                          ClickThrough = true, ExcludeFromCapture = true },
     };
 
     /// <summary>Returns the stored state for an id, creating a default if missing.</summary>

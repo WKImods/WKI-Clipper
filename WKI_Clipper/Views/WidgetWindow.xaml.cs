@@ -11,8 +11,9 @@ namespace WKI_Clipper.Views;
 
 /// <summary>
 /// A single floating, draggable, pinnable widget window. Borderless + topmost.
-/// Widgets stay VISIBLE to external screen capture (Snipping Tool, OBS); the app's
-/// own screenshots hide the overlay centrally via WidgetHost.HideDuringCapture().
+/// Widgets stay VISIBLE to external screen capture (Snipping Tool, OBS) unless
+/// <see cref="ExcludeFromCapture"/> is set (WhatsApp); the app's own screenshots hide
+/// the remaining overlay centrally via WidgetHost.HideDuringCapture().
 ///
 /// Focus model: the window never activates on show (ShowActivated=false). When the
 /// board is closed and the widget is pinned, it also gets WS_EX_NOACTIVATE so a
@@ -57,6 +58,42 @@ public partial class WidgetWindow : Window
     {
         get => PinButton.IsChecked == true;
         set => PinButton.IsChecked = value;
+    }
+
+    /// <summary>Re-labels the window after a language switch (web widgets are not rebuilt).</summary>
+    public void SetTitle(string title) => TitleText.Text = title;
+
+    /// <summary>Inner padding around the hosted view (web pages want the room).</summary>
+    public Thickness ContentPadding
+    {
+        get => ContentHost.Padding;
+        set => ContentHost.Padding = value;
+    }
+
+    private bool _excludeFromCapture;
+
+    /// <summary>
+    /// Hidden from all screen capture (ddagrab, WGC, OBS, Snipping Tool) but still
+    /// visible on the user's screen. Applies immediately, also at runtime.
+    /// Note: AMD's own vsrc_amf capture ignores this — FFmpegCommandBuilder falls back
+    /// to ddagrab while such a widget is in use.
+    /// </summary>
+    public bool ExcludeFromCapture
+    {
+        get => _excludeFromCapture;
+        set
+        {
+            _excludeFromCapture = value;
+            ApplyDisplayAffinity();
+        }
+    }
+
+    private void ApplyDisplayAffinity()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        uint affinity = _excludeFromCapture ? User32.WDA_EXCLUDEFROMCAPTURE : User32.WDA_NONE;
+        if (!User32.SetWindowDisplayAffinity(_hwnd, affinity))
+            Services.Logger.Warn($"Widget {Id}: SetWindowDisplayAffinity({affinity:X}) failed.");
     }
 
     /// <summary>The persisted opacity choice (0.3–1.0), independent of the hover boost.</summary>
@@ -124,8 +161,9 @@ public partial class WidgetWindow : Window
     {
         base.OnSourceInitialized(e);
         _hwnd = new WindowInteropHelper(this).Handle;
-        // Widgets stay visible to external capture (Snipping Tool, OBS). Own
-        // screenshots hide the overlay centrally via WidgetHost.HideDuringCapture().
+        // Visible to external capture unless excluded. Own screenshots hide the
+        // overlay centrally via WidgetHost.HideDuringCapture().
+        ApplyDisplayAffinity();
         ApplyActivationStyle();
     }
 

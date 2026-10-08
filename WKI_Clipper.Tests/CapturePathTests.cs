@@ -132,6 +132,36 @@ public class CapturePathTests
     }
 
     [Fact]
+    public void An_open_capture_excluded_widget_forces_the_ddagrab_path()
+    {
+        // Same reason as the crosshair: WhatsApp is excluded via display affinity, which
+        // vsrc_amf ignores — it would put private chats into clips.
+        var s = Amf();
+        var wa = s.Widgets.GetOrAdd(WidgetId.WhatsApp);
+        Assert.True(wa.ExcludeFromCapture);   // private by default
+        wa.Visible = true;
+
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
+
+        Assert.Contains("ddagrab", args);
+        Assert.DoesNotContain("vsrc_amf", args);
+    }
+
+    [Fact]
+    public void A_closed_or_visible_in_stream_widget_keeps_the_fast_path()
+    {
+        var s = Amf();
+        var wa = s.Widgets.GetOrAdd(WidgetId.WhatsApp);
+        wa.Visible = false;                                  // closed: nothing to hide
+        Assert.False(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
+
+        wa.Visible = true;
+        wa.ExcludeFromCapture = false;                       // user chose to show it
+        Assert.False(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
+        Assert.Contains("vsrc_amf", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false));
+    }
+
+    [Fact]
     public void Audio_mapping_survives_the_new_video_input()
     {
         var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false,

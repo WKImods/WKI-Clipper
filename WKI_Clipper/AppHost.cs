@@ -25,6 +25,8 @@ public sealed class AppHost : IDisposable
     public TwitchChatService Chat { get; }
     public MusicPlayerService Music { get; }
     public CrosshairLibraryService Crosshairs { get; }
+    /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
+    public SpotifyMediaService Spotify { get; } = new();
 
     /// <summary>
     /// Set by the widget host: re-applies the crosshair overlay (image, sliders,
@@ -317,6 +319,7 @@ public sealed class AppHost : IDisposable
         Obs.Dispose();
         Chat.Dispose();
         Music.Dispose();
+        Spotify.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

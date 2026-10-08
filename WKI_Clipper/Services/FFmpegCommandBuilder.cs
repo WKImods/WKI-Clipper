@@ -15,6 +15,16 @@ namespace WKI_Clipper.Services;
 public static class FFmpegCommandBuilder
 {
     /// <summary>
+    /// True while something on screen must stay out of the footage via
+    /// WDA_EXCLUDEFROMCAPTURE — the crosshair, or a capture-excluded widget that is open
+    /// on the board (WhatsApp). The capture path must then honour display affinity,
+    /// which AMD's vsrc_amf does not.
+    /// </summary>
+    public static bool MustHonorCaptureExclusion(AppSettings settings)
+        => settings.Crosshair.Enabled
+        || settings.Widgets.Widgets.Exists(w => w.ExcludeFromCapture && w.Visible);
+
+    /// <summary>
     /// Build a recording command.
     /// </summary>
     /// <param name="audioPipeArgs">
@@ -58,19 +68,18 @@ public static class FFmpegCommandBuilder
         // Restricted to full-monitor capture without downscale: scaling would need vpp_amf
         // (and cannot letterbox), and window capture comes through the rawvideo pipe anyway.
         //
-        // Also excluded while the crosshair overlay is on: vsrc_amf IGNORES
-        // WDA_EXCLUDEFROMCAPTURE, so AMF's capture records the aiming overlay into every
-        // clip, while ddagrab honours it. Verified side by side on the same screen at the
-        // same moment - AMF frame had the crosshair, ddagrab frame did not. Correct
-        // footage beats the cheaper capture path.
+        // Also excluded while the crosshair overlay or a capture-excluded widget (WhatsApp)
+        // is in use: vsrc_amf IGNORES WDA_EXCLUDEFROMCAPTURE, so AMF's capture records the
+        // aiming overlay into every clip, while ddagrab honours it. Verified side by side on
+        // the same screen at the same moment - AMF frame had the crosshair, ddagrab frame
+        // did not. Correct (and private) footage beats the cheaper capture path.
         //
         // On top of that the whole path is opt-in (Video.UseAmfCapture, default off): it is
         // driver-level, and a system-wide stutter that survived closing the app pointed at
         // it. ddagrab is the safe default; the speed-up is not worth an unexplained machine.
-        bool crosshairMustBeHidden = settings.Crosshair.Enabled;
         bool amfNativeCapture = settings.Video.UseAmfCapture
                                 && settings.Video.Codec.Contains("amf") && !rawInput && !needScale
-                                && !crosshairMustBeHidden;
+                                && !MustHonorCaptureExclusion(settings);
 
         if (rawInput)
         {
