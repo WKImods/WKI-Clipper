@@ -1,232 +1,195 @@
 # WKI Clipper
 
-Lightweight replay clipper and screen recorder for Windows. A handful of hotkeys, no bloat.
+Replay clipper, screen recorder and gaming overlay for Windows — one tray app instead of a
+pile of tools. Instant replay, an Xbox-style widget board with OBS control, Spotify and
+WhatsApp, a performance overlay and a crosshair. No account, no telemetry, no cloud.
 
-## Features
+**[Download the latest release](https://github.com/WKImods/WKI-Clipper/releases/latest)**
+
+![The widget board: sidebar on the left, widgets over the dimmed desktop](docs/screenshots/board.png)
+
+<sub>The widget board with `Ctrl+Alt+G`. The empty space in the middle is the WhatsApp widget —
+it is invisible to every capture, this screenshot included. The UI starts in German;
+switch to English under Settings → About.</sub>
+
+## Hotkeys
 
 | Hotkey | Action |
 |--------|--------|
 | `F9` | Save the last 15–180 s as MP4 (instant replay) |
-| `F10` | Screenshot of the whole active monitor (PNG) |
+| `F8` | Save the last seconds as a GIF |
+| `F10` | Screenshot of the active monitor (PNG) |
 | `Ctrl+F9` | Start/stop manual recording |
 | `Ctrl+F10` | Pause/resume the replay buffer |
-| `Ctrl+Alt+G` | Open/close the widget overlay |
-| `Ctrl+Alt+C` | Show/hide the crosshair overlay |
+| `Ctrl+Alt+G` | Open/close the widget board |
+| `Ctrl+Alt+C` | Show/hide the crosshair |
+| *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off |
 
-All hotkeys are rebindable in the Hotkeys settings (press-to-bind).
+All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks).
 
-## Widget overlay
+<img src="docs/screenshots/settings.png" height="320" alt="Settings widget, Hotkeys tab">
 
-The overlay is a modular, Xbox-Game-Bar-style board rather than a single window. Each
-widget is its own frameless window: drag it anywhere, **pin** it to keep it on screen
-while you play, or close it. Layout, size, pin and visibility are remembered per monitor.
+## The widget board
 
-| Widget | What it does |
-|--------|--------------|
-| **Capture** | Live "what gets clipped next" plus target mode, window picker and audio coupling |
-| **Audio** | Devices, levels, gain and sync offset |
-| **Gallery** | Clips, recordings and screenshots with search and favorites |
-| **Performance** | Live CPU / GPU / RAM / VRAM usage (polled only while visible) |
-| **Crosshair** | PNG crosshair overlay — see below |
-| **Streaming** | Software stream deck for OBS — see below |
-| **Mixer** | Fader, live dB readout and mute per OBS audio input, synced both ways |
-| **Sources** | Scene switcher + per-source visibility checkboxes for the current OBS scene |
-| **Go Live** | Traffic-light preflight checklist plus a one-click stream start sequence |
-| **Chat** | Read-only Twitch chat, click-through when pinned — see below |
-| **Music** | Stream music player with separate stream and monitor levels — see below |
-| **Settings** | Video, hotkeys, paths and about |
+<img src="docs/screenshots/sidebar.png" align="right" width="180" alt="Sidebar, expanded and collapsed to an icon rail">
 
-Each widget's title bar carries a **transparency slider** next to the pin and close
-buttons — dial a pinned widget down so it does not cover the game, and it fades back to
-fully opaque while the pointer is over it. The level is remembered per widget.
+`Ctrl+Alt+G` opens the board over the game: a dimmed backdrop, a **sidebar** on the left
+and the widgets you have open. Every widget is its own frameless window — drag it, resize
+it, **pin** it to keep it on screen while you play, or close it. A transparency slider in
+each title bar dials a pinned widget down; it turns fully opaque again under the pointer.
 
-## Crosshair overlay
+**Sidebar.** Widgets are grouped into *Capture*, *Stream* and *Apps*; open ones are
+highlighted, the WhatsApp unread count shows as a pill. The header shows what the capture
+is doing right now (buffer active · 60 s / paused / recording with its running time), the
+footer holds the layout switches, settings and the clock. It collapses to an icon rail.
 
-Import your own PNG crosshairs into a small library (they are copied into the app's data
-folder, so the originals can move or disappear). Pick one, place it, and toggle it with
-`Ctrl+Alt+C`.
+**Grid.** With *Grid* on, widgets snap to a grid and to each other's edges while you drag
+or resize them (hold `Shift` to place freely). By default they never overlap — a dropped
+widget moves to the nearest free spot, a growing one pushes its neighbours aside.
+*Overlap* allows stacking while keeping the snapping.
 
-- **Click-through while playing** — the crosshair never intercepts a shot; it only becomes
-  draggable while the overlay board is open.
-- **Snap to grid**, anchored at the *monitor center*, so dead center is always reachable
-  and offsets stay symmetric. Grid step is adjustable, or place freely.
-- **Image controls**: size, opacity, brightness, contrast, saturation and per-channel
-  red/green/blue gain. Import white crosshairs for maximum tinting freedom — the gains are
-  multiplicative, so a channel that is zero in the source cannot be recovered.
+**Any display scaling.** Places are stored relative to the screen, sizes in scalable units:
+switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 
-## Streaming widget (software stream deck)
+<br clear="right">
 
-A configurable button grid that drives OBS over its built-in WebSocket server (v5,
-OBS 28+) — no Elgato hardware or software, everything is built into the clipper.
+| Section | Widget | What it does |
+|---------|--------|--------------|
+| Capture | **Capture** | What gets clipped next, target mode, window picker, audio coupling |
+| | **Audio** | Devices, levels, gain, sync offset, separate mic track |
+| | **Gallery** | Clips, recordings, GIFs and screenshots — search, favourites, game filter |
+| | **Performance** | CPU, GPU, GPU temperature and fan, RAM, VRAM — plus the on-screen overlay |
+| | **Crosshair** | PNG crosshair overlay |
+| Stream | **Streaming** | Software stream deck for OBS |
+| | **Mixer** | Fader, dB readout and mute per OBS audio input, synced both ways |
+| | **Sources** | Scene switcher and per-source visibility for the current scene |
+| | **Go Live** | Preflight checklist, stream health, one-click start sequence |
+| | **Chat** | Read-only Twitch chat, click-through when pinned |
+| Apps | **WhatsApp** | WhatsApp Web, hidden from stream and clips |
+| | **Stream music** | Music player for the stream with separate stream/monitor levels |
+| | **Spotify** | Your Spotify app: compact player or the full Spotify interface |
 
-- **Actions**: switch scene, start/stop/toggle stream, toggle/pause OBS recording,
-  save/toggle the OBS replay buffer, mute inputs, toggle scene items, virtual camera,
-  studio-mode transition. OBS's replay buffer is deliberately labeled "OBS: …" —
-  it is a separate system from the clipper's own F9 replay.
-- **Per-tile config**: label, color, action with parameters (scenes/inputs are loaded
-  live from OBS; names can be typed while OBS is offline), and an optional **global
-  hotkey** (press-to-bind, with collision checks against every other binding).
-- **Live state on the tiles**: active scene highlighted, LIVE/REC/MUTE/BUFFER badges
-  from OBS events; the grid greys out while disconnected.
-- **Auto-reconnect**: OBS can start after the clipper (or restart mid-session) — the
-  connection re-establishes by itself.
-- Setup: OBS → Tools → WebSocket Server Settings (default port 4455). The password is
-  stored DPAPI-encrypted, never as plaintext.
+![Gallery widget: clips, recordings, GIFs and screenshots sorted by game](docs/screenshots/gallery.png)
 
-## Per-game folders
+## Capture
 
-Clips, recordings, GIFs and screenshots are filed into one subfolder per game:
-`Clips\Arma Reforger\Clip_….mp4`, `Screenshots\Wardogs\Shot_….png`. On by default; the
-switch lives in the paths settings.
+<p>
+  <img src="docs/screenshots/capture.png" height="320" alt="Capture widget: what gets clipped next">
+  <img src="docs/screenshots/audio.png" height="320" alt="Audio widget: sync offset and game-only audio">
+</p>
 
-- **Which game** is decided when the key is pressed: a window pinned by window capture
-  names the folder; otherwise the window in front does. If the widget board has focus, the
-  last window before it counts. The desktop, the shell and Windows' own programs share a
-  `Desktop` folder.
-- **The name** comes from the program's version information, not the window title (which
-  changes with every map or editor tab). When one product ships several programs under the
-  same name — Arma Reforger's game and its Workbench both say "Arma Reforger" — the more
-  specific description wins, so modding footage does not mix with gameplay.
-- **Anti-cheat friendly:** the program path is read with the most limited process right
-  Windows offers; the game's memory is never touched.
-- **Nothing is ever lost to sorting:** if a game folder cannot be created, the file goes
-  into the base folder as before. Files saved before the feature stay where they are; the
-  gallery shows both and gained a game filter.
+| Mode | Behaviour |
+|------|-----------|
+| **Automatic** | Follows the window you click (after ~1.5 s dwell). A running `Ctrl+F9` recording stays on the window it started on; an `F9` clip only ever contains one window, never two mixed. |
+| **Specific window** | Occlusion-proof window capture (Windows Graphics Capture) — keeps recording the window even when it is covered. The mode for a main game that must never switch. |
+| **Whole monitor** | A whole display via Desktop Duplication (`ddagrab`). |
 
-## Mixer widget
+- **Game-only audio:** the WASAPI process-loopback API records just the game (plus your
+  microphone) — no Discord, no browser. Optional second audio track for the mic.
+- **Per-game folders:** clips, recordings, GIFs and screenshots land in one subfolder per
+  game (`Clips\Arma Reforger\…`). The name comes from the program's version info, not the
+  window title, so the Arma Reforger Workbench gets its own folder. Read with the most
+  limited process right Windows offers — the game's memory is never touched.
+- **Hardware encoding:** codecs are detected at startup with a real test encode.
 
-A mini audio mixer for OBS, so levels can be changed without focusing OBS. One row per
-audio input with a fader, a live dB readout and a mute button. The inputs are read from
-OBS at runtime — nothing is hardcoded. Sync goes both ways: a fader moved in OBS moves
-here too. Fader drags are coalesced into one request instead of one per pixel, and
-incoming updates never yank the knob while you are dragging it.
+| Codec | GPU |
+|-------|-----|
+| `h264_amf` / `hevc_amf` / `av1_amf` | AMD (default on AMD) |
+| `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` | NVIDIA |
+| `h264_qsv` / `hevc_qsv` / `av1_qsv` | Intel |
+| `libx264` / `libx265` | CPU fallback |
 
-## Sources widget
+AMD's own driver-level capture (`vsrc_amf`) is an opt-in in `settings.json`
+(`Video.UseAmfCapture`). It only applies to whole-monitor capture at native resolution with
+an AMF encoder, is off by default and is switched off automatically whenever something on
+screen must stay out of the footage (crosshair, WhatsApp, the hidden performance overlay),
+because it ignores Windows' capture exclusion.
 
-Scene and source control without focusing OBS: one click switches the program scene
-(current scene highlighted), and every source of that scene gets a checkbox that shows or
-hides it in the stream — the way you would toggle a window capture on and off mid-stream.
+## Performance overlay
 
-Fully event-driven both ways: toggling something in OBS itself updates the widget, and the
-list follows scene switches, added/removed sources and scene-collection changes. No polling.
+Bare numbers — no window, a soft shadow for legibility — in a screen corner over the game,
+always click-through. Pick the corner, the size (75–200 %) and the values (CPU, GPU, GPU
+temperature, fan, RAM, VRAM, clock), optionally with 60-second history graphs.
+**Hidden from stream and clips by default**; a tick shows it for benchmark videos.
 
-## Go Live widget (preflight)
+GPU temperature, fan and VRAM size come from the same driver interface Task Manager uses —
+user mode, no admin, no driver of our own, nothing an anti-cheat could object to. CPU
+temperature is deliberately not shown: Windows only exposes it through a kernel driver.
 
-A traffic-light checklist for the moments before a stream: OBS connected · microphone
-not muted · OBS replay buffer · current scene · clipper replay buffer · free disk space.
-Red blocks going live, amber only warns.
+<img src="docs/screenshots/performance.png" height="480" alt="Performance widget with the overlay settings">
 
-Free space is checked on **both** volumes that can lose footage — the clipper's clips
-folder and OBS's own recording folder, which usually live on different drives. A second
-row appears only when they really are different.
+## Crosshair
 
-While live, the widget also shows **stream health**: uptime, current bitrate and the
-share of frames dropped *right now*. The recent share matters more than the cumulative
-one OBS displays, because a connection that starts breaking up two hours in barely moves
-the total. Sustained drops raise a popup even when the widget is closed.
+Import your own PNGs into a small library, pick one, place it, toggle it with `Ctrl+Alt+C`.
 
-The **Go live** button then runs the whole start sequence: start scene → start stream →
-replay buffer on → visible countdown → target scene. The sequence only continues once OBS
-actually reports the stream as running — a rejected start (missing stream key, dead uplink)
-aborts with an honest message instead of counting down over nothing. Scenes, countdown length and the
-microphone input name are configurable, with scene names pulled live from OBS.
+<img src="docs/screenshots/crosshair.png" align="right" height="420" alt="Crosshair widget: library, grid and image adjustments">
 
-Because going live is public and hard to take back, the button always asks for
-confirmation first, and the countdown can be cancelled at any point — cancelling never
-stops a stream that is already running. **End stream** is the deliberate counterpart: it
-appears only while live and confirms before it ends the broadcast.
+- **Never in the footage** — excluded from every capture, while you still see it.
+- **Click-through while playing**; draggable only while the board is open.
+- **Snap to grid** anchored at the monitor centre, so dead centre is always reachable.
+- **1:1 screen pixels** at any display scaling — it neither grows nor blurs at 150 %.
+- Size, opacity, brightness, contrast, saturation and per-channel colour gain.
 
-## Chat widget
+<br clear="right">
 
-Reads a public Twitch chat so it can be followed mid-match without alt-tabbing. The
-connection is **anonymous** (the classic `justinfan` IRC login over WebSocket) — no
-OAuth, no API key, no account, and nothing to configure beyond the channel name.
+## WhatsApp
 
-- Display names in their Twitch colors (dark colors are lifted so they stay readable on
-  the dark overlay) with broadcaster/mod/VIP/sub badges
-- **Raids, subs, gifted subs and announcements** appear as highlighted blocks instead of
-  being dropped, and cheered bits are marked on the message that carried them
-- An optional popup for raids and gift bombs — the two events worth interrupting a match
-  for — which also fires while the chat window is closed
-- **Messages addressing you are tinted blue.** The name comes from the channel, so there is
-  nothing to configure, and matching stops at name boundaries — `oskar_blitzz` is somebody
-  else and does not light up
-- Auto-scrolls to the newest line, and stops doing so while you scroll up to read
-- **Click-through while pinned**: over a game the window passes every click to whatever
-  is underneath, so it can never swallow a shot. Fully interactive again as soon as the
-  widget board is open.
-- Reconnects on its own with a backoff (Twitch drops idle connections)
-- **The status dot reports what arrives, not just that a socket exists.** A WebSocket can
-  sit open and silent for hours; the connection is pinged every minute and the dot turns
-  amber once nothing has been received for a while, so a frozen chat is visible instead
-  of looking healthy.
+The official WhatsApp Web inside a widget, linked once by QR code like any browser.
 
-## Music widget
+- **Private by default:** invisible in stream, clips, recordings and screenshots, while you
+  still see it; switchable in its toolbar. Sounds are muted by default for the same reason.
+- **No pop-ups over the game:** the only signal is the unread count in the sidebar.
+- Links from chats open in your normal browser (http/https only); downloads go to your
+  downloads folder, and the notification opens the folder, never the file.
+- No unofficial WhatsApp APIs — no ban risk.
 
-Plays a folder of tracks straight into the stream, so no second program is needed for
-music. Built on NAudio, which the clipper already uses.
+## Spotify
 
-- Output goes to the **stream device** (typically a virtual audio cable that OBS picks
-  up), with an optional **monitor output** on a second device so you hear the music too.
-  Both sides have their **own independent volume**.
-- Both outputs are fed from one decoder (the monitor is tapped off the main pull), so
-  the two can never drift apart.
-- Shuffle, repeat, auto-advance, click-to-play track list, folder picker
-- **Now playing** is written to a text file for an OBS text source; the file is emptied
-  when playback stops. Artist/title come from the file name (`Artist - Title.mp3`),
-  which is exactly how NCS downloads are named — no tag library needed.
+- **Compact view** for pinning over a game: cover, title, seekable progress, play/skip,
+  shuffle, repeat and Spotify's own volume. It controls **your Spotify app** through the
+  Windows media session — no developer account, no extra login.
+- **Full view:** the Spotify web interface (search, playlists, library) with your own
+  account, as a remote for the app. If the web player starts playing by itself, the widget
+  says so and tells you how to switch back to your PC.
+- Unbound hotkeys for play/pause, next and previous.
 
-## Capture modes
+## Streaming (OBS)
 
-| Mode | Behavior |
-|------|----------|
-| **Automatic** | Tracks the app in the foreground. `F9` and `Ctrl+F9` pin the window that is active when triggered — switching to Discord afterwards does not change what gets captured. |
-| **Specific window** | Occlusion-proof window capture via Windows Graphics Capture (WGC). The clip stays on the chosen window even when it is covered by other windows. |
-| **Full monitor** | Captures an entire display (Desktop Duplication) — for tutorials and full-screen walkthroughs. |
+Streaming, Mixer, Sources and Go Live talk to OBS through its built-in WebSocket server
+(v5, OBS 28+: Tools → WebSocket Server Settings, default port 4455). The password is stored
+DPAPI-encrypted. OBS may start after the clipper — the connection re-establishes by itself.
 
-Audio can be coupled to the video target: with "game-only" audio enabled, the clip contains only the captured app plus your microphone — no Discord, no browser.
-
-## Why?
-
-- **Xbox Game Bar records the microphone even when it is disabled.** Not here. Audio toggles take effect before the encoder even runs.
-- **No logins, no telemetry, no cloud, no auto-updates.**
-- **Lightweight.** One EXE in the tray, done.
-
-## Language
-
-The UI is fully bilingual (German/English). Switch it in Settings → About → "Sprache / Language"; it applies immediately across every window, no restart needed.
-
-## Audio
-
-System sound and microphone are captured in-process via WASAPI (NAudio). No Stereo Mix, no VB-Cable, no workarounds. Game-only audio uses the WASAPI process loopback API to capture a single process tree at the OS level. Every source can be toggled individually in the settings.
-
-## Supported codecs
-
-| Codec | GPU | Note |
-|-------|-----|------|
-| `h264_amf` | AMD (RX 6000/7000/9000) | Default |
-| `hevc_amf` | AMD | Smaller files |
-| `h264_nvenc` | NVIDIA | GeForce GTX 900+ |
-| `hevc_nvenc` | NVIDIA | |
-| `h264_qsv` | Intel | Intel Arc / iGPU |
-| `libx264` | CPU | Fallback, runs everywhere |
-
-Available codecs are detected at startup with a real test encode; change them in the Video tab or directly in `settings.json`.
+- **Streaming:** a button grid — switch scene, start/stop stream or recording, OBS replay
+  buffer, mute inputs, toggle sources, virtual camera, studio transition. Per tile: label,
+  colour, action and an optional global hotkey. Live badges (LIVE/REC/MUTE/BUFFER).
+- **Mixer / Sources:** volume, mute, scenes and source visibility without focusing OBS,
+  synced both ways and event-driven.
+- **Go Live:** a traffic-light checklist (OBS connected, mic live, replay buffers, scene,
+  free disk on both the clips and the OBS recording drive), stream health while live
+  (uptime, bitrate, frames dropped *right now*) with a warning even when the widget is
+  closed, and a confirmed start sequence: start scene → stream → replay buffer → countdown
+  → target scene, aborting honestly if OBS rejects the start.
+- **Chat:** anonymous read-only Twitch chat — no OAuth, just the channel name. Colours and
+  badges, raids/subs/gifts as highlighted blocks, messages addressing you tinted, a pop-up
+  for raids and gifted subs, and a status dot that turns amber when the chat goes silent.
+- **Stream music:** plays a folder into the stream device (e.g. a virtual cable) with an
+  optional monitor output at its own level; writes "now playing" for an OBS text source.
 
 ## Installation
 
-### Installer (recommended)
+Download `WKI_Clipper_Setup_X.X.X.exe` from the
+[latest release](https://github.com/WKImods/WKI-Clipper/releases/latest) and run it: a
+per-user install (no admin) with a self-contained .NET 8 runtime and FFmpeg with all
+hardware encoders. The uninstaller keeps your clips and settings.
 
-Download the setup EXE from [Releases](https://github.com/WKImods/WKI-Clipper/releases) and run it. It contains everything:
-- Self-contained .NET 8 runtime (no separate install required)
-- FFmpeg with all hardware encoders (AMF/NVENC/QSV)
-- Start menu entry, optional desktop shortcut and autostart
+- **Windows 10 (2004) or 11, 64-bit.** WhatsApp and Spotify's full view need the Microsoft
+  Edge WebView2 Runtime, which ships with current Windows 10/11.
+- **SmartScreen:** the installer is not code-signed, so Windows may warn on first launch —
+  *More info → Run anyway*.
 
-Per-user install, no admin required. The uninstaller cleans up; user data (clips, settings) is kept.
+### Build from source
 
-### Build it yourself
-
-Prerequisites: .NET 8 SDK, FFmpeg (e.g. `winget install Gyan.FFmpeg`), Inno Setup 6.
+Prerequisites: .NET 8 SDK, FFmpeg (`winget install Gyan.FFmpeg`), Inno Setup 6.
 
 ```powershell
 git clone https://github.com/WKImods/WKI-Clipper.git
@@ -234,9 +197,11 @@ cd WKI-Clipper
 .\build.ps1
 ```
 
-Produces `installer_output\WKI_Clipper_Setup_X.X.X.exe`.
+This produces `installer_output\WKI_Clipper_Setup_X.X.X.exe`, the same installer as in the
+releases.
 
 Dev build without the installer:
+
 ```powershell
 dotnet build WKI_Clipper.sln -c Debug
 .\WKI_Clipper\bin\Debug\net8.0-windows10.0.22621.0\WKI_Clipper.exe
@@ -244,69 +209,64 @@ dotnet build WKI_Clipper.sln -c Debug
 
 ## Settings
 
-`%APPDATA%\WKI_Clipper\settings.json` — created on first start, directly editable. Everything is also configurable in the overlay UI (including press-to-bind hotkey rebinding in the Hotkeys tab).
+Everything is configurable in the board. The file behind it is
+`%APPDATA%\WKI_Clipper\settings.json` (versioned and migrated automatically):
 
 ```jsonc
 {
-  "Capture": {
-    "Mode": "Auto",               // Auto | Window | Monitor
-    "TargetProcessName": null,    // window mode: process to capture
-    "CoupleAudio": true           // audio follows the video target
-  },
-  "Audio": {
-    "RecordMicrophone": true,
-    "RecordSystemSound": true
-  },
-  "Video": {
-    "Resolution": "Native",       // FullHD | WQHD | UHD | Native
-    "Framerate": 60,
-    "Codec": "h264_amf"
-  },
-  "ReplayBuffer": {
-    "Enabled": true,
-    "DurationSeconds": 60
-  },
-  "Behavior": {
-    "Language": "Deutsch"         // Deutsch | English
-  },
-  "Output": {
-    "ClipsFolder": "%USERPROFILE%\\Videos\\WKI_Clipper\\Clips",
-    "ScreenshotsFolder": "%USERPROFILE%\\Videos\\WKI_Clipper\\Screenshots"
-  }
+  "Capture":      { "Mode": "Auto", "TargetProcessName": null, "CoupleAudio": true },
+  "Audio":        { "RecordMicrophone": true, "RecordSystemSound": true },
+  "Video":        { "Resolution": "Native", "Framerate": 60, "Codec": "h264_amf", "UseAmfCapture": false },
+  "ReplayBuffer": { "Enabled": true, "DurationSeconds": 60 },
+  "Output":       { "SortByGame": true },
+  "Behavior":     { "Language": "Deutsch" }
 }
 ```
+
+The UI is fully bilingual (German by default, English under Settings → About) and switches
+immediately, without a restart.
 
 ## Architecture
 
 ```
-WKI_Clipper.exe (.NET 8 / WPF)
-  +-- HotkeyService           Win32 RegisterHotKey
-  +-- CaptureTargetResolver   single source of truth: what gets captured, with which audio
-  +-- WgcWindowCapture        occlusion-proof window capture (WGC + D3D11)
-  +-- VideoPipeService        raw BGRA frames -> named pipe -> FFmpeg (CFR pacing)
-  +-- ForegroundTracker       SetWinEventHook-based foreground tracking (Auto mode)
-  +-- AudioPipeService        WASAPI loopback + mic -> mix -> named pipe
-  +-- ProcessLoopbackCapture  game-only audio (WASAPI process loopback)
-  +-- ReplayBufferService     FFmpeg segmented recording (rolling ring buffer)
-  +-- ManualRecordingService  FFmpeg single-file recording
-  +-- ScreenshotService       whole-monitor grab (ddagrab, GDI fallback)
-  +-- SettingsService         JSON config in %APPDATA% (versioned + migrated)
-  +-- WidgetHost              owns the widget board, pinning and the crosshair overlay
-  +-- CrosshairLibraryService PNG crosshair library (copies + JSON index)
-  +-- ObsWebSocketService     OBS control via obs-websocket v5 (auto-reconnect, live events)
-  +-- PerformanceMonitorService  CPU/GPU/RAM/VRAM counters, 1 Hz, only while visible
-  +-- PreflightChecks         pure go-live checklist evaluation (unit-tested)
-  +-- StreamHealth            pure output-stats math: uptime, bitrate, recent drops
+WKI_Clipper.exe (.NET 8 / WPF, tray)
+  Capture
+  +-- CaptureTargetResolver    what gets captured, with which audio (single source of truth)
+  +-- WgcWindowCapture         occlusion-proof window capture (WGC + D3D11)
+  +-- VideoPipeService         BGRA frames -> named pipe -> FFmpeg
+  +-- AudioPipeService         WASAPI loopback + mic -> mix -> named pipe
+  +-- ProcessLoopbackCapture   game-only audio (WASAPI process loopback)
+  +-- ReplayBufferService      FFmpeg segment ring buffer (F9 / GIF)
+  +-- ManualRecordingService   FFmpeg single-file recording
+  +-- ScreenshotService        ddagrab grab with GDI fallback
+  +-- GameContext              which game a capture belongs to (per-game folders)
+  Board
+  +-- WidgetHost               board, sidebar, widgets, pinning, crosshair and overlays
+  +-- WidgetCatalog            sections, labels, icons, status line (pure, tested)
+  +-- WidgetLayout             grid, snapping, free-spot search, scale-independent places
+  +-- DisplayGeometry          physical-pixel placement at any display scaling
+  +-- WebAppHost               WebView2 for WhatsApp/Spotify (one browser, separate profiles)
+  +-- SpotifyMediaService      Spotify via the Windows media session + per-app volume
+  +-- PerformanceMonitorService  counters + GPU sensors (D3DKMT), only while visible
+  Streaming
+  +-- ObsWebSocketService      OBS control via obs-websocket v5 (auto-reconnect, events)
+  +-- TwitchChatService        anonymous Twitch IRC over WebSocket
+  +-- MusicPlayerService       stream music (NAudio, two outputs)
+  +-- PreflightChecks / StreamHealth   pure go-live checks and stream math (tested)
 ```
-
-Window capture runs through Windows.Graphics.Capture (occlusion-proof, survives covered windows); full-monitor capture uses `ddagrab` (Desktop Duplication API). Audio is captured in-process via NAudio (WASAPI), mixed, and fed to FFmpeg through a named pipe.
 
 ## Known limits
 
-- **Legacy exclusive fullscreen** cannot be captured per-window; the app detects this and falls back to capturing the game's monitor automatically. Borderless window works everywhere.
-- **Anti-cheat:** no hooking inside the game process — only WGC/Desktop Duplication. Should be fine with BattlEye/EAC, but no guarantee.
-- **Replay clip length** deviates by up to ~5 s due to segment boundaries.
+- **Legacy exclusive fullscreen** cannot be captured per window; the clipper falls back to
+  the game's monitor. Borderless windowed works everywhere.
+- **Anti-cheat:** nothing is injected into or read from the game process — only Windows'
+  own capture APIs. Should be fine with BattlEye/EAC, but there is no guarantee.
+- **Replay length** can deviate by up to ~5 s because of segment boundaries.
+- **CPU temperature** is not shown (needs a kernel driver).
+- **Flicker with the board open?** Windows' *content adaptive brightness* reacts to the dim
+  backdrop and can make the whole screen flicker on OLED/VRR displays — turn it off in
+  Settings → System → Display.
 
 ## License
 
-[MIT](LICENSE) — do whatever you want with it.
+[MIT](LICENSE)
