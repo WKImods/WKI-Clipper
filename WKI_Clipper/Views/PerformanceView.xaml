@@ -1,5 +1,11 @@
 <UserControl x:Class="WKI_Clipper.Views.PerformanceView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <StackPanel x:Name="Rows" />
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+            <StackPanel x:Name="Rows" />
+            <!-- On-screen overlay settings (built in code) -->
+            <StackPanel x:Name="OverlayPanel" Margin="0,4,0,0" />
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

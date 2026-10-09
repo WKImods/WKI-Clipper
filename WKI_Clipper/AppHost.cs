@@ -36,6 +36,10 @@ public sealed class AppHost : IDisposable
 
     /// <summary>Re-render the live crosshair overlay from current settings.</summary>
     public void RefreshCrosshair() => CrosshairRefresh?.Invoke();
+
+    /// <summary>Set by the widget host: re-applies the on-screen performance overlay.</summary>
+    public Action? PerfOverlayRefresh { get; set; }
+    public void RefreshPerfOverlay() => PerfOverlayRefresh?.Invoke();
     public GameProcessWatcher? GameWatcher { get; private set; }
     public ForegroundTracker? Foreground { get; private set; }
 

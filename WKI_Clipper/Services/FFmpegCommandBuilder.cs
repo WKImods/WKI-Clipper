@@ -25,7 +25,8 @@ public static class FFmpegCommandBuilder
     /// </summary>
     public static bool MustHonorCaptureExclusion(AppSettings settings)
         => settings.Crosshair.Enabled
-        || settings.Widgets.Widgets.Exists(w => w.ExcludeFromCapture);
+        || settings.Widgets.Widgets.Exists(w => w.ExcludeFromCapture)
+        || (settings.PerfOverlay.Enabled && settings.PerfOverlay.HideFromCapture);
 
     /// <summary>True when the settings could select AMD's own capture at all (opt-in + AMF encoder).</summary>
     public static bool AmfCaptureConfigured(AppSettings settings)

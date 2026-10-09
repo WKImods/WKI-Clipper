@@ -26,6 +26,7 @@ public sealed class AppSettings
     public MusicSettings Music { get; set; } = new();
     public SpotifySettings Spotify { get; set; } = new();
     public WhatsAppSettings WhatsApp { get; set; } = new();
+    public PerfOverlaySettings PerfOverlay { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -33,6 +34,7 @@ public sealed class AppSettings
         [HotkeyActions.SpotifyPlayPause] = new HotkeyBinding(),
         [HotkeyActions.SpotifyNext]      = new HotkeyBinding(),
         [HotkeyActions.SpotifyPrevious]  = new HotkeyBinding(),
+        [HotkeyActions.TogglePerfOverlay] = new HotkeyBinding(),
         [HotkeyActions.SaveReplay]      = new HotkeyBinding { Modifiers = 0,                                Key = 0x78 }, // F9
         [HotkeyActions.Screenshot]      = new HotkeyBinding { Modifiers = 0,                                Key = 0x79 }, // F10
         [HotkeyActions.ToggleRecording] = new HotkeyBinding { Modifiers = HotkeyModifier.Control,           Key = 0x78 }, // Ctrl+F9
@@ -55,6 +57,8 @@ public static class HotkeyActions
     public const string SpotifyPlayPause = "SpotifyPlayPause";
     public const string SpotifyNext = "SpotifyNext";
     public const string SpotifyPrevious = "SpotifyPrevious";
+    /// <summary>Show/hide the on-screen performance overlay (unbound by default).</summary>
+    public const string TogglePerfOverlay = "TogglePerfOverlay";
 }
 
 public sealed class AudioSettings
@@ -346,6 +350,32 @@ public sealed class SpotifySettings
     public double FullHeight { get; set; } = 680;
     /// <summary>Page zoom of the web view (Ctrl + mouse wheel).</summary>
     public double Zoom { get; set; } = 1.0;
+}
+
+public enum ScreenCorner { TopLeft, TopRight, BottomLeft, BottomRight }
+
+/// <summary>
+/// On-screen performance overlay: bare numbers (optionally with small history graphs) in
+/// a corner of the primary monitor, always click-through. Hidden from stream and clips by
+/// default — it is a personal readout like the crosshair.
+/// </summary>
+public sealed class PerfOverlaySettings
+{
+    public bool Enabled { get; set; }
+    public ScreenCorner Corner { get; set; } = ScreenCorner.TopRight;
+    /// <summary>0.75 … 2.0.</summary>
+    public double Scale { get; set; } = 1.0;
+    public bool ShowGraphs { get; set; } = true;
+    /// <summary>true = invisible in stream, clips, recordings and screenshots.</summary>
+    public bool HideFromCapture { get; set; } = true;
+
+    public bool ShowCpu { get; set; } = true;
+    public bool ShowGpu { get; set; } = true;
+    public bool ShowGpuTemp { get; set; } = true;
+    public bool ShowGpuFan { get; set; }
+    public bool ShowRam { get; set; } = true;
+    public bool ShowVram { get; set; } = true;
+    public bool ShowClock { get; set; }
 }
 
 /// <summary>WhatsApp Web widget.</summary>

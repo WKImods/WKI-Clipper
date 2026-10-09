@@ -209,6 +209,14 @@ public partial class App : Application
                 case HotkeyActions.SpotifyPrevious:
                     await Host.Spotify.PreviousAsync();
                     break;
+                case HotkeyActions.TogglePerfOverlay:
+                    if (_widgetHost != null)
+                    {
+                        bool on = _widgetHost.TogglePerfOverlay();
+                        ToastService.Show(Views.ToastKind.Info, L.T("Leistungs-Overlay", "Performance overlay"),
+                            on ? L.T("Eingeblendet", "Shown") : L.T("Ausgeblendet", "Hidden"), durationSeconds: 1.6);
+                    }
+                    break;
             }
         }
         catch (Exception ex)

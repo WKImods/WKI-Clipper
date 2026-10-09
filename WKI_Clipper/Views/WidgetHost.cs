@@ -57,6 +57,7 @@ public sealed class WidgetHost : IDisposable
         _host = host;
         L.LanguageChanged += OnLanguageChanged;
         _host.CrosshairRefresh = ApplyCrosshair;
+        _host.PerfOverlayRefresh = ApplyPerfOverlay;
         _displaySignature = DisplaySignature();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -136,6 +137,84 @@ public sealed class WidgetHost : IDisposable
             _host.ReplayBuffer.RequestRestart();
         }
         _lastExclusionRequired = required;
+    }
+
+    // ---- on-screen performance overlay ----
+
+    private PerfOverlayWindow? _perfOverlay;
+    private bool _perfOverlayViewing;
+
+    /// <summary>
+    /// Shows, updates or hides the corner performance readout from current settings. Like
+    /// the crosshair it lives outside the board and stays up while playing.
+    /// </summary>
+    public void ApplyPerfOverlay()
+    {
+        if (!Application.Current.Dispatcher.CheckAccess())
+        {
+            Application.Current.Dispatcher.BeginInvoke(new Action(ApplyPerfOverlay));
+            return;
+        }
+
+        var s = _host.Settings.Current.PerfOverlay;
+        ReconcileCapturePath();   // a capture-hidden overlay rules AMF's own capture out
+        if (!s.Enabled)
+        {
+            _perfOverlay?.Hide();
+            if (_perfOverlayViewing)
+            {
+                _host.Performance.Sampled -= OnPerfSampleForOverlay;
+                _host.Performance.RemoveViewer();
+                _perfOverlayViewing = false;
+            }
+            return;
+        }
+
+        _perfOverlay ??= new PerfOverlayWindow();
+        _perfOverlay.SetExcludedFromCapture(s.HideFromCapture);
+        if (!_perfOverlayViewing)
+        {
+            _host.Performance.Sampled += OnPerfSampleForOverlay;
+            _host.Performance.AddViewer();
+            _perfOverlayViewing = true;
+        }
+        RenderPerfOverlay();
+    }
+
+    private void OnPerfSampleForOverlay(PerfSample _)
+        => Application.Current?.Dispatcher.BeginInvoke(new Action(RenderPerfOverlay));
+
+    private void RenderPerfOverlay()
+    {
+        if (_perfOverlay is null || !_perfOverlayViewing) return;
+        var s = _host.Settings.Current.PerfOverlay;
+        var lines = PerfOverlayLayout.Lines(s, _host.Performance.Last, _host.Performance.History(), DateTime.Now);
+        double scale = PerfOverlayLayout.ClampScale(s.Scale);
+        _perfOverlay.Render(lines, scale);
+        bool justShown = !_perfOverlay.IsVisible;
+        if (justShown) _perfOverlay.Show();
+        _perfOverlay.UpdateLayout();
+
+        // Corner of the primary monitor's full area — in a fullscreen game that IS the corner.
+        var screen = PrimaryScreen();
+        var bounds = DisplayGeometry.Bounds(screen);
+        double dpi = DisplayGeometry.ScaleOf(screen);
+        var (x, y) = PerfOverlayLayout.Place(s.Corner, _perfOverlay.ActualWidth * dpi, _perfOverlay.ActualHeight * dpi,
+                                             bounds, 10 * dpi);
+        if (DisplayGeometry.BoundsOf(_perfOverlay) is not { } cur || Math.Abs(cur.X - x) > 0.5 || Math.Abs(cur.Y - y) > 0.5)
+            DisplayGeometry.MoveTo(_perfOverlay, x, y);
+        // Only when it appears — re-asserting z-order every second would churn the desktop.
+        if (justShown) BumpTopmost(_perfOverlay);
+    }
+
+    /// <summary>Hotkey: overlay on/off and persist.</summary>
+    public bool TogglePerfOverlay()
+    {
+        var s = _host.Settings.Current.PerfOverlay;
+        s.Enabled = !s.Enabled;
+        _host.Settings.Save();
+        ApplyPerfOverlay();
+        return s.Enabled;
     }
 
     /// <summary>Ctrl+Alt+C: flip the crosshair on/off and persist.</summary>
@@ -413,8 +492,10 @@ public sealed class WidgetHost : IDisposable
                 _windows[id].SetBoardOpen(false);
             }
         }
-        // The crosshair is its own kind of "pinned": restore it if it was left on.
+        // The crosshair and the performance overlay are their own kind of "pinned":
+        // restore them if they were left on.
         ApplyCrosshair();
+        ApplyPerfOverlay();
     }
 
     // ---- Widget window lifecycle ----
@@ -896,6 +977,7 @@ public sealed class WidgetHost : IDisposable
         }
         if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false);
         ApplyCrosshair();
+        ApplyPerfOverlay();
     }
 
     private void OnPinToggled(WidgetWindow w)
@@ -1103,6 +1185,13 @@ public sealed class WidgetHost : IDisposable
         L.LanguageChanged -= OnLanguageChanged;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _displayTimer?.Stop();
+        _host.PerfOverlayRefresh = null;
+        if (_perfOverlayViewing)
+        {
+            _host.Performance.Sampled -= OnPerfSampleForOverlay;
+            _perfOverlayViewing = false;
+        }
+        try { _perfOverlay?.Close(); } catch { }
         _host.CrosshairRefresh = null;
         foreach (var w in _windows.Values)
         {

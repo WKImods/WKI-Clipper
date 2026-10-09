@@ -7,19 +7,27 @@ using WKI_Clipper.Native;
 
 namespace WKI_Clipper.Services;
 
-/// <summary>One 1 Hz hardware snapshot for the performance widget.</summary>
+/// <summary>One 1 Hz hardware snapshot for the performance widget and the on-screen overlay.</summary>
 public readonly record struct PerfSample(
     double CpuPercent,
     double GpuPercent,
     ulong RamUsedBytes,
     ulong RamTotalBytes,
-    ulong VramUsedBytes);
+    ulong VramUsedBytes,
+    ulong VramTotalBytes = 0,   // dedicated VRAM of the discrete GPU; 0 = unknown
+    double? GpuTempC = null,
+    uint? GpuFanRpm = null)
+{
+    public double RamPercent => RamTotalBytes > 0 ? (double)RamUsedBytes / RamTotalBytes * 100 : 0;
+    public double? VramPercent => VramTotalBytes > 0 ? Math.Min(100, (double)VramUsedBytes / VramTotalBytes * 100) : null;
+}
 
 /// <summary>
-/// Polls CPU / GPU / RAM / VRAM at 1 Hz using Windows performance counters (no admin,
-/// no external dependency — keeps the per-user, lightweight DNA). Reference-counted:
-/// the timer only runs while at least one performance widget is visible, so a closed
-/// board costs nothing. FPS is intentionally out of scope.
+/// Polls CPU / GPU / RAM / VRAM at 1 Hz using Windows performance counters, plus GPU
+/// temperature, fan and VRAM size via <see cref="GpuSensors"/> (no admin, no driver, no
+/// external dependency — keeps the per-user, lightweight DNA). Reference-counted: the
+/// timer only runs while the widget or the on-screen overlay is visible, so neither
+/// costs anything while closed. FPS is intentionally out of scope.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class PerformanceMonitorService : IDisposable
@@ -45,6 +53,24 @@ public sealed class PerformanceMonitorService : IDisposable
 
     public event Action<PerfSample>? Sampled;
     public PerfSample Last { get; private set; }
+
+    private readonly GpuSensors _gpuSensors = new();
+
+    /// <summary>The last <see cref="HistoryLength"/> samples, oldest first (for the overlay graphs).</summary>
+    public const int HistoryLength = 60;
+    private readonly PerfSample[] _history = new PerfSample[HistoryLength];
+    private int _historyCount, _historyNext;
+
+    public PerfSample[] History()
+    {
+        lock (_history)
+        {
+            var result = new PerfSample[_historyCount];
+            int start = (_historyNext - _historyCount + HistoryLength) % HistoryLength;
+            for (int i = 0; i < _historyCount; i++) result[i] = _history[(start + i) % HistoryLength];
+            return result;
+        }
+    }
 
     public PerformanceMonitorService()
     {
@@ -98,7 +124,16 @@ public sealed class PerformanceMonitorService : IDisposable
         }
     }
 
+    private readonly object _pollGate = new();
+
     private void Poll()
+    {
+        // The timer thread and AddViewer's priming call can meet here; the counters and
+        // the sensor handles are not meant for concurrent use.
+        lock (_pollGate) PollCore();
+    }
+
+    private void PollCore()
     {
         try
         {
@@ -106,9 +141,17 @@ public sealed class PerformanceMonitorService : IDisposable
             double gpu = ReadGpu();
             (ulong ramUsed, ulong ramTotal) = ReadRam();
             ulong vram = ReadVram();
+            var sensors = _gpuSensors.Read();
 
-            var sample = new PerfSample(cpu, gpu, ramUsed, ramTotal, vram);
+            var sample = new PerfSample(cpu, gpu, ramUsed, ramTotal, vram,
+                sensors.DedicatedVramBytes ?? 0, sensors.TemperatureC, sensors.FanRpm);
             Last = sample;
+            lock (_history)
+            {
+                _history[_historyNext] = sample;
+                _historyNext = (_historyNext + 1) % HistoryLength;
+                if (_historyCount < HistoryLength) _historyCount++;
+            }
             Sampled?.Invoke(sample);
         }
         catch (Exception ex)
@@ -252,6 +295,7 @@ public sealed class PerformanceMonitorService : IDisposable
     {
         _timer.Stop();
         _timer.Dispose();
+        _gpuSensors.Dispose();
         try { _cpu?.Dispose(); } catch { }
         foreach (var c in _gpuCounters.Values) { try { c.Dispose(); } catch { } }
         _gpuCounters.Clear();

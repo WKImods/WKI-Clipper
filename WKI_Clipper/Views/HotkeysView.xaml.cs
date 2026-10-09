@@ -24,6 +24,7 @@ public partial class HotkeysView : UserControl
         (HotkeyActions.SpotifyPlayPause, L.T("Spotify: Abspielen/Pause", "Spotify: play/pause")),
         (HotkeyActions.SpotifyNext,      L.T("Spotify: Nächster Titel", "Spotify: next track")),
         (HotkeyActions.SpotifyPrevious,  L.T("Spotify: Vorheriger Titel", "Spotify: previous track")),
+        (HotkeyActions.TogglePerfOverlay, L.T("Leistungs-Overlay ein/aus", "Performance overlay on/off")),
     };
 
     public HotkeysView()
