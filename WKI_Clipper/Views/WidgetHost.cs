@@ -20,10 +20,10 @@ public sealed class WidgetHost : IDisposable
 {
     private readonly AppHost _host;
     private readonly Dictionary<WidgetId, WidgetWindow> _windows = new();
-    private readonly Dictionary<WidgetId, ToggleButton> _toggles = new();
 
     private WidgetBackdropWindow? _backdrop;
-    private WidgetLauncherWindow? _launcher;
+    private WidgetSidebarWindow? _sidebar;
+    private readonly Dictionary<WidgetId, SidebarEntry> _entries = new();
     private bool _boardOpen;
     private bool _suppressToggle;
     private System.Windows.Threading.DispatcherTimer? _opacitySaveTimer;
@@ -255,8 +255,8 @@ public sealed class WidgetHost : IDisposable
             try { w.Close(); } catch { }
             _windows.Remove(id);
         }
-        if (_launcher != null) { try { _launcher.Close(); } catch { } _launcher = null; }
-        _toggles.Clear();
+        if (_sidebar != null) { try { _sidebar.Close(); } catch { } _sidebar = null; }
+        _entries.Clear();
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
         _boardOpen = false;
 
@@ -271,33 +271,18 @@ public sealed class WidgetHost : IDisposable
         Logger.Info("Widgets rebuilt for language change.");
     }
 
-    /// <summary>Order of widgets in the launcher; also the stagger order for default placement.</summary>
-    private static readonly WidgetId[] Order =
-        { WidgetId.Capture, WidgetId.Audio, WidgetId.Gallery, WidgetId.Performance, WidgetId.Crosshair,
-          WidgetId.Streaming, WidgetId.Mixer, WidgetId.Sources, WidgetId.Preflight, WidgetId.Chat,
-          WidgetId.WhatsApp, WidgetId.Music, WidgetId.Spotify, WidgetId.Settings };
+    /// <summary>Sidebar order; also the stagger order for default placement.</summary>
+    private static readonly IReadOnlyList<WidgetId> Order = WidgetCatalog.Order;
 
     private WidgetSettings Settings => _host.Settings.Current.Widgets;
 
-    private static string Label(WidgetId id) => id switch
+    private static string Label(WidgetId id) => WidgetCatalog.Label(id);
+
+    private static int IndexOf(WidgetId id)
     {
-        WidgetId.Capture     => L.T("Aufnahme", "Capture"),
-        WidgetId.Audio       => "Audio",
-        WidgetId.Gallery     => L.T("Galerie", "Gallery"),
-        WidgetId.Performance => L.T("Leistung", "Performance"),
-        WidgetId.Crosshair   => L.T("Crosshair", "Crosshair"),
-        WidgetId.Streaming   => "Streaming",
-        WidgetId.Mixer       => L.T("Mixer", "Mixer"),
-        WidgetId.Sources     => L.T("Quellen", "Sources"),
-        WidgetId.Preflight   => L.T("Go Live", "Go Live"),
-        WidgetId.Chat        => "Chat",
-        WidgetId.WhatsApp    => "WhatsApp",
-        // "Stream-Musik" sets the own NCS player apart from Spotify right next to it.
-        WidgetId.Music       => L.T("Stream-Musik", "Stream music"),
-        WidgetId.Spotify     => "Spotify",
-        WidgetId.Settings    => L.T("Einstellungen", "Settings"),
-        _                    => id.ToString()
-    };
+        for (int i = 0; i < Order.Count; i++) if (Order[i] == id) return i;
+        return 0;
+    }
 
     private static FrameworkElement CreateContent(WidgetId id) => id switch
     {
@@ -343,6 +328,10 @@ public sealed class WidgetHost : IDisposable
         _backdrop ??= CreateBackdrop();
         _backdrop.ShowOn(screen);   // activates → briefly on top; widgets re-assert below
 
+        // Sidebar before the widgets: it is an obstacle the grid has to know about.
+        EnsureSidebar();
+        _sidebar!.ShowOn(screen);
+
         int i = 0;
         foreach (var id in Order)
         {
@@ -351,11 +340,8 @@ public sealed class WidgetHost : IDisposable
             SyncToggle(id, st.Visible);
             i++;
         }
-
-        // Launcher last so the pill sits above the backdrop and widgets.
-        EnsureLauncher();
-        _launcher!.ShowAt(screen);
-        BumpTopmost(_launcher);
+        KeepWidgetsClearOfSidebar();
+        BumpTopmost(_sidebar);
 
         // Crosshair becomes draggable while the board is open.
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
@@ -404,8 +390,8 @@ public sealed class WidgetHost : IDisposable
             await Task.Delay(120);
         }
 
-        // Backdrop + launcher are part of the first-open cost too; construct them now.
-        try { _backdrop ??= CreateBackdrop(); EnsureLauncher(); } catch { }
+        // Backdrop + sidebar are part of the first-open cost too; construct them now.
+        try { _backdrop ??= CreateBackdrop(); EnsureSidebar(); } catch { }
 
         Logger.Info($"Widget prewarm done: {built} windows built in {sw.ElapsedMilliseconds} ms.");
     }
@@ -429,7 +415,7 @@ public sealed class WidgetHost : IDisposable
         }
 
         _backdrop?.Hide();
-        _launcher?.Hide();
+        _sidebar?.Hide();
         // Crosshair goes click-through so it never intercepts a shot in-game.
         _crosshair?.SetInteractive(false);
         _host.Settings.Save();
@@ -466,7 +452,7 @@ public sealed class WidgetHost : IDisposable
     private bool IsBoardWindow(IntPtr hwnd)
     {
         bool Is(Window? w) => w != null && new System.Windows.Interop.WindowInteropHelper(w).Handle == hwnd;
-        if (Is(_backdrop) || Is(_launcher)) return true;
+        if (Is(_backdrop) || Is(_sidebar)) return true;
         foreach (var w in _windows.Values) if (Is(w)) return true;
         return false;
     }
@@ -488,7 +474,7 @@ public sealed class WidgetHost : IDisposable
             {
                 // A pinned web widget's browser boots a few seconds later, so it does not
                 // compete with the replay buffer's ffmpeg spin-up at app start.
-                ShowWidget(id, st, PrimaryScreen(), Array.IndexOf(Order, id), startWebDelayed: true);
+                ShowWidget(id, st, PrimaryScreen(), IndexOf(id), startWebDelayed: true);
                 _windows[id].SetBoardOpen(false);
             }
         }
@@ -531,33 +517,6 @@ public sealed class WidgetHost : IDisposable
         }
     }
 
-    /// <summary>Crosshair glyph for the launcher pill: ring + four ticks + center dot.</summary>
-    private static FrameworkElement MakeCrosshairGlyph()
-    {
-        var brush = (System.Windows.Media.Brush)Application.Current.FindResource("TextBrush");
-        var root = new System.Windows.Controls.Grid { Width = 18, Height = 18 };
-
-        root.Children.Add(new System.Windows.Shapes.Ellipse
-        {
-            Width = 12, Height = 12,
-            Stroke = brush, StrokeThickness = 1.4,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        root.Children.Add(new System.Windows.Shapes.Path
-        {
-            Stroke = brush, StrokeThickness = 1.4,
-            Data = System.Windows.Media.Geometry.Parse("M9,0 L9,4 M9,14 L9,18 M0,9 L4,9 M14,9 L18,9")
-        });
-        root.Children.Add(new System.Windows.Shapes.Ellipse
-        {
-            Width = 2.6, Height = 2.6, Fill = brush,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        return root;
-    }
-
     /// <summary>Lift a topmost window above other topmost windows without stealing focus.</summary>
     private static void BumpTopmost(Window w)
     {
@@ -573,6 +532,7 @@ public sealed class WidgetHost : IDisposable
         // not be per-pixel transparent, or that child would not show.
         bool direct = id == WidgetId.WhatsApp && WebAppHost.UsesDirectRendering(WebApp.WhatsApp);
         var w = new WidgetWindow(id, Label(id), CreateContent(id), directRendering: direct);
+        w.SetIcon(IconGlyph.ForWidget(id, 15, (Brush)Application.Current.FindResource("AccentBrush")));
         w.PinToggled += OnPinToggled;
         w.CloseRequested += OnWidgetClosed;
         w.GeometryChanged += ww => CaptureGeometry(id, ww);
@@ -660,38 +620,13 @@ public sealed class WidgetHost : IDisposable
     }
 
     /// <summary>
-    /// Count on the WhatsApp button of the launcher. Deliberately the only signal: the
-    /// launcher is visible only with the board open, so nothing ever pops over the game
-    /// or the stream. Re-applied after every launcher rebuild (language switch).
+    /// Count on the WhatsApp row of the sidebar (a pill; a dot when collapsed). Deliberately
+    /// the only signal: the sidebar is visible only with the board open, so nothing ever
+    /// pops over the game or the stream. Re-applied after every sidebar rebuild.
     /// </summary>
     private void ApplyBadges()
     {
-        if (!_toggles.TryGetValue(WidgetId.WhatsApp, out var toggle)) return;
-        if (_whatsAppUnread <= 0)
-        {
-            toggle.Content = Label(WidgetId.WhatsApp);
-            return;
-        }
-        var panel = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        panel.Children.Add(new System.Windows.Controls.TextBlock { Text = Label(WidgetId.WhatsApp), VerticalAlignment = VerticalAlignment.Center });
-        panel.Children.Add(new System.Windows.Controls.Border
-        {
-            Background = (Brush)Application.Current.FindResource("AccentBrush"),
-            CornerRadius = new CornerRadius(8),
-            MinWidth = 18,
-            Padding = new Thickness(5, 0, 5, 1),
-            Margin = new Thickness(6, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new System.Windows.Controls.TextBlock
-            {
-                Text = _whatsAppUnread > 99 ? "99+" : _whatsAppUnread.ToString(),
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                HorizontalAlignment = System.Windows.HorizontalAlignment.Center
-            }
-        });
-        toggle.Content = panel;
+        if (_entries.TryGetValue(WidgetId.WhatsApp, out var entry)) entry.SetBadge(_whatsAppUnread);
     }
 
     /// <summary>
@@ -717,7 +652,8 @@ public sealed class WidgetHost : IDisposable
             (x, y) = WidgetLayout.Clamp(st.X, st.Y, pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
         else
             // Never placed: staggered default within the monitor's work area.
-            (x, y) = WidgetLayout.Clamp(area.X + (40 + index * 44) * s, area.Y + (40 + index * 44) * s,
+            // Right of the (expanded) sidebar, staggered.
+            (x, y) = WidgetLayout.Clamp(area.X + (WidgetSidebarWindow.ExpandedWidth + 40 + index * 44) * s, area.Y + (40 + index * 44) * s,
                                         pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
         DisplayGeometry.MoveTo(w, x, y);
         RememberSystemPlacement(w);
@@ -795,8 +731,8 @@ public sealed class WidgetHost : IDisposable
         Logger.Info($"Widget overlap {(allow ? "allowed (stacking)" : "prevented")}.");
     }
 
-    /// <summary>Visible widgets (and the launcher) on the monitor <paramref name="area"/> belongs to.</summary>
-    private List<LayoutRect> ObstaclesOn(LayoutRect area, WidgetWindow? except, bool includeLauncher = true)
+    /// <summary>Visible widgets (and the sidebar) on the monitor <paramref name="area"/> belongs to.</summary>
+    private List<LayoutRect> ObstaclesOn(LayoutRect area, WidgetWindow? except)
     {
         var list = new List<LayoutRect>();
         foreach (var w in _windows.Values)
@@ -804,9 +740,32 @@ public sealed class WidgetHost : IDisposable
             if (w == except || !w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b) continue;
             if (b.Overlaps(area)) list.Add(b);
         }
-        if (includeLauncher && _launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb && lb.Overlaps(area))
-            list.Add(lb);
+        if (SidebarRect() is { } sb && sb.Overlaps(area)) list.Add(sb);
         return list;
+    }
+
+    /// <summary>The sidebar's on-screen rectangle while the board is open.</summary>
+    private LayoutRect? SidebarRect()
+        => _sidebar is { IsVisible: true } ? DisplayGeometry.BoundsOf(_sidebar) : null;
+
+    /// <summary>
+    /// Widgets left under where the sidebar now sits (layouts from before v0.15, or a
+    /// sidebar that was just expanded) move to its right edge. Saved, so it happens once.
+    /// </summary>
+    private void KeepWidgetsClearOfSidebar()
+    {
+        if (SidebarRect() is not { } sb) return;
+        var screen = DisplayGeometry.ScreenOf(sb);
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        foreach (var w in _windows.Values)
+        {
+            if (!w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b || !b.Overlaps(sb)) continue;
+            var (x, y) = WidgetLayout.Clamp(sb.Right + GapDip * s, b.Y, b.W, b.H, area.X, area.Y, area.Right, area.Bottom, EdgeMarginDip * s);
+            DisplayGeometry.MoveTo(w, x, y);
+            CaptureGeometry(w.Id, w);
+        }
+        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: true);
     }
 
     private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)
@@ -854,7 +813,7 @@ public sealed class WidgetHost : IDisposable
     {
         if (DisplayGeometry.BoundsOf(grown) is not { } b) return;
         var fixedObstacles = new List<LayoutRect> { b };
-        if (_launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb) fixedObstacles.Add(lb);
+        if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
         RearrangeOn(DisplayGeometry.ScreenOf(b), except: grown, snapToGrid: false, fixedObstacles, persist: true);
     }
 
@@ -875,7 +834,7 @@ public sealed class WidgetHost : IDisposable
         foreach (var screen in screens.Values)
         {
             var fixedObstacles = new List<LayoutRect>();
-            if (_launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb) fixedObstacles.Add(lb);
+            if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
             RearrangeOn(screen, except: null, snapToGrid, fixedObstacles, persist);
         }
     }
@@ -973,7 +932,7 @@ public sealed class WidgetHost : IDisposable
         {
             var screen = _boardScreen ?? PrimaryScreen();
             _backdrop?.Cover(screen);
-            _launcher?.Recenter(screen);
+            _sidebar?.Reposition(screen);
         }
         if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false);
         ApplyCrosshair();
@@ -996,98 +955,75 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
     }
 
-    // ---- Launcher ----
+    // ---- Sidebar ----
 
-    private void EnsureLauncher()
+    /// <summary>
+    /// Builds the board's sidebar once: sections from <see cref="WidgetCatalog"/>, a toggle
+    /// row per widget, the layout switches and Settings in the footer.
+    /// </summary>
+    private void EnsureSidebar()
     {
-        if (_launcher != null) return;
-        _launcher = new WidgetLauncherWindow();
-        foreach (var id in Order)
+        if (_sidebar != null) return;
+        _sidebar = new WidgetSidebarWindow(Settings.SidebarCollapsed) { StatusProvider = BoardStatus };
+        _sidebar.CollapseToggled += collapsed =>
         {
-            var toggle = new ToggleButton
-            {
-                // The crosshair gets a glyph instead of a word — it's the one widget
-                // whose job is obvious from its symbol.
-                Content = id == WidgetId.Crosshair ? MakeCrosshairGlyph() : Label(id),
-                ToolTip = Label(id),
-                Margin = new Thickness(3, 0, 3, 0),
-                Padding = new Thickness(10, 6, 10, 6),
-                Cursor = System.Windows.Input.Cursors.Hand,
-                Foreground = (System.Windows.Media.Brush)Application.Current.FindResource("TextBrush"),
-                Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
-            };
-            var captured = id;
-            toggle.Checked += (_, _) => { if (!_suppressToggle) SetWidgetVisible(captured, true); };
-            toggle.Unchecked += (_, _) => { if (!_suppressToggle) SetWidgetVisible(captured, false); };
-            _toggles[id] = toggle;
-            _launcher.WidgetButtons.Children.Add(toggle);
-        }
-        ApplyBadges();
-
-        // The grid switch sits apart from the widget toggles: it is about the layout,
-        // not a widget.
-        _launcher.WidgetButtons.Children.Add(new System.Windows.Controls.Border
-        {
-            Width = 1, Margin = new Thickness(6, 6, 6, 6),
-            Background = (Brush)Application.Current.FindResource("BorderBrush")
-        });
-        var snapContent = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        var gridIcon = IconGlyph.Make(IconGlyph.Grid);
-        gridIcon.Margin = new Thickness(0, 0, 6, 0);
-        snapContent.Children.Add(gridIcon);
-        snapContent.Children.Add(new System.Windows.Controls.TextBlock
-        {
-            Text = L.T("Raster", "Grid"), VerticalAlignment = VerticalAlignment.Center
-        });
-        _snapToggle = new ToggleButton
-        {
-            Content = snapContent,
-            IsChecked = SnapOn,
-            ToolTip = L.T("Raster an: Fenster rasten am Raster und aneinander ein. Beim Einschalten wird alles "
-                          + "ordentlich angeordnet. Shift halten = frei verschieben.",
-                          "Grid on: windows snap to the grid and to each other. Turning it on tidies "
-                          + "everything up. Hold Shift to move freely."),
-            Margin = new Thickness(3, 0, 3, 0),
-            Padding = new Thickness(10, 6, 10, 6),
-            Cursor = System.Windows.Input.Cursors.Hand,
-            Foreground = (Brush)Application.Current.FindResource("TextBrush"),
-            Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
+            Settings.SidebarCollapsed = collapsed;
+            _sidebar!.SetCollapsed(collapsed);
+            _host.Settings.Save();
+            // Expanding can put the sidebar on top of widgets next to it.
+            if (_boardOpen) KeepWidgetsClearOfSidebar();
         };
+
+        var textBrush = (Brush)Application.Current.FindResource("TextBrush");
+        foreach (var (section, widgets) in WidgetCatalog.Sections)
+        {
+            _sidebar.AddSectionHeader(WidgetCatalog.SectionTitle(section));
+            foreach (var id in widgets) WireEntry(id, _sidebar.AddEntry(IconGlyph.ForWidget(id, 15, textBrush), Label(id)));
+        }
+
+        // Footer: the layout switches, then Settings (a widget like the others).
+        _snapToggle = _sidebar.AddFooterChip(IconGlyph.Make(IconGlyph.Grid, 13), L.T("Raster", "Grid"));
+        _snapToggle.IsChecked = SnapOn;
+        _snapToggle.ToolTip = L.T("Raster an: Fenster rasten am Raster und aneinander ein. Beim Einschalten wird alles "
+                                  + "ordentlich angeordnet. Shift halten = frei verschieben.",
+                                  "Grid on: windows snap to the grid and to each other. Turning it on tidies "
+                                  + "everything up. Hold Shift to move freely.");
         _snapToggle.Checked += (_, _) => { SetSnap(true); UpdateOverlapToggle(); };
         _snapToggle.Unchecked += (_, _) => { SetSnap(false); UpdateOverlapToggle(); };
-        _launcher.WidgetButtons.Children.Add(_snapToggle);
 
-        // Belongs to the grid: only meaningful while it is on (greyed out otherwise).
-        var overlapContent = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        var stackIcon = IconGlyph.Make(IconGlyph.Stack);
-        stackIcon.Margin = new Thickness(0, 0, 6, 0);
-        overlapContent.Children.Add(stackIcon);
-        overlapContent.Children.Add(new System.Windows.Controls.TextBlock
-        {
-            Text = L.T("Überlappen", "Overlap"), VerticalAlignment = VerticalAlignment.Center
-        });
-        _overlapToggle = new ToggleButton
-        {
-            Content = overlapContent,
-            IsChecked = Settings.AllowOverlap,
-            ToolTip = L.T("Aus: Fenster weichen einander aus und überlappen sich nie. "
-                          + "An: Fenster dürfen übereinander liegen und gestapelt werden — Raster und Einrasten bleiben aktiv. "
-                          + "Nur mit eingeschaltetem Raster wirksam.",
-                          "Off: windows step aside and never overlap. "
-                          + "On: windows may lie on top of each other and be stacked — grid and snapping stay active. "
-                          + "Only takes effect with the grid on."),
-            Margin = new Thickness(3, 0, 3, 0),
-            Padding = new Thickness(10, 6, 10, 6),
-            Cursor = System.Windows.Input.Cursors.Hand,
-            Foreground = (Brush)Application.Current.FindResource("TextBrush"),
-            Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
-        };
-        // Tooltips must still explain a greyed-out switch.
-        System.Windows.Controls.ToolTipService.SetShowOnDisabled(_overlapToggle, true);
+        _overlapToggle = _sidebar.AddFooterChip(IconGlyph.Make(IconGlyph.Stack, 13), L.T("Überlappen", "Overlap"));
+        _overlapToggle.IsChecked = Settings.AllowOverlap;
+        _overlapToggle.ToolTip = L.T("Aus: Fenster weichen einander aus und überlappen sich nie. "
+                                     + "An: Fenster dürfen übereinander liegen und gestapelt werden — Raster und Einrasten bleiben aktiv. "
+                                     + "Nur mit eingeschaltetem Raster wirksam.",
+                                     "Off: windows step aside and never overlap. "
+                                     + "On: windows may lie on top of each other and be stacked — grid and snapping stay active. "
+                                     + "Only takes effect with the grid on.");
         _overlapToggle.Checked += (_, _) => SetAllowOverlap(true);
         _overlapToggle.Unchecked += (_, _) => SetAllowOverlap(false);
-        _launcher.WidgetButtons.Children.Add(_overlapToggle);
         UpdateOverlapToggle();
+
+        WireEntry(WidgetId.Settings,
+            _sidebar.AddFooterEntry(IconGlyph.ForWidget(WidgetId.Settings, 15, textBrush), Label(WidgetId.Settings)));
+        ApplyBadges();
+    }
+
+    private void WireEntry(WidgetId id, SidebarEntry entry)
+    {
+        entry.Button.IsChecked = Settings.GetOrAdd(id).Visible;
+        entry.Button.Checked += (_, _) => { if (!_suppressToggle) SetWidgetVisible(id, true); };
+        entry.Button.Unchecked += (_, _) => { if (!_suppressToggle) SetWidgetVisible(id, false); };
+        _entries[id] = entry;
+    }
+
+    /// <summary>The sidebar header's live line: recording, buffer running or paused.</summary>
+    private (string Text, BoardStatusKind Kind) BoardStatus()
+    {
+        var rec = _host.ManualRecording;
+        bool recording = rec.IsRecording;
+        var recFor = recording && rec.StartedAt is { } t ? DateTime.Now - t : TimeSpan.Zero;
+        return WidgetCatalog.Status(_host.ReplayBuffer.IsRunning, _host.Settings.Current.ReplayBuffer.DurationSeconds,
+                                    recording, recFor);
     }
 
     private void UpdateOverlapToggle()
@@ -1105,7 +1041,7 @@ public sealed class WidgetHost : IDisposable
         if (visible)
         {
             var screen = _boardOpen && _boardScreen != null ? _boardScreen : PrimaryScreen();
-            ShowWidget(id, st, screen, Array.IndexOf(Order, id));
+            ShowWidget(id, st, screen, IndexOf(id));
         }
         else if (_windows.TryGetValue(id, out var w))
         {
@@ -1114,10 +1050,11 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
     }
 
-    /// <summary>Reflect visibility on the launcher toggle without re-triggering it.</summary>
+    /// <summary>Reflect visibility on the sidebar row without re-triggering it.</summary>
     private void SyncToggle(WidgetId id, bool on)
     {
-        if (!_toggles.TryGetValue(id, out var t) || t.IsChecked == on) return;
+        if (!_entries.TryGetValue(id, out var e) || e.Button.IsChecked == on) return;
+        var t = e.Button;
         _suppressToggle = true;
         t.IsChecked = on;
         _suppressToggle = false;
@@ -1157,7 +1094,7 @@ public sealed class WidgetHost : IDisposable
         foreach (var w in _windows.Values)
             if (!w.ExcludeFromCapture) HideIfVisible(w);
         HideIfVisible(_backdrop);
-        HideIfVisible(_launcher);
+        HideIfVisible(_sidebar);
         return hidden.Count == 0 ? null : new CaptureRestore(hidden);
     }
 
@@ -1199,7 +1136,7 @@ public sealed class WidgetHost : IDisposable
             try { w.Close(); } catch { }
         }
         _windows.Clear();
-        try { _launcher?.Close(); } catch { }
+        try { _sidebar?.Close(); } catch { }
         try { _backdrop?.Close(); } catch { }
         try { _crosshair?.Close(); } catch { }
     }

@@ -72,7 +72,10 @@ public partial class WidgetWindow : Window
             // Must happen before the window handle exists.
             AllowsTransparency = false;
             ResizeMode = ResizeMode.NoResize;   // no system frame; the grip resizes
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1E, 0x1E, 0x24));
+            // Opaque window: a solid surface, and the corner radius Windows itself draws.
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x14, 0x26));
+            Surface.Background = Background;
+            Surface.CornerRadius = new CornerRadius(8);
         }
         TitleText.Text = title;
         WidgetContent = content;
@@ -92,6 +95,9 @@ public partial class WidgetWindow : Window
 
     /// <summary>Re-labels the window after a language switch (web widgets are not rebuilt).</summary>
     public void SetTitle(string title) => TitleText.Text = title;
+
+    /// <summary>The widget's icon in front of the title (same icon as in the sidebar).</summary>
+    public void SetIcon(FrameworkElement icon) => IconHost.Content = icon;
 
     /// <summary>Inner padding around the hosted view (web pages want the room).</summary>
     public Thickness ContentPadding

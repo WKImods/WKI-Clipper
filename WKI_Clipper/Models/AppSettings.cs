@@ -571,6 +571,9 @@ public sealed class WidgetSettings
     /// </summary>
     public bool AllowOverlap { get; set; }
 
+    /// <summary>The board's sidebar shows icons only.</summary>
+    public bool SidebarCollapsed { get; set; }
+
     /// <summary>
     /// The five built-in widgets at sensible starting sizes/offsets. Positions are
     /// left at 0,0 here and laid out on first show by the host (staggered), so a

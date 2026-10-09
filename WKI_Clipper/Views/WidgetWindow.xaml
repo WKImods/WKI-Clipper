@@ -12,22 +12,23 @@
         MinWidth="220" MinHeight="140"
         SizeToContent="Manual">
     <Window.Resources>
-        <!-- Chrome icon button (pin / close) -->
+        <!-- Chrome icon button (close) -->
         <Style x:Key="ChromeButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Width" Value="30" />
-            <Setter Property="Height" Value="26" />
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PanelHoverBrush}" />
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource SoftFillHoverBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -37,24 +38,24 @@
 
         <Style x:Key="PinToggle" TargetType="ToggleButton">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Width" Value="30" />
-            <Setter Property="Height" Value="26" />
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4">
-                            <!-- Simple push-pin glyph -->
-                            <Path x:Name="Pin" Width="14" Height="14" Stretch="Uniform"
-                                  Fill="{StaticResource MutedBrush}"
-                                  Data="M9,2 L15,8 L12.5,8.5 L11,13 L9.5,9.5 L4,15 L9.5,9.5 L8.5,7.5 L9,2 Z" />
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8">
+                            <TextBlock x:Name="Pin" Text="&#xE718;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="13" Foreground="{StaticResource MutedBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PanelHoverBrush}" />
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource SoftFillHoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Pin" Property="Fill" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Pin" Property="Text" Value="&#xE840;" />
+                                <Setter TargetName="Pin" Property="Foreground" Value="{StaticResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -63,7 +64,9 @@
         </Style>
     </Window.Resources>
 
-    <Border CornerRadius="8" Background="#F21E1E24" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+    <!-- Glass surface: violet, translucent, faint highlight at the top, hairline edge -->
+    <Border x:Name="Surface" CornerRadius="16" Background="{StaticResource SurfaceBrush}"
+            BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -71,38 +74,46 @@
             </Grid.RowDefinitions>
 
             <!-- Title bar (drag handle) -->
-            <Grid Grid.Row="0" Height="34" Background="#FF16161B" MouseLeftButtonDown="OnTitleDrag">
-                <Border Background="Transparent" CornerRadius="8,8,0,0" />
-                <TextBlock x:Name="TitleText" VerticalAlignment="Center" Margin="12,0,0,0"
-                           FontWeight="SemiBold" FontSize="12"
-                           Foreground="{StaticResource TextBrush}" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,4,0">
+            <Grid Grid.Row="0" Height="42" Background="Transparent" MouseLeftButtonDown="OnTitleDrag">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                    <ContentControl x:Name="IconHost" Width="18" Height="18" Margin="0,0,10,0"
+                                    VerticalAlignment="Center" Focusable="False" />
+                    <TextBlock x:Name="TitleText" VerticalAlignment="Center"
+                               FontWeight="SemiBold" FontSize="13.5"
+                               Foreground="{StaticResource TextBrush}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,7,0">
                     <!-- Always-visible opacity slider — anchored in the title bar so
                          adjusting transparency is one drag, no popup to open first. -->
-                    <TextBlock Text="◐" FontSize="11" VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedBrush}" Margin="0,0,5,0" />
-                    <Slider x:Name="OpacitySlider" Width="72" Minimum="0.3" Maximum="1.0"
+                    <Slider x:Name="OpacitySlider" Width="64" Minimum="0.3" Maximum="1.0"
                             VerticalAlignment="Center" Margin="0,0,8,0" />
                     <ToggleButton x:Name="PinButton" Style="{StaticResource PinToggle}"
                                   ToolTip="Pin"
                                   Checked="OnPinChanged" Unchecked="OnPinChanged" />
                     <Button x:Name="CloseButton" Style="{StaticResource ChromeButton}"
-                            Content="✕" FontSize="13" Click="OnClose" />
+                            Click="OnClose">
+                        <TextBlock Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
                 </StackPanel>
             </Grid>
 
             <!-- Content host -->
-            <Border x:Name="ContentHost" Grid.Row="1" Padding="12" />
+            <Border x:Name="ContentHost" Grid.Row="1" Padding="14,4,14,14" />
 
             <!-- Resize grip (bottom-right) -->
             <Thumb x:Name="ResizeThumb" Grid.Row="1"
-                   Width="16" Height="16"
+                   Width="18" Height="18"
                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                   Cursor="SizeNWSE" Opacity="0.5"
+                   Margin="0,0,3,3"
+                   Cursor="SizeNWSE" Opacity="0.55"
                    DragDelta="OnResize" DragCompleted="OnResizeCompleted">
                 <Thumb.Template>
                     <ControlTemplate TargetType="Thumb">
-                        <Path Data="M 16 0 L 16 16 L 0 16 Z" Fill="{StaticResource MutedBrush}" />
+                        <Grid Background="Transparent">
+                            <Path Data="M 14 4 L 4 14 M 14 9 L 9 14" Stroke="{StaticResource FaintBrush}"
+                                  StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                        </Grid>
                     </ControlTemplate>
                 </Thumb.Template>
             </Thumb>

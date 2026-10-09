@@ -21,7 +21,8 @@ public sealed class WidgetBackdropWindow : Window
     {
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
-        Background = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0));
+        // Violet-tinted dim (v0.15 look) — a touch lighter at the top, deeper at the bottom.
+        Background = new LinearGradientBrush(Color.FromArgb(0x70, 0x1C, 0x0E, 0x30), Color.FromArgb(0x80, 0x0A, 0x06, 0x14), 90);
         Topmost = true;
         ShowInTaskbar = false;
         ResizeMode = ResizeMode.NoResize;
