@@ -52,7 +52,11 @@ public sealed record SpotifySnapshot(
 /// </summary>
 public sealed class SpotifyMediaService : IDisposable
 {
+    /// <summary>WinRT media calls have no timeout of their own; a hung app must not wedge the widget.</summary>
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(3);
+
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly SemaphoreSlim _attachGate = new(1, 1);
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
     private GlobalSystemMediaTransportControlsSession? _session;
     private Task? _startTask;
@@ -71,44 +75,64 @@ public sealed class SpotifyMediaService : IDisposable
     {
         try
         {
-            _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _manager.SessionsChanged += (_, _) => _ = AttachAsync();
+            var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask().WaitAsync(CallTimeout);
+            if (_disposed) return;
+            _manager = manager;
+            manager.SessionsChanged += (_, _) => _ = AttachAsync();
             await AttachAsync();
         }
         catch (Exception ex)
         {
             Logger.Warn("Spotify: media session manager unavailable: " + ex.Message);
+            _startTask = null;   // let the next use try again
         }
     }
 
     internal static bool IsSpotifyAppId(string? aumid)
         => !string.IsNullOrEmpty(aumid) && aumid.Contains("spotify", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// (Re)binds to Spotify's session. Serialized: the first start and SessionsChanged
+    /// (thread pool) can arrive together and would otherwise subscribe the same session twice.
+    /// </summary>
     private async Task AttachAsync()
     {
-        if (_manager is null || _disposed) return;
-        GlobalSystemMediaTransportControlsSession? found = null;
-        try { found = _manager.GetSessions().FirstOrDefault(s => IsSpotifyAppId(s.SourceAppUserModelId)); }
-        catch (Exception ex) { Logger.Warn("Spotify: session list failed: " + ex.Message); }
-
-        if (!ReferenceEquals(found, _session))
+        await _attachGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            if (_session != null)
+            if (_manager is null || _disposed) return;
+            GlobalSystemMediaTransportControlsSession? found = null;
+            try { found = _manager.GetSessions().FirstOrDefault(s => IsSpotifyAppId(s.SourceAppUserModelId)); }
+            catch (Exception ex) { Logger.Warn("Spotify: session list failed: " + ex.Message); }
+
+            if (!ReferenceEquals(found, _session))
             {
-                _session.MediaPropertiesChanged -= OnSessionChanged;
-                _session.PlaybackInfoChanged -= OnSessionChanged;
-                _session.TimelinePropertiesChanged -= OnSessionChanged;
-            }
-            _session = found;
-            if (_session != null)
-            {
-                _session.MediaPropertiesChanged += OnSessionChanged;
-                _session.PlaybackInfoChanged += OnSessionChanged;
-                _session.TimelinePropertiesChanged += OnSessionChanged;
-                Logger.Info($"Spotify: media session attached ({_session.SourceAppUserModelId}).");
+                Detach();
+                if (found != null && !_disposed)
+                {
+                    _session = found;
+                    found.MediaPropertiesChanged += OnSessionChanged;
+                    found.PlaybackInfoChanged += OnSessionChanged;
+                    found.TimelinePropertiesChanged += OnSessionChanged;
+                    Logger.Info($"Spotify: media session attached ({found.SourceAppUserModelId}).");
+                }
             }
         }
-        await RefreshAsync();
+        finally
+        {
+            _attachGate.Release();
+        }
+        await RefreshAsync().ConfigureAwait(false);
+    }
+
+    private void Detach()
+    {
+        var old = _session;
+        _session = null;
+        if (old is null) return;
+        old.MediaPropertiesChanged -= OnSessionChanged;
+        old.PlaybackInfoChanged -= OnSessionChanged;
+        old.TimelinePropertiesChanged -= OnSessionChanged;
     }
 
     private void OnSessionChanged<T>(GlobalSystemMediaTransportControlsSession s, T args) => _ = RefreshAsync();
@@ -128,18 +152,20 @@ public sealed class SpotifyMediaService : IDisposable
             }
             else
             {
-                var props = await session.TryGetMediaPropertiesAsync();
+                var props = await session.TryGetMediaPropertiesAsync().AsTask().WaitAsync(CallTimeout).ConfigureAwait(false);
                 var playback = session.GetPlaybackInfo();
                 var timeline = session.GetTimelineProperties();
 
                 string title = props?.Title ?? "";
                 string artist = props?.Artist ?? "";
-                // The thumbnail is only re-read when the track changes.
+                // The thumbnail is only re-read when the track changes — and again on the next
+                // update if it was not there yet (Spotify often sends the art a moment later).
                 string key = title + "\u0001" + artist + "\u0001" + (props?.AlbumTitle ?? "");
                 if (key != _coverKey)
                 {
-                    _coverKey = key;
                     _cover = await ReadCoverAsync(props).ConfigureAwait(false);
+                    // Key and cover always describe the same track: "" = retry next update.
+                    _coverKey = _cover != null ? key : "";
                 }
 
                 Current = new SpotifySnapshot(
@@ -172,10 +198,10 @@ public sealed class SpotifyMediaService : IDisposable
         if (props?.Thumbnail is null) return null;
         try
         {
-            using var ras = await props.Thumbnail.OpenReadAsync();
+            using var ras = await props.Thumbnail.OpenReadAsync().AsTask().WaitAsync(CallTimeout).ConfigureAwait(false);
             using var stream = ras.AsStreamForRead();
             using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms).ConfigureAwait(false);
+            await stream.CopyToAsync(ms).WaitAsync(CallTimeout).ConfigureAwait(false);
             return ms.Length > 0 ? ms.ToArray() : null;
         }
         catch { return null; }
@@ -208,7 +234,7 @@ public sealed class SpotifyMediaService : IDisposable
         if (session is null) return;
         try
         {
-            if (!await command(session).ConfigureAwait(false))
+            if (!await command(session).WaitAsync(CallTimeout).ConfigureAwait(false))
                 Logger.Info("Spotify: command was not accepted by the app.");
         }
         catch (Exception ex) { Logger.Warn("Spotify: command failed: " + ex.Message); }
@@ -279,15 +305,20 @@ public sealed class SpotifyMediaService : IDisposable
             using var enumerator = new MMDeviceEnumerator();
             foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
-                using (device)
+                // One half-dead endpoint (sleeping Bluetooth headset…) must not hide the rest.
+                try
                 {
-                    var sessions = device.AudioSessionManager.Sessions;
-                    for (int i = 0; i < sessions.Count; i++)
+                    using (device)
                     {
-                        using var session = sessions[i];
-                        if (pids.Contains(session.GetProcessID)) action(session.SimpleAudioVolume);
+                        var sessions = device.AudioSessionManager.Sessions;
+                        for (int i = 0; i < sessions.Count; i++)
+                        {
+                            using var session = sessions[i];
+                            if (pids.Contains(session.GetProcessID)) action(session.SimpleAudioVolume);
+                        }
                     }
                 }
+                catch (Exception ex) { Logger.Warn("Spotify: mixer access failed on one device: " + ex.Message); }
             }
         }
         catch (Exception ex)
@@ -299,13 +330,7 @@ public sealed class SpotifyMediaService : IDisposable
     public void Dispose()
     {
         _disposed = true;
-        if (_session != null)
-        {
-            _session.MediaPropertiesChanged -= OnSessionChanged;
-            _session.PlaybackInfoChanged -= OnSessionChanged;
-            _session.TimelinePropertiesChanged -= OnSessionChanged;
-            _session = null;
-        }
+        Detach();
         _manager = null;
     }
 }

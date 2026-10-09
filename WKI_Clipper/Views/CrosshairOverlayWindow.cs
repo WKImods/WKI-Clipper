@@ -84,8 +84,8 @@ public sealed class CrosshairOverlayWindow : Window
         _image.Source = image;
         if (image == null) { Hide(); return; }
 
-        _image.Width = image.PixelWidth * Math.Clamp(s.Scale, 0.1, 10);
-        _image.Height = image.PixelHeight * Math.Clamp(s.Scale, 0.1, 10);
+        var (cx, cy) = TargetCenter(s);
+        SizeFor(DisplayGeometry.ScaleAt(cx, cy));
         Opacity = Math.Clamp(s.Opacity, 0.05, 1.0);
 
         // Size is content-driven; wait for layout before centering on the target point.
@@ -93,26 +93,41 @@ public sealed class CrosshairOverlayWindow : Window
         CenterOn(s);
     }
 
-    /// <summary>Positions the window so the image's center sits on the configured point.</summary>
+    /// <summary>Display scale the image is currently sized for.</summary>
+    private double _sizedForScale = 1.0;
+
+    /// <summary>
+    /// One image pixel = one SCREEN pixel at Scale 1, whatever Windows' display scaling
+    /// is: an aiming mark must neither grow nor blur at 125/150 %. DIPs are divided by
+    /// the scale of the monitor it sits on.
+    /// </summary>
+    private void SizeFor(double dpi)
+    {
+        if (_image.Source is not BitmapSource img || _settings is null) return;
+        double scale = Math.Clamp(_settings.Scale, 0.1, 10);
+        _image.Width = img.PixelWidth * scale / dpi;
+        _image.Height = img.PixelHeight * scale / dpi;
+        _sizedForScale = dpi;
+    }
+
+    /// <summary>The configured center in physical pixels, or the primary screen's middle.</summary>
+    private static (double X, double Y) TargetCenter(CrosshairSettings s)
+    {
+        if (s.CenterX is double sx && s.CenterY is double sy) return (sx, sy);
+        // Never placed yet → dead center of the primary screen.
+        var scr = WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens[0];
+        return (scr.Bounds.Left + scr.Bounds.Width / 2.0, scr.Bounds.Top + scr.Bounds.Height / 2.0);
+    }
+
+    /// <summary>Positions the window so the image's center sits on the configured point (physical pixels).</summary>
     public void CenterOn(CrosshairSettings s)
     {
         _settings = s;
-        double cx, cy;
-        if (s.CenterX is double sx && s.CenterY is double sy)
-        {
-            cx = sx; cy = sy;
-        }
-        else
-        {
-            // Never placed yet → dead center of the primary screen.
-            var scr = WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens[0];
-            cx = scr.Bounds.Left + scr.Bounds.Width / 2.0;
-            cy = scr.Bounds.Top + scr.Bounds.Height / 2.0;
-        }
-        double w = ActualWidth > 0 ? ActualWidth : _image.Width;
-        double h = ActualHeight > 0 ? ActualHeight : _image.Height;
-        Left = cx - w / 2;
-        Top = cy - h / 2;
+        var (cx, cy) = TargetCenter(s);
+        double dpi = DisplayGeometry.ScaleAt(cx, cy);
+        double w = (ActualWidth > 0 ? ActualWidth : _image.Width) * dpi;
+        double h = (ActualHeight > 0 ? ActualHeight : _image.Height) * dpi;
+        DisplayGeometry.MoveTo(this, cx - w / 2, cy - h / 2);
     }
 
     /// <summary>
@@ -143,19 +158,33 @@ public sealed class CrosshairOverlayWindow : Window
     {
         if (!_interactive) return;
         try { DragMove(); } catch { return; }
+        if (DisplayGeometry.BoundsOf(this) is not { } b) return;
 
-        double cx = Left + ActualWidth / 2;
-        double cy = Top + ActualHeight / 2;
+        // Physical pixels throughout — the stored center must mean the same screen point
+        // at every display scaling.
+        double cx = b.X + b.W / 2;
+        double cy = b.Y + b.H / 2;
 
         // Snap into a grid anchored at the center of the monitor the crosshair
-        // landed on, then re-seat the window on the snapped point.
+        // landed on.
         if (_settings is { SnapToGrid: true, GridSize: > 0 })
         {
             var (ax, ay) = MonitorCenter(cx, cy);
             (cx, cy) = Services.WidgetLayout.SnapToGrid(cx, cy, ax, ay, _settings.GridSize);
-            Left = cx - ActualWidth / 2;
-            Top = cy - ActualHeight / 2;
         }
+
+        // Dropped on a monitor with another display scale: WPF has rescaled the window,
+        // so re-size the image back to 1:1 screen pixels for the new monitor.
+        double dpi = DisplayGeometry.ScaleAt(cx, cy);
+        if (Math.Abs(dpi - _sizedForScale) > 0.001)
+        {
+            SizeFor(dpi);
+            UpdateLayout();
+        }
+
+        // Re-seat the window so the image center sits exactly on the (snapped) point.
+        double w = ActualWidth * dpi, h = ActualHeight * dpi;
+        DisplayGeometry.MoveTo(this, cx - w / 2, cy - h / 2);
 
         Moved?.Invoke(cx, cy);
     }

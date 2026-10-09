@@ -64,7 +64,9 @@ public partial class ToastNotificationWindow : Window
 
     private void OnClick(object sender, MouseButtonEventArgs e)
     {
-        if (!string.IsNullOrEmpty(FilePath) && File.Exists(FilePath))
+        // A file (clip, screenshot) or a folder (web-widget downloads: the folder on purpose,
+        // never the downloaded file itself).
+        if (!string.IsNullOrEmpty(FilePath) && (File.Exists(FilePath) || Directory.Exists(FilePath)))
         {
             try { Process.Start(new ProcessStartInfo(FilePath) { UseShellExecute = true }); } catch { }
         }

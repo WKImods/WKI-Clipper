@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
+using WKI_Clipper.Native;
 using WKI_Clipper.Services;
 
 namespace WKI_Clipper.Views;
@@ -127,6 +128,7 @@ public sealed class WebAppHost : UserControl, IDisposable
 
     public void Reload()
     {
+        if (_starting) return;   // a start is in flight — tearing it down mid-init races it
         if (_web?.CoreWebView2 is { } core) core.Reload();
         else Restart();
     }
@@ -166,7 +168,8 @@ public sealed class WebAppHost : UserControl, IDisposable
             _web = web;
 
             await web.EnsureCoreWebView2Async(env, options);
-            if (_disposed) return;
+            // Disposed or replaced while initializing: this control is no longer ours.
+            if (_disposed || !ReferenceEquals(_web, web)) return;
 
             Configure(web.CoreWebView2);
             web.ZoomFactorChanged += (_, _) =>
@@ -199,12 +202,31 @@ public sealed class WebAppHost : UserControl, IDisposable
 
     private void Configure(CoreWebView2 core)
     {
+        ApplyPagePolicy(core);
+        core.Settings.AreDefaultContextMenusEnabled = true;   // filtered to edit commands below
+        core.Settings.IsZoomControlEnabled = true;            // Ctrl + wheel, persisted per widget
+
+        core.NavigationStarting += (_, e) => GuardNavigation(e.Uri, () => e.Cancel = true);
+        core.NewWindowRequested += OnNewWindowRequested;
+        core.ContextMenuRequested += OnContextMenuRequested;
+        core.DocumentTitleChanged += (_, _) => TitleChanged?.Invoke(core.DocumentTitle ?? "");
+        core.IsDocumentPlayingAudioChanged += (_, _) => PlayingAudioChanged?.Invoke(core.IsDocumentPlayingAudio);
+        core.ProcessFailed += OnProcessFailed;
+    }
+
+    /// <summary>
+    /// Rules every page of this app gets — the widget itself and its sign-in popups alike:
+    /// no dev tools/browser shortcuts/autofill, no bridge into the app, the permission and
+    /// download policy, and the mute state.
+    /// </summary>
+    private void ApplyPagePolicy(CoreWebView2 core)
+    {
         var s = core.Settings;
         s.AreDevToolsEnabled = false;
         s.AreBrowserAcceleratorKeysEnabled = false;   // no F5/F12/Ctrl+P; edit keys still work
-        s.AreDefaultContextMenusEnabled = true;       // filtered to edit commands below
+        s.AreDefaultContextMenusEnabled = false;
         s.IsStatusBarEnabled = false;
-        s.IsZoomControlEnabled = true;                // Ctrl + wheel, persisted per widget
+        s.IsZoomControlEnabled = false;
         s.IsGeneralAutofillEnabled = false;
         s.IsPasswordAutosaveEnabled = false;
         s.AreHostObjectsAllowed = false;              // the page gets no bridge into the app
@@ -212,15 +234,8 @@ public sealed class WebAppHost : UserControl, IDisposable
         s.IsSwipeNavigationEnabled = false;
 
         core.IsMuted = _muted;
-
-        core.NavigationStarting += (_, e) => GuardNavigation(e.Uri, () => e.Cancel = true);
-        core.NewWindowRequested += OnNewWindowRequested;
         core.PermissionRequested += OnPermissionRequested;
         core.DownloadStarting += OnDownloadStarting;
-        core.ContextMenuRequested += OnContextMenuRequested;
-        core.DocumentTitleChanged += (_, _) => TitleChanged?.Invoke(core.DocumentTitle ?? "");
-        core.IsDocumentPlayingAudioChanged += (_, _) => PlayingAudioChanged?.Invoke(core.IsDocumentPlayingAudio);
-        core.ProcessFailed += OnProcessFailed;
     }
 
     /// <summary>Top-level navigation: own pages stay, web links go to the browser, the rest is dropped.</summary>
@@ -253,34 +268,36 @@ public sealed class WebAppHost : UserControl, IDisposable
 
         // Sign-in popups (Google/Apple/Facebook) need window.opener, so they open as a real
         // popup — in our own topmost window, or they would hide behind the widget board.
+        // Not owned by the widget: closing the board would otherwise hide it mid-login.
         var deferral = e.GetDeferral();
+        WebPopupWindow? popup = null;
         try
         {
             var env = await GetEnvironmentAsync();
             var options = env.CreateCoreWebView2ControllerOptions();
             options.ProfileName = WebAppRules.ProfileName(_app);
 
-            var popup = new WebPopupWindow(Window.GetWindow(this));
+            popup = new WebPopupWindow(excludeFromCapture: _app == WebApp.WhatsApp);
             popup.Show();
             await popup.Web.EnsureCoreWebView2Async(env, options);
             var pc = popup.Web.CoreWebView2;
-            pc.Settings.AreDevToolsEnabled = false;
-            pc.Settings.IsPasswordAutosaveEnabled = false;
-            pc.Settings.IsGeneralAutofillEnabled = false;
+            ApplyPagePolicy(pc);
             pc.NavigationStarting += (_, ne) => GuardNavigation(ne.Uri, () => ne.Cancel = true);
             pc.NewWindowRequested += (_, ne) =>
             {
                 ne.Handled = true;
                 if (WebAppRules.Decide(_app, ne.Uri) != WebNavDecision.Block) OpenExternal(ne.Uri);
             };
-            pc.WindowCloseRequested += (_, _) => popup.Close();
-            pc.DocumentTitleChanged += (_, _) => popup.Title = pc.DocumentTitle;
+            var window = popup;
+            pc.WindowCloseRequested += (_, _) => window.Close();
+            pc.DocumentTitleChanged += (_, _) => window.Title = pc.DocumentTitle;
             e.NewWindow = pc;
             e.Handled = true;
         }
         catch (Exception ex)
         {
             Logger.Warn($"Web widget {_app}: popup failed ({ex.Message}).");
+            try { popup?.Close(); } catch { }   // never leave an empty topmost window behind
             e.Handled = true;
         }
         finally
@@ -314,13 +331,15 @@ public sealed class WebAppHost : UserControl, IDisposable
         // download folder (ResultFilePath is already set there).
         e.Handled = true;
         var op = e.DownloadOperation;
-        var path = e.ResultFilePath;
+        // The toast opens the FOLDER, never the file: attachments come from strangers, and
+        // a click on a toast next to the crosshair must not run a downloaded .exe/.lnk.
+        var folder = System.IO.Path.GetDirectoryName(e.ResultFilePath);
         op.StateChanged += (_, _) =>
         {
             if (op.State == CoreWebView2DownloadState.Completed)
                 // Title only — a file name from a private chat must not show up on stream.
                 ToastService.Show(ToastKind.Info, L.T("Download gespeichert", "Download saved"),
-                    L.T("Im Download-Ordner — klicken zum Öffnen.", "In the downloads folder — click to open."), path);
+                    L.T("Im Download-Ordner — klicken öffnet den Ordner.", "In the downloads folder — click to open the folder."), folder);
         };
     }
 
@@ -337,9 +356,10 @@ public sealed class WebAppHost : UserControl, IDisposable
         Logger.Warn($"Web widget {_app}: browser process failed ({e.ProcessFailedKind}).");
         if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
             s_environment = null;   // the shared environment died with it
+        // "Unresponsive" is only logged: WhatsApp is routinely sluggish while it syncs the
+        // chat history, and tearing the page down then would lose exactly that sync.
         if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited
-            or CoreWebView2ProcessFailedKind.RenderProcessExited
-            or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
+            or CoreWebView2ProcessFailedKind.RenderProcessExited)
         {
             Dispatcher.BeginInvoke(new Action(() =>
             {
@@ -351,6 +371,7 @@ public sealed class WebAppHost : UserControl, IDisposable
 
     private void Restart()
     {
+        if (_starting) return;
         TearDownControl();
         EnsureStarted();
     }
@@ -393,21 +414,20 @@ public sealed class WebAppHost : UserControl, IDisposable
             DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 30, 30, 36)
         };
 
-        public WebPopupWindow(Window? owner)
+        public WebPopupWindow(bool excludeFromCapture)
         {
             Title = "WKI Clipper";
             Width = 520;
             Height = 720;
             Topmost = true;
-            ShowInTaskbar = false;
+            // In the taskbar: an unowned popup must stay findable if it ends up behind the game.
+            ShowInTaskbar = true;
             Background = (Brush)Application.Current.FindResource("BgBrush");
-            if (owner != null)
-            {
-                Owner = owner;
-                WindowStartupLocation = WindowStartupLocation.CenterOwner;
-            }
-            else WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Content = Web;
+            if (excludeFromCapture)
+                SourceInitialized += (_, _) => User32.SetWindowDisplayAffinity(
+                    new System.Windows.Interop.WindowInteropHelper(this).Handle, User32.WDA_EXCLUDEFROMCAPTURE);
             Closed += (_, _) => { try { Web.Dispose(); } catch { } };
         }
     }

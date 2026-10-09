@@ -516,11 +516,24 @@ public sealed class WidgetState
     /// WDA_EXCLUDEFROMCAPTURE, while staying visible on the user's own screen.
     /// </summary>
     public bool ExcludeFromCapture { get; set; }
+    /// <summary>
+    /// Window CENTER as a fraction (0..1) of the monitor's work area — the scale- and
+    /// resolution-independent place. null = saved by a version before v0.13 (then X/Y,
+    /// which were effectively pixels at 100 % scaling, are used once).
+    /// </summary>
+    public double? RelX { get; set; }
+    public double? RelY { get; set; }
 }
 
 public sealed class WidgetSettings
 {
     public List<WidgetState> Widgets { get; set; } = DefaultLayout();
+
+    /// <summary>
+    /// "Raster" switch: widgets snap to a grid and to each other and never overlap.
+    /// Off by default — turning it on rearranges the current layout.
+    /// </summary>
+    public bool Snap { get; set; }
 
     /// <summary>
     /// The five built-in widgets at sensible starting sizes/offsets. Positions are

@@ -16,13 +16,20 @@ public static class FFmpegCommandBuilder
 {
     /// <summary>
     /// True while something on screen must stay out of the footage via
-    /// WDA_EXCLUDEFROMCAPTURE — the crosshair, or a capture-excluded widget that is open
-    /// on the board (WhatsApp). The capture path must then honour display affinity,
-    /// which AMD's vsrc_amf does not.
+    /// WDA_EXCLUDEFROMCAPTURE — the crosshair, or a capture-excluded widget (WhatsApp).
+    /// The capture path must then honour display affinity, which AMD's vsrc_amf does not.
+    ///
+    /// Deliberately independent of whether the widget is open: switching the pipeline
+    /// only when it appears would put its first seconds into the buffer before the
+    /// restarted capture takes over. Private beats the cheaper capture path.
     /// </summary>
     public static bool MustHonorCaptureExclusion(AppSettings settings)
         => settings.Crosshair.Enabled
-        || settings.Widgets.Widgets.Exists(w => w.ExcludeFromCapture && w.Visible);
+        || settings.Widgets.Widgets.Exists(w => w.ExcludeFromCapture);
+
+    /// <summary>True when the settings could select AMD's own capture at all (opt-in + AMF encoder).</summary>
+    public static bool AmfCaptureConfigured(AppSettings settings)
+        => settings.Video.UseAmfCapture && settings.Video.Codec.Contains("amf");
 
     /// <summary>
     /// Build a recording command.
@@ -77,8 +84,7 @@ public static class FFmpegCommandBuilder
         // On top of that the whole path is opt-in (Video.UseAmfCapture, default off): it is
         // driver-level, and a system-wide stutter that survived closing the app pointed at
         // it. ddagrab is the safe default; the speed-up is not worth an unexplained machine.
-        bool amfNativeCapture = settings.Video.UseAmfCapture
-                                && settings.Video.Codec.Contains("amf") && !rawInput && !needScale
+        bool amfNativeCapture = AmfCaptureConfigured(settings) && !rawInput && !needScale
                                 && !MustHonorCaptureExclusion(settings);
 
         if (rawInput)

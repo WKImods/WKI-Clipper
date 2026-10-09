@@ -58,6 +58,7 @@ public sealed class WebWidgetTests
     [InlineData("https://www.google.com/search?q=x")]
     [InlineData("https://www.apple.com/")]
     [InlineData("https://facebook.com.evil.de/")]
+    [InlineData("https://l.facebook.com/l.php?u=https%3A%2F%2Fevil.de")]   // link shim
     public void Spotify_lookalikes_go_to_the_browser(string uri)
         => Assert.Equal(WebNavDecision.OpenExternal, WebAppRules.Decide(WebApp.Spotify, uri));
 

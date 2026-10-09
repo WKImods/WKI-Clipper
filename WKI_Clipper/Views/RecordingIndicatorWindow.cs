@@ -107,9 +107,9 @@ public sealed class RecordingIndicatorWindow : Window
     {
         if (_screen is null) return;
         UpdateLayout();
-        var b = _screen.Bounds;   // DIPs (app assumes 100% DPI, like the other overlays)
-        Left = b.Right - ActualWidth - 24;
-        Top = b.Top + 24;
+        var b = DisplayGeometry.Bounds(_screen);   // physical pixels
+        double s = DisplayGeometry.ScaleOf(_screen);
+        DisplayGeometry.MoveTo(this, b.Right - (ActualWidth + 24) * s, b.Y + 24 * s);
     }
 
     protected override void OnSourceInitialized(EventArgs e)

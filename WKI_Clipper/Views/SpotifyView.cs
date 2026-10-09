@@ -26,11 +26,12 @@ public sealed class SpotifyView : UserControl, IWebWidget
     private static AppHost Host => App.Host;
     private static SpotifySettings Cfg => Host.Settings.Current.Spotify;
 
-    // Windows' own icon font (Win11: Fluent, Win10: MDL2) — the Unicode media symbols
-    // fall back to tofu boxes in the default UI font at this size.
-    private static readonly FontFamily IconFont = new("Segoe Fluent Icons, Segoe MDL2 Assets");
-    private const string IconPrev = "", IconNext = "", IconPlay = "", IconPause = "",
-                         IconShuffle = "", IconRepeatAll = "", IconRepeatOne = "", IconVolume = "";
+    // Icons via IconGlyph: the font must sit on the TextBlock itself (see there).
+    private static readonly FontFamily IconFont = IconGlyph.Font;
+    private static TextBlock Icon(string glyph) => IconGlyph.Make(glyph);
+    private const string IconPrev = IconGlyph.Previous, IconNext = IconGlyph.Next, IconPlay = IconGlyph.Play,
+                         IconPause = IconGlyph.Pause, IconShuffle = IconGlyph.Shuffle, IconRepeatAll = IconGlyph.RepeatAll,
+                         IconRepeatOne = IconGlyph.RepeatOne, IconVolume = IconGlyph.Volume;
 
     // compact
     private readonly Grid _compact = new();
@@ -81,7 +82,7 @@ public sealed class SpotifyView : UserControl, IWebWidget
         _repeat = TransportButton(IconRepeatAll, () => _ = Host.Spotify.CycleRepeatAsync());
         _shuffle = new ToggleButton
         {
-            Content = IconShuffle, FontFamily = IconFont, FontSize = 14,
+            Content = Icon(IconShuffle),
             Width = 34, Height = 30, Margin = new Thickness(0, 0, 4, 0), Cursor = Cursors.Hand,
             Foreground = (Brush)Application.Current.FindResource("TextBrush"),
             Template = (ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
@@ -207,7 +208,7 @@ public sealed class SpotifyView : UserControl, IWebWidget
 
     private Button TransportButton(string glyph, Action action)
     {
-        var b = new Button { Content = glyph, FontFamily = IconFont, Width = 34, Height = 30, Margin = new Thickness(0, 0, 4, 0), FontSize = 14, Padding = new Thickness(0) };
+        var b = new Button { Content = Icon(glyph), Width = 34, Height = 30, Margin = new Thickness(0, 0, 4, 0), Padding = new Thickness(0) };
         b.Click += (_, _) => action();
         return b;
     }
@@ -316,20 +317,26 @@ public sealed class SpotifyView : UserControl, IWebWidget
     private void QueueVolume(float v)
     {
         // Slider drags fire per pixel; one worker applies only the latest value.
-        _pendingVolume = v;
+        System.Threading.Volatile.Write(ref _pendingVolume, v);
         if (System.Threading.Interlocked.Exchange(ref _volumeWorker, 1) == 1) return;
         _ = Task.Run(() =>
         {
-            try
+            float applied;
+            do
             {
-                float last;
-                do
+                try
                 {
-                    last = _pendingVolume;
-                    SpotifyMediaService.SetAppVolume(last);
-                } while (Math.Abs(last - _pendingVolume) > 0.0001f);
-            }
-            finally { System.Threading.Interlocked.Exchange(ref _volumeWorker, 0); }
+                    do
+                    {
+                        applied = System.Threading.Volatile.Read(ref _pendingVolume);
+                        SpotifyMediaService.SetAppVolume(applied);
+                    } while (Math.Abs(applied - System.Threading.Volatile.Read(ref _pendingVolume)) > 0.0001f);
+                }
+                finally { System.Threading.Interlocked.Exchange(ref _volumeWorker, 0); }
+                // A value set between the last check and releasing the flag found the flag
+                // still taken and returned — pick it up here instead of dropping it.
+            } while (Math.Abs(applied - System.Threading.Volatile.Read(ref _pendingVolume)) > 0.0001f
+                     && System.Threading.Interlocked.Exchange(ref _volumeWorker, 1) == 0);
         });
     }
 
@@ -390,9 +397,9 @@ public sealed class SpotifyView : UserControl, IWebWidget
         _prev.IsEnabled = _play.IsEnabled = _next.IsEnabled = controllable;
         _shuffle.IsEnabled = controllable && snap.Shuffle.HasValue;
         _repeat.IsEnabled = controllable && snap.Repeat.HasValue;
-        _play.Content = snap.IsPlaying ? IconPause : IconPlay;
+        ((TextBlock)_play.Content).Text = snap.IsPlaying ? IconPause : IconPlay;
         _shuffle.IsChecked = snap.Shuffle == true;
-        _repeat.Content = snap.Repeat == MediaPlaybackAutoRepeatMode.Track ? IconRepeatOne : IconRepeatAll;
+        ((TextBlock)_repeat.Content).Text = snap.Repeat == MediaPlaybackAutoRepeatMode.Track ? IconRepeatOne : IconRepeatAll;
         _repeat.Opacity = snap.Repeat is MediaPlaybackAutoRepeatMode.List or MediaPlaybackAutoRepeatMode.Track ? 1.0 : 0.5;
         _repeat.ToolTip = snap.Repeat switch
         {

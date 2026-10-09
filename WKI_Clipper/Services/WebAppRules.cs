@@ -72,7 +72,9 @@ public static class WebAppRules
         || host.Equals("consent.google.com", StringComparison.OrdinalIgnoreCase)
         || host.Equals("appleid.apple.com", StringComparison.OrdinalIgnoreCase)
         || host.Equals("idmsa.apple.com", StringComparison.OrdinalIgnoreCase)
-        || IsHostOrSubdomain(host, "facebook.com");
+        // Only the login hosts — not *.facebook.com, whose l./lm. link shims forward anywhere.
+        || host.Equals("www.facebook.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("m.facebook.com", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>"spotify.com" or "x.spotify.com" — but never "spotify.com.evil.de" or "evilspotify.com".</summary>
     internal static bool IsHostOrSubdomain(string host, string domain)

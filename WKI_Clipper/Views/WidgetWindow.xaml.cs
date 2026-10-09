@@ -31,6 +31,18 @@ public partial class WidgetWindow : Window
     public event Action<WidgetWindow>? GeometryChanged;
     /// <summary>Raised when the user picks a new opacity, so the host can persist it.</summary>
     public event Action<WidgetWindow>? OpacityChanged;
+    /// <summary>A title-bar drag ended (host: resolve overlaps when the grid is on).</summary>
+    public event Action<WidgetWindow>? DragFinished;
+    /// <summary>A resize-grip drag ended (host: make room for the grown window).</summary>
+    public event Action<WidgetWindow>? ResizeFinished;
+
+    /// <summary>
+    /// Live snapping while dragged: gets the proposed rectangle (physical pixels), returns
+    /// the snapped one. Set by the host while the grid switch is on, null otherwise.
+    /// </summary>
+    public Func<WidgetWindow, Services.LayoutRect, Services.LayoutRect>? MoveSnapper { get; set; }
+    /// <summary>Like <see cref="MoveSnapper"/> for the resize grip; returns the snapped physical size.</summary>
+    public Func<WidgetWindow, Services.LayoutRect, (double W, double H)>? ResizeSnapper { get; set; }
 
     private IntPtr _hwnd;
     private bool _boardOpen = true;
@@ -165,6 +177,31 @@ public partial class WidgetWindow : Window
         // overlay centrally via WidgetHost.HideDuringCapture().
         ApplyDisplayAffinity();
         ApplyActivationStyle();
+        HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+    }
+
+    private const int WM_MOVING = 0x0216;
+
+    /// <summary>
+    /// WM_MOVING carries the rectangle Windows is about to move the window to; rewriting
+    /// it is how live snapping works without fighting the system's own move loop.
+    /// </summary>
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_MOVING && lParam != IntPtr.Zero && MoveSnapper is { } snap)
+        {
+            var r = System.Runtime.InteropServices.Marshal.PtrToStructure<User32.RECT>(lParam);
+            int w = r.Width, h = r.Height;
+            var s = snap(this, new Services.LayoutRect(r.Left, r.Top, w, h));
+            r.Left = (int)Math.Round(s.X);
+            r.Top = (int)Math.Round(s.Y);
+            r.Right = r.Left + w;
+            r.Bottom = r.Top + h;
+            System.Runtime.InteropServices.Marshal.StructureToPtr(r, lParam, false);
+            handled = true;
+            return new IntPtr(1);
+        }
+        return IntPtr.Zero;
     }
 
     /// <summary>Board open = interactive/activatable; board closed = no-activate (no focus steal).</summary>
@@ -201,14 +238,30 @@ public partial class WidgetWindow : Window
         if (e.ChangedButton != MouseButton.Left) return;
         try { DragMove(); } catch { /* DragMove throws if the button was already released */ }
         GeometryChanged?.Invoke(this);
+        DragFinished?.Invoke(this);
     }
 
     private void OnResize(object sender, DragDeltaEventArgs e)
     {
-        var w = Width + e.HorizontalChange;
-        var h = Height + e.VerticalChange;
+        // The thumb reports the mouse offset from its CURRENT position, so snapping the
+        // size here never drifts away from the cursor.
+        double w = Math.Max(MinWidth, Width + e.HorizontalChange);
+        double h = Math.Max(MinHeight, Height + e.VerticalChange);
+        if (ResizeSnapper is { } snap && DisplayGeometry.BoundsOf(this) is { } b)
+        {
+            double s = System.Windows.Media.VisualTreeHelper.GetDpi(this).DpiScaleX;
+            var (pw, ph) = snap(this, new Services.LayoutRect(b.X, b.Y, w * s, h * s));
+            w = pw / s;
+            h = ph / s;
+        }
         Width = Math.Max(MinWidth, w);
         Height = Math.Max(MinHeight, h);
+    }
+
+    private void OnResizeCompleted(object sender, DragCompletedEventArgs e)
+    {
+        GeometryChanged?.Invoke(this);
+        ResizeFinished?.Invoke(this);
     }
 
     protected override void OnDeactivated(EventArgs e)

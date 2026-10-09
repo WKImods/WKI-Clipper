@@ -63,36 +63,41 @@ public static class ToastService
     {
         // Need to measure window before positioning. Force-render once.
         win.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-        var screen = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        var (screen, s) = PrimaryArea();
 
         // Use rough estimate for height before window renders; refined on first frame.
+        // Sizes are DIPs, the work area is physical pixels — scale before mixing them.
         double w = win.Width;
         double estimatedH = 88;
-        double left = screen.Right - w - EdgeMargin;
+        double left = screen.Right - (w + EdgeMargin) * s;
 
-        double y = screen.Top + TopMargin;
+        double y = screen.Top + TopMargin * s;
         for (int i = 0; i < index; i++)
         {
             double h = _active[i].ActualHeight > 0 ? _active[i].ActualHeight : estimatedH;
-            y += h + ToastSpacing;
+            y += (h + ToastSpacing) * s;
         }
 
-        win.Left = left;
-        win.Top = y;
+        DisplayGeometry.MoveTo(win, left, y);
     }
 
     private static void RepositionAll()
     {
-        var screen = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
-        double y = screen.Top + TopMargin;
+        var (screen, s) = PrimaryArea();
+        double y = screen.Top + TopMargin * s;
         foreach (var w in _active)
         {
-            double left = screen.Right - w.Width - EdgeMargin;
-            // animate position? for simplicity just snap.
-            w.Left = left;
-            w.Top = y;
+            double left = screen.Right - (w.Width + EdgeMargin) * s;
+            DisplayGeometry.MoveTo(w, left, y);
             double h = w.ActualHeight > 0 ? w.ActualHeight : 88;
-            y += h + ToastSpacing;
+            y += (h + ToastSpacing) * s;
         }
+    }
+
+    private static (System.Drawing.Rectangle Area, double Scale) PrimaryArea()
+    {
+        var primary = Screen.PrimaryScreen;
+        if (primary is null) return (new System.Drawing.Rectangle(0, 0, 1920, 1080), 1.0);
+        return (primary.WorkingArea, DisplayGeometry.ScaleOf(primary));
     }
 }

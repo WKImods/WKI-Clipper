@@ -22,6 +22,9 @@ public class CapturePathTests
         s.Video.Codec = "h264_amf";
         s.Video.Resolution = res;
         s.Video.UseAmfCapture = true;
+        // WhatsApp is capture-excluded by default, which (correctly) rules AMF's capture
+        // out. These tests are about the AMF path itself, so start from a layout without it.
+        s.Widgets.GetOrAdd(WidgetId.WhatsApp).ExcludeFromCapture = false;
         return s;
     }
 
@@ -131,15 +134,18 @@ public class CapturePathTests
         Assert.DoesNotContain("hwdownload", args);
     }
 
-    [Fact]
-    public void An_open_capture_excluded_widget_forces_the_ddagrab_path()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_capture_excluded_widget_forces_the_ddagrab_path_open_or_closed(bool open)
     {
         // Same reason as the crosshair: WhatsApp is excluded via display affinity, which
-        // vsrc_amf ignores — it would put private chats into clips.
+        // vsrc_amf ignores — it would put private chats into clips. Independent of the
+        // widget being open: a switch on open would leak its first seconds into the buffer.
         var s = Amf();
         var wa = s.Widgets.GetOrAdd(WidgetId.WhatsApp);
-        Assert.True(wa.ExcludeFromCapture);   // private by default
-        wa.Visible = true;
+        wa.ExcludeFromCapture = true;
+        wa.Visible = open;
 
         var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
 
@@ -148,15 +154,23 @@ public class CapturePathTests
     }
 
     [Fact]
-    public void A_closed_or_visible_in_stream_widget_keeps_the_fast_path()
+    public void Default_settings_are_private_and_never_pick_amf_capture()
+    {
+        // Out of the box WhatsApp is hidden from capture — so even an opted-in AMF capture
+        // falls back to ddagrab rather than risk a chat in a clip.
+        var s = new AppSettings();
+        s.Video.Codec = "h264_amf";
+        s.Video.Resolution = ResolutionPreset.Native;
+        s.Video.UseAmfCapture = true;
+        Assert.True(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
+        Assert.DoesNotContain("vsrc_amf", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false));
+    }
+
+    [Fact]
+    public void A_widget_shown_on_stream_keeps_the_fast_path()
     {
         var s = Amf();
-        var wa = s.Widgets.GetOrAdd(WidgetId.WhatsApp);
-        wa.Visible = false;                                  // closed: nothing to hide
-        Assert.False(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
-
-        wa.Visible = true;
-        wa.ExcludeFromCapture = false;                       // user chose to show it
+        s.Widgets.GetOrAdd(WidgetId.WhatsApp).ExcludeFromCapture = false;   // user chose to show it
         Assert.False(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
         Assert.Contains("vsrc_amf", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false));
     }

@@ -79,14 +79,18 @@ public sealed class WidgetLauncherWindow : Window
         Recenter();
     }
 
-    /// <summary>Re-center after the button set changes width.</summary>
-    public void Recenter()
+    /// <summary>
+    /// Re-center after the button set changes width — or on a fresh <paramref name="screen"/>
+    /// after a display change (Screen objects are snapshots and go stale).
+    /// </summary>
+    public void Recenter(WinForms.Screen? screen = null)
     {
+        if (screen != null) _screen = screen;
         if (_screen is null) return;
         UpdateLayout();
-        var b = _screen.Bounds;
-        Left = b.Left + (b.Width - ActualWidth) / 2;
-        Top  = b.Top + 12;
+        var b = DisplayGeometry.Bounds(_screen);
+        double s = DisplayGeometry.ScaleOf(_screen);
+        DisplayGeometry.MoveTo(this, b.X + (b.W - ActualWidth * s) / 2, b.Y + 12 * s);
     }
 
     public new void Hide()

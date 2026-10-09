@@ -37,7 +37,11 @@ public sealed class WhatsAppView : UserControl, IWebWidget
         _web.TitleChanged += OnTitle;
 
         bool excluded = Host.Settings.Current.Widgets.GetOrAdd(WidgetId.WhatsApp).ExcludeFromCapture;
-        _privacyChip = Chip(excluded, on => CaptureExclusionChanged?.Invoke(on));
+        _privacyChip = Chip(excluded, on =>
+        {
+            CaptureExclusionChanged?.Invoke(on);
+            Relabel();
+        });
         _soundChip = Chip(!Cfg.Muted, on =>
         {
             Cfg.Muted = !on;
@@ -45,7 +49,7 @@ public sealed class WhatsAppView : UserControl, IWebWidget
             Host.Settings.Save();
             Relabel();
         });
-        _reloadButton = new Button { Content = "⟳", Width = 30, Height = 26, Padding = new Thickness(0) };
+        _reloadButton = new Button { Content = IconGlyph.Make(IconGlyph.Refresh, 13), Width = 30, Height = 26, Padding = new Thickness(0) };
         _reloadButton.Click += (_, _) => _web.Reload();
 
         var bar = new DockPanel { Margin = new Thickness(0, 0, 0, 6), LastChildFill = false };

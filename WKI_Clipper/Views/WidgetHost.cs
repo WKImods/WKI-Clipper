@@ -47,12 +47,17 @@ public sealed class WidgetHost : IDisposable
     /// <summary>An external app (Spotify) was launched from the board and may hold the focus.</summary>
     private bool _externalLaunchDuringBoard;
     private int _whatsAppUnread;
+    /// <summary>Monitor the board is open on (where newly toggled widgets appear).</summary>
+    private WinForms.Screen? _boardScreen;
+    private System.Windows.Controls.Primitives.ToggleButton? _snapToggle;
 
     public WidgetHost(AppHost host)
     {
         _host = host;
         L.LanguageChanged += OnLanguageChanged;
         _host.CrosshairRefresh = ApplyCrosshair;
+        _displaySignature = DisplaySignature();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
     // ---- crosshair overlay ----
@@ -116,15 +121,15 @@ public sealed class WidgetHost : IDisposable
 
     /// <summary>
     /// AMD's own capture (vsrc_amf) ignores WDA_EXCLUDEFROMCAPTURE, so while the crosshair
-    /// or a capture-excluded widget (WhatsApp) is in use the buffer must run on ddagrab.
-    /// Re-arms the buffer only on an actual flip, and only when the AMF path is even
-    /// enabled — otherwise the pipeline would not change and the restart is pure loss.
+    /// is on or a widget is marked capture-excluded (WhatsApp) the buffer must run on
+    /// ddagrab. Re-arms the buffer only on an actual flip, and only when the AMF path is
+    /// configured at all — otherwise the pipeline would not change and the restart is pure loss.
     /// </summary>
     private void ReconcileCapturePath()
     {
         var settings = _host.Settings.Current;
         bool required = FFmpegCommandBuilder.MustHonorCaptureExclusion(settings);
-        if (_lastExclusionRequired is { } was && was != required && settings.Video.UseAmfCapture)
+        if (_lastExclusionRequired is { } was && was != required && FFmpegCommandBuilder.AmfCaptureConfigured(settings))
         {
             Logger.Info($"Capture exclusion {(required ? "needed" : "no longer needed")} — restarting the buffer to switch capture path.");
             _host.ReplayBuffer.RequestRestart();
@@ -175,8 +180,14 @@ public sealed class WidgetHost : IDisposable
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
         _boardOpen = false;
 
+        // OpenBoard records "where the keyboard was" — during a rebuild that would be one
+        // of our own windows, so keep the game the user actually came from.
+        var returnFocusTo = _returnFocusTo;
+        bool externalLaunch = _externalLaunchDuringBoard;
         if (wasOpen) OpenBoard();
         else RestorePinned();
+        _returnFocusTo = returnFocusTo;
+        _externalLaunchDuringBoard = externalLaunch;
         Logger.Info("Widgets rebuilt for language change.");
     }
 
@@ -247,6 +258,7 @@ public sealed class WidgetHost : IDisposable
             _externalLaunchDuringBoard = false;
         }
         _boardOpen = true;
+        _boardScreen = screen;
 
         _backdrop ??= CreateBackdrop();
         _backdrop.ShowOn(screen);   // activates → briefly on top; widgets re-assert below
@@ -342,6 +354,7 @@ public sealed class WidgetHost : IDisposable
         _crosshair?.SetInteractive(false);
         _host.Settings.Save();
         _boardOpen = false;
+        _boardScreen = null;
         ReturnFocus();
         Logger.Info("Widget board closed.");
     }
@@ -350,8 +363,9 @@ public sealed class WidgetHost : IDisposable
     /// Gives the keyboard back to the window the user came from. Without this a pinned
     /// widget that was typed into (WhatsApp, a settings field) stays the foreground
     /// window after the board closes — and WASD lands in the chat instead of the game.
-    /// Only acts while the focus is still ours (or on Spotify we just launched), so a
-    /// window the user deliberately switched to is left alone.
+    /// Only acts while the focus is still on the board (or on Spotify we just launched), so
+    /// a window the user deliberately switched to — including our own sign-in popup — is
+    /// left alone.
     /// </summary>
     private void ReturnFocus()
     {
@@ -362,9 +376,19 @@ public sealed class WidgetHost : IDisposable
 
         var fg = User32.GetForegroundWindow();
         if (fg == target) return;
-        if (!IsOwnWindow(fg) && !_externalLaunchDuringBoard) return;
+        bool onBoard = fg == IntPtr.Zero || IsBoardWindow(fg);
+        if (!onBoard && !(_externalLaunchDuringBoard && !IsOwnWindow(fg))) return;
         if (!User32.SetForegroundWindow(target))
             Logger.Info("Board closed: focus could not be returned to the previous window.");
+    }
+
+    /// <summary>A widget window, the dim backdrop or the launcher pill.</summary>
+    private bool IsBoardWindow(IntPtr hwnd)
+    {
+        bool Is(Window? w) => w != null && new System.Windows.Interop.WindowInteropHelper(w).Handle == hwnd;
+        if (Is(_backdrop) || Is(_launcher)) return true;
+        foreach (var w in _windows.Values) if (Is(w)) return true;
+        return false;
     }
 
     private static bool IsOwnWindow(IntPtr hwnd)
@@ -398,16 +422,18 @@ public sealed class WidgetHost : IDisposable
                             bool startWebDelayed = false)
     {
         var w = EnsureWindow(id);
+        // Sizes are DIPs: the content scales with Windows' display scaling.
         w.Width = st.Width > 0 ? st.Width : 360;
         w.Height = st.Height > 0 ? st.Height : 400;
-        PositionWindow(w, st, defaultScreen, index);
         w.IsPinned = st.Pinned;
         w.ClickThroughWhenPinned = st.ClickThrough;
         w.ExcludeFromCapture = st.ExcludeFromCapture;
         w.SetConfiguredOpacity(st.Opacity);
+        PositionWindow(w, st, defaultScreen, index);   // before Show: no flash at the old spot
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
         if (_boardOpen) BumpTopmost(w); // re-assert above the just-activated backdrop
+        if (SnapOn) MoveToFreeSpot(w, userMove: false);
 
         // Web widgets boot their browser on the first REAL show — the prewarm path shows
         // windows off-screen without coming through here.
@@ -475,6 +501,13 @@ public sealed class WidgetHost : IDisposable
             _opacitySaveTimer.Start();
         };
 
+        ApplySnapHooks(w);
+        w.DragFinished += ww => { if (SnapOn) MoveToFreeSpot(ww, userMove: true); };
+        w.ResizeFinished += ww => { if (SnapOn) MakeRoomAround(ww); CaptureGeometry(id, ww); };
+        // Each window gets a DPI message when the scaling changes; the debounced
+        // signature check turns that burst into one re-layout.
+        w.DpiChanged += (_, _) => ScheduleDisplayCheck();
+
         if (w.WidgetContent is IWebWidget)
             w.ContentPadding = new Thickness(6);   // a web page wants every pixel
         if (w.WidgetContent is WhatsAppView wa)
@@ -510,17 +543,25 @@ public sealed class WidgetHost : IDisposable
     private void ApplySpotifyViewSize(WidgetWindow w, bool full)
     {
         var sp = _host.Settings.Current.Spotify;
-        if (full) { sp.CompactWidth = w.Width; sp.CompactHeight = w.Height; }
-        else      { sp.FullWidth = w.Width;    sp.FullHeight = w.Height; }
+        double curW = w.ActualWidth > 0 ? w.ActualWidth : w.Width, curH = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
+        if (full) { sp.CompactWidth = curW; sp.CompactHeight = curH; }
+        else      { sp.FullWidth = curW;    sp.FullHeight = curH; }
 
         double width = full ? sp.FullWidth : sp.CompactWidth;
         double height = full ? sp.FullHeight : sp.CompactHeight;
         w.Width = Math.Max(w.MinWidth, width);
         w.Height = Math.Max(w.MinHeight, height);
 
-        var wa = WinForms.Screen.FromPoint(new System.Drawing.Point((int)w.Left + 10, (int)w.Top + 10)).WorkingArea;
-        var (x, y) = WidgetLayout.Clamp(w.Left, w.Top, w.Width, w.Height, wa.Left, wa.Top, wa.Right, wa.Bottom);
-        w.Left = x; w.Top = y;
+        // Keep the grown window on its screen.
+        if (DisplayGeometry.BoundsOf(w) is { } b)
+        {
+            var screen = DisplayGeometry.ScreenOf(b);
+            var area = DisplayGeometry.WorkArea(screen);
+            double margin = EdgeMarginDip * DisplayGeometry.ScaleOf(screen);
+            var (x, y) = WidgetLayout.Clamp(b.X, b.Y, b.W, b.H, area.X, area.Y, area.Right, area.Bottom, margin);
+            if (Math.Abs(x - b.X) > 0.5 || Math.Abs(y - b.Y) > 0.5) DisplayGeometry.MoveTo(w, x, y);
+        }
+        if (SnapOn) MakeRoomAround(w);
         CaptureGeometry(WidgetId.Spotify, w);
         _host.Settings.Save();
     }
@@ -568,32 +609,272 @@ public sealed class WidgetHost : IDisposable
         toggle.Content = panel;
     }
 
+    /// <summary>
+    /// Puts a widget where the user left it, in physical pixels of its monitor. The place
+    /// is stored relative to the work area (<see cref="WidgetState.RelX"/>), so it survives
+    /// a change of display scaling or resolution: top-right stays top-right, a window that
+    /// grew with the scaling is clamped back onto the screen.
+    /// </summary>
     private void PositionWindow(WidgetWindow w, WidgetState st, WinForms.Screen defaultScreen, int index)
     {
-        if (WidgetLayout.HasValidGeometry(st.Width, st.Height) && (st.X != 0 || st.Y != 0))
-        {
-            var screen = ScreenByDeviceName(st.MonitorDeviceName) ?? ScreenContaining(st.X, st.Y) ?? defaultScreen;
-            var wa = screen.WorkingArea;
-            var (cx, cy) = WidgetLayout.Clamp(st.X, st.Y, w.Width, w.Height,
-                wa.Left, wa.Top, wa.Right, wa.Bottom);
-            w.Left = cx; w.Top = cy;
-        }
+        bool legacy = st.RelX is null && WidgetLayout.HasValidGeometry(st.Width, st.Height) && (st.X != 0 || st.Y != 0);
+        var screen = ScreenByDeviceName(st.MonitorDeviceName)
+                     ?? (legacy ? DisplayGeometry.ScreenAt(st.X, st.Y) : defaultScreen);
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        double pw = w.Width * s, ph = w.Height * s, margin = EdgeMarginDip * s;
+
+        double x, y;
+        if (st.RelX is double rx && st.RelY is double ry)
+            (x, y) = WidgetLayout.FromRelative(rx, ry, pw, ph, area, margin);
+        else if (legacy)
+            // Saved before v0.13: X/Y came from WPF at the old 100 % assumption, i.e. pixels.
+            (x, y) = WidgetLayout.Clamp(st.X, st.Y, pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
         else
-        {
-            // Staggered default within the target monitor's work area.
-            var wa = defaultScreen.WorkingArea;
-            w.Left = wa.Left + 40 + index * 44;
-            w.Top  = wa.Top + 40 + index * 44;
-        }
+            // Never placed: staggered default within the monitor's work area.
+            (x, y) = WidgetLayout.Clamp(area.X + (40 + index * 44) * s, area.Y + (40 + index * 44) * s,
+                                        pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
+        DisplayGeometry.MoveTo(w, x, y);
+        RememberSystemPlacement(w);
+    }
+
+    /// <summary>
+    /// Where the APP last put each window (restore, clamp, re-layout after a scaling
+    /// change). Saving such a spot back as the user's choice would be lossy: a window
+    /// clamped inward at 150 % would come back 100+ px off the edge at 100 %. Only a
+    /// window that has moved since — i.e. the user moved or resized it — is saved.
+    /// </summary>
+    private readonly Dictionary<WidgetId, LayoutRect> _systemPlaced = new();
+
+    private void RememberSystemPlacement(WidgetWindow w)
+    {
+        if (DisplayGeometry.BoundsOf(w) is { } b) _systemPlaced[w.Id] = b;
     }
 
     private void CaptureGeometry(WidgetId id, WidgetWindow w)
     {
-        if (!w.IsVisible) return;
+        if (!w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b) return;
+        if (b.X < -10000 || b.Y < -10000) return;   // prewarm parking spot, never a user choice
+        if (_systemPlaced.TryGetValue(id, out var placed) && placed == b) return;   // untouched since we placed it
+        _systemPlaced.Remove(id);
         var st = Settings.GetOrAdd(id);
-        st.X = w.Left; st.Y = w.Top; st.Width = w.Width; st.Height = w.Height;
-        var center = new System.Drawing.Point((int)(w.Left + w.Width / 2), (int)(w.Top + w.Height / 2));
-        try { st.MonitorDeviceName = WinForms.Screen.FromPoint(center).DeviceName; } catch { }
+        var screen = DisplayGeometry.ScreenOf(b);
+        var (rx, ry) = WidgetLayout.ToRelative(b, DisplayGeometry.WorkArea(screen));
+        st.RelX = rx;
+        st.RelY = ry;
+        st.X = b.X;
+        st.Y = b.Y;
+        st.Width = w.ActualWidth > 0 ? w.ActualWidth : w.Width;
+        st.Height = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
+        st.MonitorDeviceName = screen.DeviceName;
+    }
+
+    // ---- Grid & snapping ("Raster" switch in the launcher) ----
+    //
+    // All geometry here is in physical pixels of one monitor; the DIP constants are scaled
+    // with that monitor's display scaling so the grid feels the same at 100 and 150 %.
+
+    private const double GridDip = 16, GapDip = 8, SnapDistanceDip = 14, EdgeMarginDip = 8;
+
+    private bool SnapOn => Settings.Snap;
+
+    private void ApplySnapHooks(WidgetWindow w)
+    {
+        w.MoveSnapper = SnapOn ? SnapWhileMoving : null;
+        w.ResizeSnapper = SnapOn ? SnapWhileResizing : null;
+    }
+
+    private void SetSnap(bool on)
+    {
+        if (Settings.Snap == on) return;
+        Settings.Snap = on;
+        foreach (var w in _windows.Values) ApplySnapHooks(w);
+        if (on) ArrangeVisible(snapToGrid: true, persist: true);
+        _host.Settings.Save();
+        Logger.Info($"Widget grid {(on ? "on — widgets arranged" : "off")}.");
+    }
+
+    /// <summary>Visible widgets (and the launcher) on the monitor <paramref name="area"/> belongs to.</summary>
+    private List<LayoutRect> ObstaclesOn(LayoutRect area, WidgetWindow? except, bool includeLauncher = true)
+    {
+        var list = new List<LayoutRect>();
+        foreach (var w in _windows.Values)
+        {
+            if (w == except || !w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b) continue;
+            if (b.Overlaps(area)) list.Add(b);
+        }
+        if (includeLauncher && _launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb && lb.Overlaps(area))
+            list.Add(lb);
+        return list;
+    }
+
+    private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)
+    {
+        // Shift held = place freely, like in most editors.
+        if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) != 0) return proposed;
+        var screen = DisplayGeometry.ScreenOf(proposed);
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        var (x, y) = WidgetLayout.SnapMove(proposed, ObstaclesOn(area, w), area, GridDip * s, SnapDistanceDip * s, GapDip * s);
+        return proposed.At(x, y);
+    }
+
+    private (double W, double H) SnapWhileResizing(WidgetWindow w, LayoutRect proposed)
+    {
+        if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) != 0) return (proposed.W, proposed.H);
+        var screen = DisplayGeometry.ScreenOf(proposed);
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        return WidgetLayout.SnapResize(proposed, ObstaclesOn(area, w), area, GridDip * s, SnapDistanceDip * s, GapDip * s,
+                                       w.MinWidth * s, w.MinHeight * s);
+    }
+
+    /// <summary>
+    /// A dropped or newly shown widget that overlaps another moves to the nearest free spot.
+    /// <paramref name="userMove"/>: the user dropped it there (save the result) — otherwise
+    /// the app is just showing it, and the stored place stays the user's.
+    /// </summary>
+    private void MoveToFreeSpot(WidgetWindow w, bool userMove)
+    {
+        if (DisplayGeometry.BoundsOf(w) is not { } b) return;
+        var screen = DisplayGeometry.ScreenOf(b);
+        double gap = GapDip * DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        var obstacles = ObstaclesOn(area, w);
+        if (obstacles.Exists(o => b.Overlaps(o, gap))
+            && WidgetLayout.FindFreeSpot(b, obstacles, area, gap) is { } spot)   // null = screen full: leave it
+            DisplayGeometry.MoveTo(w, spot.X, spot.Y);
+        if (userMove) CaptureGeometry(w.Id, w);
+        else RememberSystemPlacement(w);
+    }
+
+    /// <summary>A widget grew (resize grip, Spotify view switch): neighbours in the way step aside.</summary>
+    private void MakeRoomAround(WidgetWindow grown)
+    {
+        if (DisplayGeometry.BoundsOf(grown) is not { } b) return;
+        var fixedObstacles = new List<LayoutRect> { b };
+        if (_launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb) fixedObstacles.Add(lb);
+        RearrangeOn(DisplayGeometry.ScreenOf(b), except: grown, snapToGrid: false, fixedObstacles, persist: true);
+    }
+
+    /// <summary>
+    /// Tidies every visible widget, per monitor. <paramref name="persist"/>: the user asked
+    /// for it (switch turned on) — false after a display change, where the tidy layout is
+    /// only a consequence of the new scaling and must not replace the user's places.
+    /// </summary>
+    private void ArrangeVisible(bool snapToGrid, bool persist)
+    {
+        var screens = new Dictionary<string, WinForms.Screen>();
+        foreach (var w in _windows.Values)
+            if (w.IsVisible && DisplayGeometry.BoundsOf(w) is { } b)
+            {
+                var sc = DisplayGeometry.ScreenOf(b);
+                screens[sc.DeviceName] = sc;
+            }
+        foreach (var screen in screens.Values)
+        {
+            var fixedObstacles = new List<LayoutRect>();
+            if (_launcher is { IsVisible: true } && DisplayGeometry.BoundsOf(_launcher) is { } lb) fixedObstacles.Add(lb);
+            RearrangeOn(screen, except: null, snapToGrid, fixedObstacles, persist);
+        }
+    }
+
+    private void RearrangeOn(WinForms.Screen screen, WidgetWindow? except, bool snapToGrid,
+                             List<LayoutRect> fixedObstacles, bool persist)
+    {
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        var windows = new List<WidgetWindow>();
+        var rects = new List<LayoutRect>();
+        foreach (var w in _windows.Values)
+        {
+            if (w == except || !w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b) continue;
+            if (DisplayGeometry.ScreenOf(b).DeviceName != screen.DeviceName) continue;
+            windows.Add(w);
+            rects.Add(b);
+        }
+        if (windows.Count == 0) return;
+
+        double minW = windows.Min(w => w.MinWidth) * s, minH = windows.Min(w => w.MinHeight) * s;
+        var arranged = WidgetLayout.Arrange(rects, area, GridDip * s, GapDip * s, minW, minH, snapToGrid, fixedObstacles);
+        for (int i = 0; i < windows.Count; i++)
+        {
+            var w = windows[i];
+            var r = arranged[i];
+            if (Math.Abs(r.W - rects[i].W) > 0.5 || Math.Abs(r.H - rects[i].H) > 0.5)
+            {
+                w.Width = Math.Max(w.MinWidth, r.W / s);
+                w.Height = Math.Max(w.MinHeight, r.H / s);
+            }
+            if (Math.Abs(r.X - rects[i].X) > 0.5 || Math.Abs(r.Y - rects[i].Y) > 0.5)
+                DisplayGeometry.MoveTo(w, r.X, r.Y);
+            if (persist) CaptureGeometry(w.Id, w);
+            else RememberSystemPlacement(w);
+        }
+    }
+
+    // ---- Display changes (scaling 100 → 150 %, resolution, monitors, taskbar) ----
+
+    private string _displaySignature = "";
+    private System.Windows.Threading.DispatcherTimer? _displayTimer;
+
+    /// <summary>Monitor bounds, work areas and scale factors — what the overlay layout depends on.</summary>
+    private static string DisplaySignature()
+        => string.Join("|", WinForms.Screen.AllScreens.Select(s =>
+            $"{s.DeviceName}:{s.Bounds}:{s.WorkingArea}:{DisplayGeometry.ScaleOf(s):0.###}"));
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+        => Application.Current?.Dispatcher.BeginInvoke(new Action(ScheduleDisplayCheck));
+
+    /// <summary>
+    /// Debounced: scaling changes arrive as a burst (one DPI message per window, plus the
+    /// system event). The signature comparison ignores a window merely dragged onto
+    /// another monitor — only a real change of the displays re-lays the overlay out.
+    /// </summary>
+    private void ScheduleDisplayCheck()
+    {
+        if (_displayTimer is null)
+        {
+            _displayTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+            _displayTimer.Tick += (_, _) =>
+            {
+                _displayTimer.Stop();
+                var sig = DisplaySignature();
+                if (sig == _displaySignature) return;
+                _displaySignature = sig;
+                RelayoutForDisplayChange();
+            };
+        }
+        _displayTimer.Stop();
+        _displayTimer.Start();
+    }
+
+    private void RelayoutForDisplayChange()
+    {
+        Logger.Info("Display layout changed (scaling/resolution/monitors) — re-placing the overlay.");
+        // Screen objects are snapshots: re-resolve the board's monitor from the fresh list
+        // (it may have changed resolution or been unplugged).
+        if (_boardScreen != null) _boardScreen = ScreenByDeviceName(_boardScreen.DeviceName) ?? PrimaryScreen();
+        int index = 0;
+        foreach (var id in Order)
+        {
+            if (_windows.TryGetValue(id, out var w) && w.IsVisible)
+            {
+                var st = Settings.GetOrAdd(id);
+                w.Width = st.Width > 0 ? st.Width : w.Width;
+                w.Height = st.Height > 0 ? st.Height : w.Height;
+                PositionWindow(w, st, _boardScreen ?? PrimaryScreen(), index);
+            }
+            index++;
+        }
+        if (_boardOpen)
+        {
+            var screen = _boardScreen ?? PrimaryScreen();
+            _backdrop?.Cover(screen);
+            _launcher?.Recenter(screen);
+        }
+        if (SnapOn) ArrangeVisible(snapToGrid: false, persist: false);
+        ApplyCrosshair();
     }
 
     private void OnPinToggled(WidgetWindow w)
@@ -610,7 +891,6 @@ public sealed class WidgetHost : IDisposable
         w.Hide();
         SyncToggle(w.Id, false);
         _host.Settings.Save();
-        ReconcileCapturePath();
     }
 
     // ---- Launcher ----
@@ -640,6 +920,39 @@ public sealed class WidgetHost : IDisposable
             _launcher.WidgetButtons.Children.Add(toggle);
         }
         ApplyBadges();
+
+        // The grid switch sits apart from the widget toggles: it is about the layout,
+        // not a widget.
+        _launcher.WidgetButtons.Children.Add(new System.Windows.Controls.Border
+        {
+            Width = 1, Margin = new Thickness(6, 6, 6, 6),
+            Background = (Brush)Application.Current.FindResource("BorderBrush")
+        });
+        var snapContent = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var gridIcon = IconGlyph.Make(IconGlyph.Grid);
+        gridIcon.Margin = new Thickness(0, 0, 6, 0);
+        snapContent.Children.Add(gridIcon);
+        snapContent.Children.Add(new System.Windows.Controls.TextBlock
+        {
+            Text = L.T("Raster", "Grid"), VerticalAlignment = VerticalAlignment.Center
+        });
+        _snapToggle = new ToggleButton
+        {
+            Content = snapContent,
+            IsChecked = SnapOn,
+            ToolTip = L.T("Raster an: Fenster rasten am Raster und aneinander ein und überlappen sich nicht. "
+                          + "Beim Einschalten wird alles ordentlich angeordnet. Shift halten = frei verschieben.",
+                          "Grid on: windows snap to the grid and to each other and never overlap. "
+                          + "Turning it on tidies everything up. Hold Shift to move freely."),
+            Margin = new Thickness(3, 0, 3, 0),
+            Padding = new Thickness(10, 6, 10, 6),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Foreground = (Brush)Application.Current.FindResource("TextBrush"),
+            Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
+        };
+        _snapToggle.Checked += (_, _) => SetSnap(true);
+        _snapToggle.Unchecked += (_, _) => SetSnap(false);
+        _launcher.WidgetButtons.Children.Add(_snapToggle);
     }
 
     private void SetWidgetVisible(WidgetId id, bool visible)
@@ -649,9 +962,7 @@ public sealed class WidgetHost : IDisposable
 
         if (visible)
         {
-            var screen = _backdrop is { IsVisible: true }
-                ? WinForms.Screen.FromPoint(new System.Drawing.Point((int)_backdrop.Left + 10, (int)_backdrop.Top + 10))
-                : PrimaryScreen();
+            var screen = _boardOpen && _boardScreen != null ? _boardScreen : PrimaryScreen();
             ShowWidget(id, st, screen, Array.IndexOf(Order, id));
         }
         else if (_windows.TryGetValue(id, out var w))
@@ -659,7 +970,6 @@ public sealed class WidgetHost : IDisposable
             w.Hide();
         }
         _host.Settings.Save();
-        ReconcileCapturePath();
     }
 
     /// <summary>Reflect visibility on the launcher toggle without re-triggering it.</summary>
@@ -678,18 +988,12 @@ public sealed class WidgetHost : IDisposable
         return b;
     }
 
-    // ---- Screen helpers (bounds treated as DIPs; app assumes 100% DPI like OverlayWindow) ----
+    // ---- Screen helpers (physical pixels; see DisplayGeometry) ----
 
     private static WinForms.Screen PrimaryScreen() => WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens[0];
 
     private static WinForms.Screen? ScreenByDeviceName(string? name)
         => string.IsNullOrEmpty(name) ? null : WinForms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == name);
-
-    private static WinForms.Screen? ScreenContaining(double x, double y)
-    {
-        try { return WinForms.Screen.FromPoint(new System.Drawing.Point((int)x, (int)y)); }
-        catch { return null; }
-    }
 
     /// <summary>
     /// Temporarily hides all visible overlay windows (widgets + board) so an OWN
@@ -737,6 +1041,8 @@ public sealed class WidgetHost : IDisposable
     public void Dispose()
     {
         L.LanguageChanged -= OnLanguageChanged;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        _displayTimer?.Stop();
         _host.CrosshairRefresh = null;
         foreach (var w in _windows.Values)
         {

@@ -99,7 +99,7 @@
                    Width="16" Height="16"
                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
                    Cursor="SizeNWSE" Opacity="0.5"
-                   DragDelta="OnResize">
+                   DragDelta="OnResize" DragCompleted="OnResizeCompleted">
                 <Thumb.Template>
                     <ControlTemplate TargetType="Thumb">
                         <Path Data="M 16 0 L 16 16 L 0 16 Z" Fill="{StaticResource MutedBrush}" />
