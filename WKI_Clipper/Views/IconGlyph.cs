@@ -17,7 +17,8 @@ internal static class IconGlyph
 
     public const string Previous = "", Next = "", Play = "", Pause = "",
                         Shuffle = "", RepeatAll = "", RepeatOne = "",
-                        Volume = "", Refresh = "", Grid = "";
+                        Volume = "", Refresh = "", Grid = "",
+                        Stack = "";   // two overlapping pages ("Copy")
 
     public static TextBlock Make(string glyph, double size = 14) => new()
     {

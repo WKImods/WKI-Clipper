@@ -186,6 +186,20 @@ public sealed class WidgetGridTests
     }
 
     [Fact]
+    public void With_stacking_allowed_overlaps_stay_and_only_the_grid_applies()
+    {
+        var bottom = new LayoutRect(104, 104, 392, 424);
+        var onTop = new LayoutRect(105, 103, 392, 424);   // deliberately stacked on it
+
+        var result = WidgetLayout.Arrange(new[] { bottom, onTop }, Area, Grid, Gap, 220, 140,
+                                          snapToGrid: true, resolveOverlaps: false);
+
+        Assert.True(result[0].Overlaps(result[1], Gap));   // still stacked
+        Assert.Equal(result[0].X, result[1].X);             // and now exactly on top of each other
+        Assert.Equal(result[0].Y, result[1].Y);
+    }
+
+    [Fact]
     public void Fixed_obstacles_are_avoided_but_never_moved()
     {
         var launcher = new LayoutRect(1400, 12, 640, 48);

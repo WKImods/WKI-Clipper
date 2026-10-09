@@ -50,6 +50,7 @@ public sealed class WidgetHost : IDisposable
     /// <summary>Monitor the board is open on (where newly toggled widgets appear).</summary>
     private WinForms.Screen? _boardScreen;
     private System.Windows.Controls.Primitives.ToggleButton? _snapToggle;
+    private System.Windows.Controls.Primitives.ToggleButton? _overlapToggle;
 
     public WidgetHost(AppHost host)
     {
@@ -433,7 +434,7 @@ public sealed class WidgetHost : IDisposable
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
         if (_boardOpen) BumpTopmost(w); // re-assert above the just-activated backdrop
-        if (SnapOn) MoveToFreeSpot(w, userMove: false);
+        if (KeepApart) MoveToFreeSpot(w, userMove: false);
 
         // Web widgets boot their browser on the first REAL show — the prewarm path shows
         // windows off-screen without coming through here.
@@ -502,8 +503,8 @@ public sealed class WidgetHost : IDisposable
         };
 
         ApplySnapHooks(w);
-        w.DragFinished += ww => { if (SnapOn) MoveToFreeSpot(ww, userMove: true); };
-        w.ResizeFinished += ww => { if (SnapOn) MakeRoomAround(ww); CaptureGeometry(id, ww); };
+        w.DragFinished += ww => { if (KeepApart) MoveToFreeSpot(ww, userMove: true); };
+        w.ResizeFinished += ww => { if (KeepApart) MakeRoomAround(ww); CaptureGeometry(id, ww); };
         // Each window gets a DPI message when the scaling changes; the debounced
         // signature check turns that burst into one re-layout.
         w.DpiChanged += (_, _) => ScheduleDisplayCheck();
@@ -561,7 +562,7 @@ public sealed class WidgetHost : IDisposable
             var (x, y) = WidgetLayout.Clamp(b.X, b.Y, b.W, b.H, area.X, area.Y, area.Right, area.Bottom, margin);
             if (Math.Abs(x - b.X) > 0.5 || Math.Abs(y - b.Y) > 0.5) DisplayGeometry.MoveTo(w, x, y);
         }
-        if (SnapOn) MakeRoomAround(w);
+        if (KeepApart) MakeRoomAround(w);
         CaptureGeometry(WidgetId.Spotify, w);
         _host.Settings.Save();
     }
@@ -678,6 +679,9 @@ public sealed class WidgetHost : IDisposable
 
     private bool SnapOn => Settings.Snap;
 
+    /// <summary>Grid on and stacking not allowed: widgets step aside instead of overlapping.</summary>
+    private bool KeepApart => Settings.Snap && !Settings.AllowOverlap;
+
     private void ApplySnapHooks(WidgetWindow w)
     {
         w.MoveSnapper = SnapOn ? SnapWhileMoving : null;
@@ -692,6 +696,19 @@ public sealed class WidgetHost : IDisposable
         if (on) ArrangeVisible(snapToGrid: true, persist: true);
         _host.Settings.Save();
         Logger.Info($"Widget grid {(on ? "on — widgets arranged" : "off")}.");
+    }
+
+    /// <summary>
+    /// "Überlappen" switch. Allowing it leaves every window where it is; forbidding it
+    /// again (grid on) tidies existing overlaps away right away.
+    /// </summary>
+    private void SetAllowOverlap(bool allow)
+    {
+        if (Settings.AllowOverlap == allow) return;
+        Settings.AllowOverlap = allow;
+        if (!allow && SnapOn) ArrangeVisible(snapToGrid: false, persist: true);
+        _host.Settings.Save();
+        Logger.Info($"Widget overlap {(allow ? "allowed (stacking)" : "prevented")}.");
     }
 
     /// <summary>Visible widgets (and the launcher) on the monitor <paramref name="area"/> belongs to.</summary>
@@ -796,7 +813,8 @@ public sealed class WidgetHost : IDisposable
         if (windows.Count == 0) return;
 
         double minW = windows.Min(w => w.MinWidth) * s, minH = windows.Min(w => w.MinHeight) * s;
-        var arranged = WidgetLayout.Arrange(rects, area, GridDip * s, GapDip * s, minW, minH, snapToGrid, fixedObstacles);
+        var arranged = WidgetLayout.Arrange(rects, area, GridDip * s, GapDip * s, minW, minH, snapToGrid, fixedObstacles,
+                                            resolveOverlaps: !Settings.AllowOverlap);
         for (int i = 0; i < windows.Count; i++)
         {
             var w = windows[i];
@@ -873,7 +891,7 @@ public sealed class WidgetHost : IDisposable
             _backdrop?.Cover(screen);
             _launcher?.Recenter(screen);
         }
-        if (SnapOn) ArrangeVisible(snapToGrid: false, persist: false);
+        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false);
         ApplyCrosshair();
     }
 
@@ -940,19 +958,58 @@ public sealed class WidgetHost : IDisposable
         {
             Content = snapContent,
             IsChecked = SnapOn,
-            ToolTip = L.T("Raster an: Fenster rasten am Raster und aneinander ein und überlappen sich nicht. "
-                          + "Beim Einschalten wird alles ordentlich angeordnet. Shift halten = frei verschieben.",
-                          "Grid on: windows snap to the grid and to each other and never overlap. "
-                          + "Turning it on tidies everything up. Hold Shift to move freely."),
+            ToolTip = L.T("Raster an: Fenster rasten am Raster und aneinander ein. Beim Einschalten wird alles "
+                          + "ordentlich angeordnet. Shift halten = frei verschieben.",
+                          "Grid on: windows snap to the grid and to each other. Turning it on tidies "
+                          + "everything up. Hold Shift to move freely."),
             Margin = new Thickness(3, 0, 3, 0),
             Padding = new Thickness(10, 6, 10, 6),
             Cursor = System.Windows.Input.Cursors.Hand,
             Foreground = (Brush)Application.Current.FindResource("TextBrush"),
             Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
         };
-        _snapToggle.Checked += (_, _) => SetSnap(true);
-        _snapToggle.Unchecked += (_, _) => SetSnap(false);
+        _snapToggle.Checked += (_, _) => { SetSnap(true); UpdateOverlapToggle(); };
+        _snapToggle.Unchecked += (_, _) => { SetSnap(false); UpdateOverlapToggle(); };
         _launcher.WidgetButtons.Children.Add(_snapToggle);
+
+        // Belongs to the grid: only meaningful while it is on (greyed out otherwise).
+        var overlapContent = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var stackIcon = IconGlyph.Make(IconGlyph.Stack);
+        stackIcon.Margin = new Thickness(0, 0, 6, 0);
+        overlapContent.Children.Add(stackIcon);
+        overlapContent.Children.Add(new System.Windows.Controls.TextBlock
+        {
+            Text = L.T("Überlappen", "Overlap"), VerticalAlignment = VerticalAlignment.Center
+        });
+        _overlapToggle = new ToggleButton
+        {
+            Content = overlapContent,
+            IsChecked = Settings.AllowOverlap,
+            ToolTip = L.T("Aus: Fenster weichen einander aus und überlappen sich nie. "
+                          + "An: Fenster dürfen übereinander liegen und gestapelt werden — Raster und Einrasten bleiben aktiv. "
+                          + "Nur mit eingeschaltetem Raster wirksam.",
+                          "Off: windows step aside and never overlap. "
+                          + "On: windows may lie on top of each other and be stacked — grid and snapping stay active. "
+                          + "Only takes effect with the grid on."),
+            Margin = new Thickness(3, 0, 3, 0),
+            Padding = new Thickness(10, 6, 10, 6),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Foreground = (Brush)Application.Current.FindResource("TextBrush"),
+            Template = (System.Windows.Controls.ControlTemplate)Application.Current.FindResource("LauncherToggleTemplate")
+        };
+        // Tooltips must still explain a greyed-out switch.
+        System.Windows.Controls.ToolTipService.SetShowOnDisabled(_overlapToggle, true);
+        _overlapToggle.Checked += (_, _) => SetAllowOverlap(true);
+        _overlapToggle.Unchecked += (_, _) => SetAllowOverlap(false);
+        _launcher.WidgetButtons.Children.Add(_overlapToggle);
+        UpdateOverlapToggle();
+    }
+
+    private void UpdateOverlapToggle()
+    {
+        if (_overlapToggle is null) return;
+        _overlapToggle.IsEnabled = SnapOn;
+        _overlapToggle.Opacity = SnapOn ? 1.0 : 0.4;
     }
 
     private void SetWidgetVisible(WidgetId id, bool visible)

@@ -222,10 +222,13 @@ public static class WidgetLayout
     /// (unless the screen is simply too full). With <paramref name="snapToGrid"/> starts
     /// and sizes are aligned to the grid first. <paramref name="fixedObstacles"/> stay put
     /// and are avoided (e.g. the window the user just resized, or the launcher).
+    /// With <paramref name="resolveOverlaps"/> off (stacking allowed) windows are only
+    /// grid-aligned and kept on screen; overlaps stay as the user built them.
     /// </summary>
     public static LayoutRect[] Arrange(IReadOnlyList<LayoutRect> windows, LayoutRect area, double grid, double gap,
                                        double minW, double minH, bool snapToGrid,
-                                       IReadOnlyList<LayoutRect>? fixedObstacles = null)
+                                       IReadOnlyList<LayoutRect>? fixedObstacles = null,
+                                       bool resolveOverlaps = true)
     {
         var result = new LayoutRect[windows.Count];
         var placed = new List<LayoutRect>(fixedObstacles ?? Array.Empty<LayoutRect>());
@@ -251,7 +254,7 @@ public static class WidgetLayout
             }
             var (cx, cy) = Clamp(r.X, r.Y, r.W, r.H, area.X, area.Y, area.Right, area.Bottom, gap);
             r = r.At(cx, cy);
-            if (FindFreeSpot(r, placed, area, gap) is { } spot) r = r.At(spot.X, spot.Y);
+            if (resolveOverlaps && FindFreeSpot(r, placed, area, gap) is { } spot) r = r.At(spot.X, spot.Y);
             result[i] = r;
             placed.Add(r);
         }

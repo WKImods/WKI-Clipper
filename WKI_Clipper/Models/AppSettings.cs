@@ -536,6 +536,12 @@ public sealed class WidgetSettings
     public bool Snap { get; set; }
 
     /// <summary>
+    /// With the grid on: let widgets lie on top of each other (stacking) instead of
+    /// making them step aside. Snapping to grid and edges stays active. Off by default.
+    /// </summary>
+    public bool AllowOverlap { get; set; }
+
+    /// <summary>
     /// The five built-in widgets at sensible starting sizes/offsets. Positions are
     /// left at 0,0 here and laid out on first show by the host (staggered), so a
     /// fresh install doesn't need monitor geometry baked into the model.
