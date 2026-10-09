@@ -83,6 +83,17 @@ internal static class User32
     /// <summary>Click-through: mouse input passes to the window underneath (crosshair overlay while gaming).</summary>
     public const int WS_EX_TRANSPARENT = 0x00000020;
 
+    // --- Window-level alpha for a NON-AllowsTransparency WPF window (the WhatsApp widget):
+    // child HWNDs (the classic WebView2) keep rendering, unlike in per-pixel layered windows. ---
+
+    public const int WS_EX_LAYERED = 0x00080000;
+    public const uint LWA_ALPHA = 0x2;
+    public const int WM_STYLECHANGING = 0x007C;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint colorKey, byte alpha, uint flags);
+
     // --- Window enumeration (for foreground self-exclusion / window picking) ---
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);

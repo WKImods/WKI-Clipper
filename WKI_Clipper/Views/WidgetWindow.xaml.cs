@@ -52,10 +52,28 @@ public partial class WidgetWindow : Window
     /// <summary>The hosted widget UserControl (lets the host talk to it directly).</summary>
     public FrameworkElement WidgetContent { get; }
 
-    public WidgetWindow(WidgetId id, string title, FrameworkElement content)
+    /// <summary>
+    /// Direct rendering: a normal (not per-pixel transparent) window whose alpha comes from
+    /// WS_EX_LAYERED + SetLayeredWindowAttributes. Needed for content that is a real child
+    /// window — the classic WebView2 of the WhatsApp widget. The composition WebView used
+    /// elsewhere fetches its picture through Windows' screen capture, and a window excluded
+    /// from capture blocks exactly that, so the user saw an empty widget.
+    /// </summary>
+    private readonly bool _direct;
+    private System.Windows.Threading.DispatcherTimer? _hoverTimer;
+
+    public WidgetWindow(WidgetId id, string title, FrameworkElement content, bool directRendering = false)
     {
         Id = id;
         InitializeComponent();
+        _direct = directRendering;
+        if (_direct)
+        {
+            // Must happen before the window handle exists.
+            AllowsTransparency = false;
+            ResizeMode = ResizeMode.NoResize;   // no system frame; the grip resizes
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1E, 0x1E, 0x24));
+        }
         TitleText.Text = title;
         WidgetContent = content;
         ContentHost.Child = content;
@@ -119,7 +137,7 @@ public partial class WidgetWindow : Window
         OpacitySlider.Value = _configuredOpacity;
         OpacitySlider.ValueChanged += OnOpacitySliderChanged;
         UpdateOpacityTooltip();
-        if (!_hoverBoost) Opacity = _configuredOpacity;
+        if (!_hoverBoost) ShowOpacity(_configuredOpacity, animate: false);
     }
 
     private void OnOpacitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -128,8 +146,21 @@ public partial class WidgetWindow : Window
         UpdateOpacityTooltip();
         // While dragging the cursor is over the window, so the hover boost would mask
         // the change — show the real value during adjustment.
-        Opacity = _configuredOpacity;
+        ShowOpacity(_configuredOpacity, animate: false);
         OpacityChanged?.Invoke(this);
+    }
+
+    /// <summary>WPF opacity normally; window-level alpha in direct-rendering mode.</summary>
+    private void ShowOpacity(double value, bool animate)
+    {
+        if (_direct)
+        {
+            if (_hwnd != IntPtr.Zero)
+                User32.SetLayeredWindowAttributes(_hwnd, 0, (byte)Math.Round(Math.Clamp(value, 0, 1) * 255), User32.LWA_ALPHA);
+            return;
+        }
+        if (animate) AnimateOpacityTo(value);
+        else Opacity = value;
     }
 
     private void UpdateOpacityTooltip()
@@ -146,16 +177,41 @@ public partial class WidgetWindow : Window
         base.OnMouseEnter(e);
         if (_configuredOpacity >= 0.999) return;
         _hoverBoost = true;
-        AnimateOpacityTo(1.0);
+        ShowOpacity(1.0, animate: true);
+        if (_direct) StartHoverWatch();
     }
 
     protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e)
     {
         base.OnMouseLeave(e);
         if (!_hoverBoost) return;
-        _hoverBoost = false;
-        AnimateOpacityTo(_configuredOpacity);
+        // Direct mode: moving onto the web page (a child window) looks like "leaving" to
+        // WPF — keep the boost while the cursor is still inside the window.
+        if (_direct && CursorInsideWindow()) return;
+        EndHoverBoost();
     }
+
+    private void EndHoverBoost()
+    {
+        _hoverBoost = false;
+        _hoverTimer?.Stop();
+        ShowOpacity(_configuredOpacity, animate: true);
+    }
+
+    /// <summary>The child web window swallows mouse messages, so leaving is detected by polling.</summary>
+    private void StartHoverWatch()
+    {
+        if (_hoverTimer is null)
+        {
+            _hoverTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _hoverTimer.Tick += (_, _) => { if (!CursorInsideWindow()) EndHoverBoost(); };
+        }
+        _hoverTimer.Start();
+    }
+
+    private bool CursorInsideWindow()
+        => _hwnd != IntPtr.Zero && User32.GetCursorPos(out var c) && User32.GetWindowRect(_hwnd, out var r)
+           && c.X >= r.Left && c.X < r.Right && c.Y >= r.Top && c.Y < r.Bottom;
 
     private void AnimateOpacityTo(double target)
     {
@@ -175,9 +231,11 @@ public partial class WidgetWindow : Window
         _hwnd = new WindowInteropHelper(this).Handle;
         // Visible to external capture unless excluded. Own screenshots hide the
         // overlay centrally via WidgetHost.HideDuringCapture().
+        // The hook first: in direct mode it has to protect WS_EX_LAYERED from the very first change.
+        HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
         ApplyDisplayAffinity();
         ApplyActivationStyle();
-        HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        if (_direct) ShowOpacity(_hoverBoost ? 1.0 : _configuredOpacity, animate: false);
     }
 
     private const int WM_MOVING = 0x0216, WM_ENTERSIZEMOVE = 0x0231, WM_EXITSIZEMOVE = 0x0232;
@@ -199,6 +257,16 @@ public partial class WidgetWindow : Window
     /// </summary>
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // Direct mode: WPF strips WS_EX_LAYERED from a window without AllowsTransparency
+        // (verified: the style never sticks). Answering WM_STYLECHANGING ourselves, with the
+        // bit kept, stops that — and with it alpha and click-through keep working.
+        if (msg == User32.WM_STYLECHANGING && _direct && wParam.ToInt64() == User32.GWL_EXSTYLE && lParam != IntPtr.Zero)
+        {
+            int newStyle = System.Runtime.InteropServices.Marshal.ReadInt32(lParam, 4);   // STYLESTRUCT.styleNew
+            System.Runtime.InteropServices.Marshal.WriteInt32(lParam, 4, newStyle | User32.WS_EX_LAYERED);
+            handled = true;
+            return IntPtr.Zero;
+        }
         if (msg == WM_ENTERSIZEMOVE)
         {
             _moveTracking = User32.GetWindowRect(hwnd, out _moveStartRect) && User32.GetCursorPos(out _moveStartCursor);
@@ -255,6 +323,7 @@ public partial class WidgetWindow : Window
             if (ClickThroughWhenPinned) ex |= User32.WS_EX_TRANSPARENT;
             else ex &= ~User32.WS_EX_TRANSPARENT;
         }
+        if (_direct) ex |= User32.WS_EX_LAYERED;   // window alpha + click-through need it
         User32.SetWindowLong(_hwnd, User32.GWL_EXSTYLE, ex);
     }
 

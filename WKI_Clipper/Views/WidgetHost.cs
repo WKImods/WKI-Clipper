@@ -488,7 +488,10 @@ public sealed class WidgetHost : IDisposable
     {
         if (_windows.TryGetValue(id, out var existing)) return existing;
 
-        var w = new WidgetWindow(id, Label(id), CreateContent(id));
+        // WhatsApp renders as a real child window (see WebAppHost) — its widget window must
+        // not be per-pixel transparent, or that child would not show.
+        bool direct = id == WidgetId.WhatsApp && WebAppHost.UsesDirectRendering(WebApp.WhatsApp);
+        var w = new WidgetWindow(id, Label(id), CreateContent(id), directRendering: direct);
         w.PinToggled += OnPinToggled;
         w.CloseRequested += OnWidgetClosed;
         w.GeometryChanged += ww => CaptureGeometry(id, ww);

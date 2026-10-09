@@ -15,11 +15,19 @@ namespace WKI_Clipper.Views;
 /// <summary>
 /// An embedded web app (WhatsApp Web, Spotify) inside a widget.
 ///
-/// Uses <see cref="WebView2CompositionControl"/>: the classic HWND-based WebView2 does not
-/// render inside widget windows (AllowsTransparency = layered), the composition variant
-/// does. All web apps share ONE browser environment (one process tree) with a separate
-/// profile each, so logins stay apart. Data lives under %LOCALAPPDATA%\WKI_Clipper\WebView2
-/// and survives reinstalls.
+/// Two renderings, picked per app:
+///  • Spotify: <see cref="WebView2CompositionControl"/>. The classic HWND-based WebView2
+///    does not render inside the normal widget windows (AllowsTransparency = per-pixel
+///    layered); the composition variant does — it fetches its picture via Windows' screen
+///    capture and draws it in WPF.
+///  • WhatsApp: the classic HWND <see cref="Microsoft.Web.WebView2.Wpf.WebView2"/> in a
+///    direct-rendering widget window. WhatsApp is hidden from capture (display affinity),
+///    and that also blocks the composition control's own capture — the user saw an empty
+///    widget. A real child window is drawn by the compositor directly: visible on screen,
+///    still absent from every recording.
+/// All web apps share ONE browser environment (one process tree) with a separate profile
+/// each, so logins stay apart. Data lives under %LOCALAPPDATA%\WKI_Clipper\WebView2 and
+/// survives reinstalls.
 ///
 /// Nothing starts on construction: <see cref="EnsureStarted"/> is called by the widget host
 /// the first time the widget is really shown — never by the startup prewarm, which would
@@ -45,7 +53,10 @@ public sealed class WebAppHost : UserControl, IDisposable
     private readonly TextBlock _statusText;
     private readonly Button _retryButton;
 
-    private WebView2CompositionControl? _web;
+    private IWebView2? _web;
+
+    /// <summary>True when this app must render as a real child window (see class summary).</summary>
+    public static bool UsesDirectRendering(WebApp app) => app == WebApp.WhatsApp;
     private bool _starting;
     private bool _disposed;
     private bool _muted;
@@ -96,7 +107,7 @@ public sealed class WebAppHost : UserControl, IDisposable
     public bool IsStarted => _web?.CoreWebView2 != null;
 
     /// <summary>True while the user is typing in the page (focus handback on board close).</summary>
-    public bool HasKeyboardFocusWithin => _web?.IsKeyboardFocusWithin == true;
+    public bool HasKeyboardFocusWithin => (_web as UIElement)?.IsKeyboardFocusWithin == true;
 
     public bool IsMuted
     {
@@ -158,13 +169,13 @@ public sealed class WebAppHost : UserControl, IDisposable
             var options = env.CreateCoreWebView2ControllerOptions();
             options.ProfileName = WebAppRules.ProfileName(_app);
 
-            var web = new WebView2CompositionControl
-            {
-                // Matches the widget background so loading never flashes white.
-                DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 30, 30, 36),
-                ZoomFactor = _zoom
-            };
-            _root.Children.Insert(0, web);
+            IWebView2 web = UsesDirectRendering(_app)
+                ? new Microsoft.Web.WebView2.Wpf.WebView2()
+                : new WebView2CompositionControl();
+            // Matches the widget background so loading never flashes white.
+            web.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 30, 30, 36);
+            web.ZoomFactor = _zoom;
+            _root.Children.Insert(0, (UIElement)web);
             _web = web;
 
             await web.EnsureCoreWebView2Async(env, options);
@@ -379,7 +390,7 @@ public sealed class WebAppHost : UserControl, IDisposable
     private void TearDownControl()
     {
         if (_web == null) return;
-        try { _root.Children.Remove(_web); _web.Dispose(); } catch { }
+        try { _root.Children.Remove((UIElement)_web); ((IDisposable)_web).Dispose(); } catch { }
         _web = null;
     }
 
@@ -406,10 +417,13 @@ public sealed class WebAppHost : UserControl, IDisposable
         TearDownControl();
     }
 
-    /// <summary>Topmost window for sign-in popups, sharing the widget's profile.</summary>
+    /// <summary>
+    /// Topmost window for sign-in popups, sharing the widget's profile. A normal window, so
+    /// the classic HWND WebView2 renders in it — also when it is hidden from capture.
+    /// </summary>
     private sealed class WebPopupWindow : Window
     {
-        public WebView2CompositionControl Web { get; } = new()
+        public Microsoft.Web.WebView2.Wpf.WebView2 Web { get; } = new()
         {
             DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 30, 30, 36)
         };
