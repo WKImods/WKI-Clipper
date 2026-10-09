@@ -180,19 +180,44 @@ public partial class WidgetWindow : Window
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
     }
 
-    private const int WM_MOVING = 0x0216;
+    private const int WM_MOVING = 0x0216, WM_ENTERSIZEMOVE = 0x0231, WM_EXITSIZEMOVE = 0x0232;
+
+    // Where the window and the cursor were when the move began.
+    private User32.RECT _moveStartRect;
+    private User32.POINT _moveStartCursor;
+    private bool _moveTracking;
 
     /// <summary>
     /// WM_MOVING carries the rectangle Windows is about to move the window to; rewriting
-    /// it is how live snapping works without fighting the system's own move loop.
+    /// it is how live snapping works.
+    ///
+    /// The proposed rectangle must NOT be trusted while snapping: Windows builds the next
+    /// one on top of the rectangle we returned last time. Snapping a small mouse step back
+    /// onto the same grid point then swallows every following step too — the window sticks
+    /// and cannot be moved at all. So the unsnapped position is rebuilt from the cursor's
+    /// total travel since the move began, and only that is snapped.
     /// </summary>
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WM_MOVING && lParam != IntPtr.Zero && MoveSnapper is { } snap)
+        if (msg == WM_ENTERSIZEMOVE)
+        {
+            _moveTracking = User32.GetWindowRect(hwnd, out _moveStartRect) && User32.GetCursorPos(out _moveStartCursor);
+        }
+        else if (msg == WM_EXITSIZEMOVE)
+        {
+            _moveTracking = false;
+        }
+        else if (msg == WM_MOVING && lParam != IntPtr.Zero && MoveSnapper is { } snap)
         {
             var r = System.Runtime.InteropServices.Marshal.PtrToStructure<User32.RECT>(lParam);
             int w = r.Width, h = r.Height;
-            var s = snap(this, new Services.LayoutRect(r.Left, r.Top, w, h));
+            double x = r.Left, y = r.Top;
+            if (_moveTracking && User32.GetCursorPos(out var c))
+            {
+                x = _moveStartRect.Left + (c.X - _moveStartCursor.X);
+                y = _moveStartRect.Top + (c.Y - _moveStartCursor.Y);
+            }
+            var s = snap(this, new Services.LayoutRect(x, y, w, h));
             r.Left = (int)Math.Round(s.X);
             r.Top = (int)Math.Round(s.Y);
             r.Right = r.Left + w;
