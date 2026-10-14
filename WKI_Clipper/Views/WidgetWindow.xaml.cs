@@ -71,7 +71,6 @@ public partial class WidgetWindow : Window
         {
             // Must happen before the window handle exists.
             AllowsTransparency = false;
-            ResizeMode = ResizeMode.NoResize;   // no system frame; the grip resizes
             // Opaque window: a solid surface, and the corner radius Windows itself draws.
             Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x14, 0x26));
             Surface.Background = Background;
@@ -362,6 +361,18 @@ public partial class WidgetWindow : Window
     {
         GeometryChanged?.Invoke(this);
         ResizeFinished?.Invoke(this);
+    }
+
+    /// <summary>
+    /// A widget only knows the Normal state: maximized, DragMove refuses to move it and the
+    /// grip only changes the restore size, so it would stick until restart. ResizeMode
+    /// NoResize already keeps Windows Snap out (no sizable frame, no maximize box); this
+    /// catches whatever maximizes it anyway (window managers, ShowWindow from outside).
+    /// </summary>
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+        if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
     }
 
     protected override void OnDeactivated(EventArgs e)
