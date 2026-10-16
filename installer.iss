@@ -3,7 +3,7 @@
 ; Prerequisite: run dotnet publish first (see build.ps1)
 
 #define AppName      "WKI Clipper"
-#define AppVersion   "0.15.1"
+#define AppVersion   "0.15.2"
 #define AppPublisher "WKI"
 #define AppExeName   "WKI_Clipper.exe"
 #define AppId        "{B5F3D2A1-8C4E-4F9B-A2D6-1E5C8A3F7D2C}"
@@ -47,7 +47,9 @@ german.OptionsGroup=Optionen:
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
-Name: "autostart";   Description: "{cm:AutostartTask}";     GroupDescription: "{cm:OptionsGroup}";   Flags: unchecked
+; Offered on the first install only: afterwards the app owns this choice (Settings → About),
+; and an update must not switch autostart back on that the user turned off in the app.
+Name: "autostart";   Description: "{cm:AutostartTask}";     GroupDescription: "{cm:OptionsGroup}";   Flags: unchecked; Check: not IsUpdate
 
 [Files]
 ; Main program (self-contained single-file .NET 8 publish output)
@@ -68,13 +70,18 @@ Name: "{group}\{cm:UninstallProgram,{#AppName}}";    Filename: "{uninstallexe}";
 Name: "{userdesktop}\{#AppName}";                    Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\app_icon.ico"; Tasks: desktopicon
 
 [Registry]
-; Autostart entry when the task is selected — the uninstaller removes it
+; "Start with Windows" picked: the Run entry, plus any earlier "off" from Windows' own startup
+; switch (Settings → Apps → Autostart) removed — with that switch off, Windows skips the entry.
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-  ValueName: "WKI_Clipper"; ValueData: """{app}\{#AppExeName}"""; \
-  Flags: uninsdeletevalue; Tasks: autostart
-; If autostart is NOT selected: still remove a stale entry (clean re-install)
+  ValueName: "WKI_Clipper"; ValueData: """{app}\{#AppExeName}"""; Tasks: autostart
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; \
+  ValueName: "WKI_Clipper"; Flags: deletevalue; Tasks: autostart
+; Autostart can also be switched on in the app. Installs and updates leave that choice alone
+; (an unconditional delete here wiped it on every update); only the uninstaller removes both.
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
-  ValueName: "WKI_Clipper"; Flags: deletevalue uninsdeletevalue
+  ValueName: "WKI_Clipper"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; \
+  ValueName: "WKI_Clipper"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExeName}"; \
@@ -91,5 +98,11 @@ Type: files;          Name: "{localappdata}\WKI_Clipper\tray.ico"
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+end;
+
+// Already installed (per-user install: the uninstall entry lives in HKCU).
+function IsUpdate(): Boolean;
+begin
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1');
 end;
 
