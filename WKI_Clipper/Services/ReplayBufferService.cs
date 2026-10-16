@@ -33,6 +33,8 @@ public sealed class ReplayBufferService : IDisposable
     private CancellationTokenSource? _watchdogCts;
     private string _bufferDir = "";
     private string _segmentPattern = "";
+    // StartCore runs on every warm restart; the unsafe-folder warning is logged once.
+    private bool _bufferFolderWarned;
 
     // Serializes every lifecycle transition (Start/Stop/Restart).
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -114,7 +116,17 @@ public sealed class ReplayBufferService : IDisposable
     // Assumes _lifecycleLock is held.
     private void StartCore(bool clearHistory)
     {
-        _bufferDir = SettingsService.ExpandPath(_settings.Current.Output.BufferFolder);
+        var output = _settings.Current.Output;
+        var bufferFolder = PathRules.SafeBufferFolder(
+            output.BufferFolder, output.ClipsFolder, output.ScreenshotsFolder, PathRules.DefaultBufferFolder);
+        if (!string.Equals(bufferFolder, output.BufferFolder, StringComparison.Ordinal) && !_bufferFolderWarned)
+        {
+            // Segments inside the clips folder would show up as a new "clip" every few seconds.
+            // The settings file is left alone; the user fixes it on the Paths page.
+            _bufferFolderWarned = true;
+            Logger.Warn($"ReplayBuffer: buffer folder '{SettingsService.ExpandPath(output.BufferFolder)}' is the clips or screenshots folder (or inside it) — using '{SettingsService.ExpandPath(bufferFolder)}' instead for this run");
+        }
+        _bufferDir = SettingsService.ExpandPath(bufferFolder);
         Directory.CreateDirectory(_bufferDir);
 
         // Resolve the single capture plan (video monitor + audio route) FIRST, so

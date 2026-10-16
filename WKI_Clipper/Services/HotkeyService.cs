@@ -105,11 +105,20 @@ public sealed class HotkeyService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Modifier flags passed to RegisterHotKey. Without MOD_NOREPEAT, Windows keeps firing
+    /// WM_HOTKEY while the key is held (or stuck) — F9 would save a clip after clip.
+    /// Added here only: the stored binding stays free of it (collision checks compare
+    /// stored modifiers and the UI displays them).
+    /// </summary>
+    internal static uint RegistrationModifiers(HotkeyBinding binding)
+        => (uint)(binding.Modifiers | HotkeyModifier.NoRepeat);
+
     private void RegisterOne(string action, HotkeyBinding binding)
     {
         if (binding.Key == 0 || _hwndSource is null) return;
         int id = _nextId++;
-        bool ok = User32.RegisterHotKey(_hwndSource.Handle, id, (uint)binding.Modifiers, binding.Key);
+        bool ok = User32.RegisterHotKey(_hwndSource.Handle, id, RegistrationModifiers(binding), binding.Key);
         if (ok)
         {
             _idToAction[id] = action;

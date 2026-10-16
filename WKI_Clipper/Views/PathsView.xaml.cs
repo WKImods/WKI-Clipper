@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -27,6 +28,10 @@ public partial class PathsView : UserControl
             L.T("Live-Segmente des Replay-Buffers. Wird beim App-Start geleert.",
                 "Live segments of the replay buffer. Cleared at app start.")),
     };
+
+    // One entry per row: re-checks a row whose last edit was refused, because a change in
+    // another row (e.g. the clips folder moved away) may have lifted the conflict.
+    private readonly List<Action> _revalidators = new();
 
     public PathsView()
     {
@@ -151,13 +156,57 @@ public partial class PathsView : UserControl
         Grid.SetColumn(resetBtn, 4);
         grid.Children.Add(resetBtn);
 
-        // Wire events
-        box.TextChanged += (_, _) =>
+        // Inline explanation for a refused change; hidden while the row is fine.
+        var conflictText = new TextBlock
         {
-            SetPath(host, kind, box.Text);
-            host.Settings.Save();
-            UpdateStatusDot(statusDot, box.Text);
+            Style = (Style)FindResource("MutedStyle"),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x4E, 0x4E)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(32, 6, 0, 0),
+            Visibility = Visibility.Collapsed
         };
+        bool refused = false;
+
+        // Saves the box text — unless it would let the replay buffer write its segments into the
+        // clips/screenshots folder (the gallery would list one "clip" per segment). Then the last
+        // saved value stays in effect and the row says why.
+        void Apply()
+        {
+            var reason = ConflictReason(host, kind, box.Text);
+            if (reason is null)
+            {
+                refused = false;
+                conflictText.Visibility = Visibility.Collapsed;
+                SetPath(host, kind, box.Text);
+                host.Settings.Save();
+                UpdateStatusDot(statusDot, box.Text);
+                foreach (var revalidate in _revalidators) revalidate();
+                return;
+            }
+
+            refused = true;
+            conflictText.Text = reason.Replace("\n\n", " ");
+            conflictText.Visibility = Visibility.Visible;
+            statusDot.Fill = new SolidColorBrush(Color.FromRgb(0xE0, 0x4E, 0x4E));
+            statusDot.ToolTip = conflictText.Text;
+        }
+        _revalidators.Add(() => { if (refused) Apply(); });
+
+        // Browse/reset are single deliberate picks: refuse them outright instead of leaving
+        // an unsaved value in the box.
+        void TrySet(string value)
+        {
+            var reason = ConflictReason(host, kind, value);
+            if (reason is not null)
+            {
+                MessageBox.Show(reason, "WKI Clipper", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            box.Text = value;
+        }
+
+        // Wire events
+        box.TextChanged += (_, _) => Apply();
 
         browseBtn.Click += (_, _) =>
         {
@@ -170,7 +219,7 @@ public partial class PathsView : UserControl
             };
             if (dlg.ShowDialog() == WinForms.DialogResult.OK)
             {
-                box.Text = dlg.SelectedPath;
+                TrySet(dlg.SelectedPath);
             }
         };
 
@@ -183,7 +232,7 @@ public partial class PathsView : UserControl
 
         resetBtn.Click += (_, _) =>
         {
-            box.Text = DefaultFor(kind);
+            TrySet(DefaultFor(kind));
         };
 
         // Header card
@@ -198,6 +247,7 @@ public partial class PathsView : UserControl
         var stack = new StackPanel();
         stack.Children.Add(header);
         stack.Children.Add(grid);
+        stack.Children.Add(conflictText);
 
         var card = new Border
         {
@@ -264,6 +314,44 @@ public partial class PathsView : UserControl
     }
 
     private static string Expand(string raw) => Environment.ExpandEnvironmentVariables(raw ?? "");
+
+    private static string FolderName(PathKind kind) => kind == PathKind.Clips
+        ? L.T("Clips-Ordner", "clips folder")
+        : L.T("Screenshots-Ordner", "screenshots folder");
+
+    /// <summary>
+    /// Why <paramref name="candidate"/> cannot be saved for <paramref name="kind"/>, or null when
+    /// it is fine. The replay buffer drops a segment file every few seconds; if that folder is the
+    /// clips/screenshots folder (or inside it) the gallery lists every segment as a new clip.
+    /// Checked against the SAVED values of the other rows.
+    /// </summary>
+    private static string? ConflictReason(AppHost host, PathKind kind, string candidate)
+    {
+        if (kind == PathKind.Buffer)
+        {
+            foreach (var other in new[] { PathKind.Clips, PathKind.Screenshots })
+            {
+                var otherPath = GetPath(host, other);
+                if (!PathRules.IsSameOrInside(candidate, otherPath)) continue;
+
+                var name = FolderName(other);
+                var shown = Expand(otherPath);
+                return L.T(
+                    $"Der Buffer-Ordner darf nicht der {name} ({shown}) sein und nicht darin liegen.\n\nDie Replay-Segmente (alle paar Sekunden eine neue Datei) würden sonst als Clips in der Galerie erscheinen.\n\nDie Änderung wurde nicht übernommen.",
+                    $"The buffer folder must not be the {name} ({shown}) or inside it.\n\nOtherwise the replay segments (a new file every few seconds) would show up as clips in the gallery.\n\nThe change was not applied.");
+            }
+            return null;
+        }
+
+        var buffer = GetPath(host, PathKind.Buffer);
+        if (!PathRules.IsSameOrInside(buffer, candidate)) return null;
+
+        var folder = FolderName(kind);
+        var bufferShown = Expand(buffer);
+        return L.T(
+            $"Der aktuelle Buffer-Ordner ({bufferShown}) wäre dann der {folder} oder läge darin.\n\nDie Replay-Segmente (alle paar Sekunden eine neue Datei) würden sonst als Clips in der Galerie erscheinen. Ändere zuerst den Buffer-Ordner.\n\nDie Änderung wurde nicht übernommen.",
+            $"The current buffer folder ({bufferShown}) would then be the {folder} or inside it.\n\nOtherwise the replay segments (a new file every few seconds) would show up as clips in the gallery. Change the buffer folder first.\n\nThe change was not applied.");
+    }
 
     private static string GetPath(AppHost host, PathKind kind) => kind switch
     {

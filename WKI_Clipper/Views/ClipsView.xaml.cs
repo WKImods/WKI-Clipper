@@ -147,8 +147,10 @@ public partial class ClipsView : UserControl
         // Base folder AND one level of game subfolders: since per-game sorting, new captures
         // live in Clips\<Game>\ — a flat scan would silently hide every one of them.
         var clipsDir = SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder);
+        // Replay-buffer segments are never clips, even if the buffer folder overlaps this one.
         foreach (var (f, game) in GameFolderNaming.EnumerateMedia(clipsDir, f =>
-                 f.Extension.ToLowerInvariant() is ".gif" or ".mp4" or ".mkv" or ".mov"))
+                 f.Extension.ToLowerInvariant() is ".gif" or ".mp4" or ".mkv" or ".mov"
+                 && !PathRules.IsBufferSegment(f.Name)))
         {
             var kind = f.Extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ? MediaKind.Gif
                      : f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase) ? MediaKind.Recording

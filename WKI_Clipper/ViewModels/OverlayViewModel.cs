@@ -158,7 +158,8 @@ public partial class OverlayViewModel : ObservableObject
 
         // Game subfolders included — new captures are sorted into them.
         var entries = GameFolderNaming.EnumerateMedia(dir,
-                f => f.Extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+                f => f.Extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+                     && !PathRules.IsBufferSegment(f.Name))
             .Select(e => e.File)
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .Take(50)
