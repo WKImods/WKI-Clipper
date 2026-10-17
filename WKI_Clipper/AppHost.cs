@@ -33,6 +33,8 @@ public sealed class AppHost : IDisposable
     public DiscordCompressService Discord { get; }
     /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
     public SpotifyMediaService Spotify { get; } = new();
+    /// <summary>Controller combos (hold View+Menu etc.): polls XInput in the background, raises the hotkey action names.</summary>
+    public GamepadService Gamepad { get; }
 
     /// <summary>
     /// Set by the widget host: re-applies the crosshair overlay (image, sliders,
@@ -101,6 +103,9 @@ public sealed class AppHost : IDisposable
                 () => Foreground?.LastExternalForegroundPid,
                 Settings.Current.Capture.Mode == CaptureMode.Window ? Settings.Current.Capture.TargetProcessName : null)
         };
+
+        // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
+        Gamepad = new GamepadService(Settings);
 
         WireCaptureExclusivity();
         WireGameFolders();
@@ -346,6 +351,7 @@ public sealed class AppHost : IDisposable
         Music.Dispose();
         Sounds.Dispose();
         Spotify.Dispose();
+        Gamepad.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

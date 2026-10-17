@@ -110,6 +110,8 @@ public sealed class SettingsService
         s.Sounds ??= new SoundSettings();
         s.Sounds.CustomFiles ??= new();
         s.Discord ??= new DiscordCompressSettings();
+        s.Gamepad ??= new GamepadSettings();
+        s.Gamepad.Bindings ??= new();
     }
 
     /// <summary>Parsed settings, or null when the file is missing, empty or not valid settings JSON.</summary>
