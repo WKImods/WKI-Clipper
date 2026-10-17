@@ -49,9 +49,12 @@ public sealed record FrameMetricsSnapshot(
 ///   delay), the first epoch picks the busiest, after that a stream must present more than twice
 ///   as often as the current one (or the current one must have gone silent) to take over — so two
 ///   equally busy windows don't flap.</item>
-/// <item>Runtime streams (DXGI, D3D9) always win over the kernel fallback: D3D11/12 games emit
-///   both, and counting both would double the FPS. Kernel events count only for a process that
-///   produced no runtime present in the epoch (Vulkan / OpenGL).</item>
+/// <item>Runtime streams (DXGI, D3D9) win over the kernel fallback whenever the kernel volume is
+///   no more than <see cref="KernelOverRuntimeFactor"/> × all runtime presents of the epoch:
+///   D3D9/11/12 games emit both, and counting both would double the FPS. Kernel events count for
+///   a process with no runtime presents (Vulkan / OpenGL), and also when its kernel volume clearly
+///   exceeds them — a Vulkan/GL game with a slow D3D/DXGI side window (launcher, login, CEF). The
+///   side window's own kernel echoes then ride along in the kernel stream (e.g. 144 + 2/s).</item>
 /// <item>Changing the target, the dominant stream, or losing events starts the statistics over.</item>
 /// </list>
 /// </summary>
@@ -134,15 +137,10 @@ internal sealed class PresentTracker
 
         if (!_hasDominant)
         {
+            // Provisional. No early runtime takeover: whether a runtime stream is the game or a
+            // slow side window of a Vulkan/GL game only shows once an epoch has been counted.
             _hasDominant = true;
             _dominant = key;
-        }
-        else if (!_confirmed && e.IsRuntime && !IsRuntime(_dominant))
-        {
-            // A provisional kernel stream must not count for even one epoch once the
-            // runtime shows up: that is a D3D11/12 game, not a Vulkan one.
-            _dominant = key;
-            _stats.Reset();
         }
 
         if (key != _dominant) return;
@@ -183,22 +181,20 @@ internal sealed class PresentTracker
 
     private void CloseEpoch()
     {
-        bool anyRuntime = false;
-        foreach (var (k, c) in _epochCounts)
-            if (c > 0 && IsRuntime(k)) { anyRuntime = true; break; }
+        bool useRuntime = PreferRuntime(_epochCounts);
 
         ulong best = 0;
         int bestCount = 0;
         foreach (var (k, c) in _epochCounts)
         {
-            if (IsRuntime(k) != anyRuntime) continue;
+            if (IsRuntime(k) != useRuntime) continue;
             if (c > bestCount || (c == bestCount && k == _dominant)) { best = k; bestCount = c; }
         }
 
         if (bestCount > 0 && best != _dominant)
         {
             _epochCounts.TryGetValue(_dominant, out int current);
-            bool eligible = IsRuntime(_dominant) == anyRuntime;
+            bool eligible = IsRuntime(_dominant) == useRuntime;
             bool takeOver = !eligible
                 || current == 0
                 || (_confirmed ? bestCount > 2 * current : bestCount > current);
@@ -212,6 +208,28 @@ internal sealed class PresentTracker
         _confirmed = true;
         _epochCounts.Clear();
     }
+
+    /// <summary>
+    /// Every runtime present also produces a kernel echo (one PresentHistoryDetailed + one
+    /// Present_Info per present, measured), so in a D3D11/12/9 game the busiest kernel stream is
+    /// about as large as the SUM of runtime presents — the runtime streams win and nothing is double
+    /// counted. Only kernel volume clearly beyond that (Vulkan/GL frames that have no runtime event)
+    /// means the runtime streams are side windows (launcher, login, CEF/ANGLE UI).
+    /// </summary>
+    private static bool PreferRuntime(Dictionary<ulong, int> counts)
+    {
+        int runtimeSum = 0, kernelMax = 0;
+        foreach (var (k, c) in counts)
+        {
+            if (IsRuntime(k)) runtimeSum += c;
+            else if (c > kernelMax) kernelMax = c;
+        }
+        if (runtimeSum == 0) return false;
+        return kernelMax <= KernelOverRuntimeFactor * runtimeSum;
+    }
+
+    /// <summary>Kernel volume above this multiple of all runtime presents = a Vulkan/GL game with a runtime side window.</summary>
+    internal const double KernelOverRuntimeFactor = 1.5;
 
     private static PresentSource SourceOf(ulong key) => (PresentSource)(key >> 56);
 

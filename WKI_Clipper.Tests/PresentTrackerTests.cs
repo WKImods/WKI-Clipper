@@ -179,6 +179,59 @@ public class PresentTrackerTests
         Assert.Equal(144, s.Fps!.Value, 0);
     }
 
+    /// <summary>
+    /// Vulkan/GL game at 144 fps (kernel events only) plus a slow D3D9 launcher/login/CEF window
+    /// in the same process at 2/s — whose presents also produce kernel events. The runtime side
+    /// stream must not win just because it is "runtime"; it even presents first here.
+    /// </summary>
+    [Fact]
+    public void A_vulkan_game_with_a_slow_runtime_side_window_is_measured_from_the_kernel()
+    {
+        var t = NewTracker();
+        long last = Feed(t,
+            Stream(PresentSource.D3D9, SideChain, T0, 500, 4),                        // side window: first event
+            Stream(PresentSource.KernelPresentHistoryDetailed, 0, T0 + Ms(0.2), 500, 4), // ...and its kernel echo
+            Stream(PresentSource.KernelPresentHistoryDetailed, 0, T0 + Ms(3), 1000.0 / 144, 4));
+
+        var s = t.Snapshot(last);
+        Assert.Equal(FrameMetricsStatus.Ok, s.Status);
+        Assert.Equal(PresentApi.Other, s.Api);
+        Assert.InRange(s.Fps!.Value, 140, 150);   // 144 + the side window's 2 kernel echoes
+    }
+
+    [Fact]
+    public void A_side_window_presenting_every_few_seconds_does_not_steal_the_kernel_stream()
+    {
+        var t = NewTracker();
+        long last = Feed(t,
+            Stream(PresentSource.KernelPresentHistoryDetailed, 0, T0, 1000.0 / 144, 8),
+            Stream(PresentSource.Dxgi, SideChain, T0 + Ms(1500), 3000, 8));
+
+        var s = t.Snapshot(last);
+        Assert.Equal(FrameMetricsStatus.Ok, s.Status);
+        Assert.Equal(PresentApi.Other, s.Api);
+        Assert.Equal(144, s.Fps!.Value, 0);
+        Assert.True(t.FrameCount > 144 * 5, $"stats were reset along the way: {t.FrameCount} frames");
+    }
+
+    [Fact]
+    public void A_d3d11_game_with_two_swap_chains_still_beats_its_own_kernel_echo()
+    {
+        // Kernel volume = sum of all runtime presents (main + side), so the runtime side wins.
+        var t = NewTracker();
+        long last = Feed(t,
+            Stream(PresentSource.Dxgi, MainChain, T0, 10, 3),
+            Stream(PresentSource.Dxgi, SideChain, T0 + Ms(4), 100, 3),
+            Stream(PresentSource.KernelPresentHistoryDetailed, 0, T0 + Ms(0.5), 10, 3),
+            Stream(PresentSource.KernelPresentHistoryDetailed, 0, T0 + Ms(4.5), 100, 3),
+            Stream(PresentSource.KernelPresentInfo, 0, T0 + Ms(0.7), 10, 3),
+            Stream(PresentSource.KernelPresentInfo, 0, T0 + Ms(4.7), 100, 3));
+
+        var s = t.Snapshot(last);
+        Assert.Equal(PresentApi.Dxgi, s.Api);
+        Assert.Equal(100, s.Fps!.Value, 1);
+    }
+
     [Fact]
     public void Two_kernel_markers_per_frame_count_once()
     {
