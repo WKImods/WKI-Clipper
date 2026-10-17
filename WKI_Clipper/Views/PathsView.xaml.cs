@@ -98,8 +98,8 @@ public partial class PathsView : UserControl
 
             try
             {
-                if (File.Exists(host.Settings.SettingsFilePath))
-                    File.Delete(host.Settings.SettingsFilePath);
+                // Includes settings.json.bak: Load() would otherwise restore the old settings from it.
+                host.Settings.DeleteSettingsFiles();
                 MessageBox.Show(L.T("Settings gelöscht. App startet neu.", "Settings deleted. App is restarting."), "OK", MessageBoxButton.OK);
                 var exe = Process.GetCurrentProcess().MainModule?.FileName;
                 if (exe != null) Process.Start(exe);
