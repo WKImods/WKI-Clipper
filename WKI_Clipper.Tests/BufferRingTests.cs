@@ -93,6 +93,46 @@ public class BufferRingTests
     public void ClampPick_never_exceeds_what_the_reserve_allows(int wanted, int expected)
         => Assert.Equal(expected, RingPlan.Create(60, 5).ClampPick(wanted));
 
+    [Fact]
+    public void ClampPick_on_an_empty_plan_does_not_throw()
+        => Assert.Equal(1, new RingPlan(5, 0, 0, 0).ClampPick(3));
+
+    // ---- the ring that is actually running vs. what the settings say now ----
+    // Settings change instantly, ffmpeg's segment_wrap only after the debounced restart.
+
+    [Theory]
+    [InlineData(180, 12)]   // duration raised 60 -> 180 and F9 pressed before the restart: 36 segments
+                            // from an 18-slot ring would put the oldest one back inside the overwrite
+                            // window, so the save is limited to what the running ring can hand out
+    [InlineData(60, 12)]
+    [InlineData(30, 6)]     // lowered: the shorter clip wins
+    [InlineData(1, 1)]
+    [InlineData(0, 1)]
+    public void A_save_never_picks_more_than_the_running_ring_hands_out(int settingsDurationSec, int expectedPick)
+    {
+        var running = RingPlan.Create(60, 5);
+        Assert.Equal(expectedPick, running.PickForSeconds(settingsDurationSec));
+    }
+
+    [Fact]
+    public void A_raised_duration_keeps_the_reserve_while_the_old_ring_is_still_running()
+    {
+        var running = RingPlan.Create(60, 5);
+        int pick = running.PickForSeconds(180);
+
+        Assert.True(running.Wrap - pick >= RingPlan.Reserve);
+    }
+
+    [Fact]
+    public void Prune_keeps_whichever_of_the_running_and_the_configured_ring_is_larger()
+    {
+        var big = RingPlan.Create(180, 5);
+        var small = RingPlan.Create(60, 5);
+
+        Assert.Equal(big.Keep, RingPlan.KeepFor(running: big, configured: small));   // shortened during a save
+        Assert.Equal(big.Keep, RingPlan.KeepFor(running: small, configured: big));   // raised, restart pending
+    }
+
     // ---- watchdog size rule ----
 
     // 30 Mbit/s = 3.75 MB/s; 5 s segments ~ 18.75 MB.

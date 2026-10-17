@@ -297,7 +297,9 @@ public sealed class SettingsService
                 var json = JsonSerializer.Serialize(Current, JsonOptions);
                 File.WriteAllText(TempFilePath, json);
                 if (File.Exists(SettingsFilePath))
-                    File.Replace(TempFilePath, SettingsFilePath, BackupFilePath);
+                    // ignoreMetadataErrors: merging ACLs/attributes from the old file can fail on some
+                    // volumes (synced or redirected AppData) and must not turn into a lost save.
+                    File.Replace(TempFilePath, SettingsFilePath, BackupFilePath, ignoreMetadataErrors: true);
                 else
                     File.Move(TempFilePath, SettingsFilePath);
             }
