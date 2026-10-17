@@ -58,6 +58,10 @@ public sealed class ReplayBufferService : IDisposable
     private int _saving;
     // When the current generation's ffmpeg started — the stall check needs a grace period.
     private DateTime _genStartedUtc = DateTime.MaxValue;
+    // The ring the RUNNING ffmpeg was started with. Settings change instantly but segment_wrap is
+    // fixed until the debounced restart, so picks and prune must be sized from this, not from
+    // the settings alone. A reference (RingPlan is a class) so another thread never sees a torn plan.
+    private volatile RingPlan _runningRing = RingPlan.Create(60, 5);
 
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
@@ -162,6 +166,7 @@ public sealed class ReplayBufferService : IDisposable
 
         _segmentPattern = Path.Combine(_bufferDir, $"seg_{_generation}_%02d.mp4");
         var ring = CurrentRingPlan();
+        _runningRing = ring;
         int segSec = ring.SegmentSeconds;
         // Wrap = how many segments this run holds: what a save picks, +1 for tail tolerance,
         // + RingPlan.Reserve so the oldest picked segment is not the next one overwritten.
@@ -515,9 +520,11 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
-            var ring = CurrentRingPlan();
+            // Sized from the RUNNING ring: a duration raised a moment ago (restart still pending)
+            // must not make this save reach into the overwrite reserve of the old, smaller ring.
+            var ring = _runningRing;
             int segSec = ring.SegmentSeconds;
-            int neededSegments = ring.PickCount;
+            int neededSegments = ring.PickForSeconds(_settings.Current.ReplayBuffer.DurationSeconds);
 
             var pick = CollectRecentSegments(neededSegments, out var material);
             if (material == BufferMaterial.Stalled)
@@ -548,8 +555,10 @@ public sealed class ReplayBufferService : IDisposable
             var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath);
 
             // Waits for the concat as long as its output keeps growing, so a hung process
-            // can't block every future save but a slow disk doesn't kill a good clip.
-            var run = await RunWatchedFfmpegAsync(args, partPath, pick.Count * segSec).ConfigureAwait(false);
+            // can't block every future save but a slow disk doesn't kill a good clip. Also aborts
+            // a copy slower than the recording (the muxer would overwrite segments still unread).
+            var run = await RunWatchedFfmpegAsync(args, partPath, pick.Count * segSec,
+                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Length).ToList(), segSec)).ConfigureAwait(false);
             try { File.Delete(listPath); } catch { }
 
             if (run.AbortedBy is { } why)
@@ -562,7 +571,15 @@ public sealed class ReplayBufferService : IDisposable
             }
 
             int exitCode = run.ExitCode;
-            if (ClipOutputFiles.Finish(partPath, outputPath, exitCode))
+            var outcome = await ClipOutputFiles.FinishAsync(partPath, outputPath, exitCode).ConfigureAwait(false);
+            if (outcome == FinishOutcome.RenameFailed)
+            {
+                // The clip itself is fine and still on disk as .part - tell the user where, not "concat code 0".
+                BufferError?.Invoke(this, L.T($"Clip gespeichert, aber Umbenennen fehlgeschlagen: {partPath}",
+                                              $"Clip saved, but renaming failed: {partPath}"));
+                return null;
+            }
+            if (outcome == FinishOutcome.Published)
             {
                 // F9 used to leave no trace at all, which turned one bad clip into file
                 // forensics. One line is enough to answer "what did it actually grab".
@@ -719,7 +736,7 @@ public sealed class ReplayBufferService : IDisposable
 
             var g = _settings.Current.Gif;
             int gifSec = Math.Clamp(g.DurationSeconds, 1, 30);
-            var ring = CurrentRingPlan();
+            var ring = _runningRing;   // the running ffmpeg's ring, not what the settings say now
             int segSec = ring.SegmentSeconds;
             // +1 so the trim has enough material; never more than the ring hands out, or the
             // oldest segment would sit inside the overwrite reserve.
@@ -748,9 +765,12 @@ public sealed class ReplayBufferService : IDisposable
             await File.WriteAllLinesAsync(listPath,
                 pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")).ConfigureAwait(false);
             var concat = await RunWatchedFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4),
-                tempMp4, pick.Count * segSec).ConfigureAwait(false);
+                tempMp4, pick.Count * segSec,
+                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Length).ToList(), segSec)).ConfigureAwait(false);
             if (!concat.Succeeded || !File.Exists(tempMp4))
             {
+                if (concat.AbortedBy is { } concatWhy)
+                    Logger.Warn($"SaveGif: concat aborted ({concatWhy}) — GIF not created.");
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen (Concat).", "GIF creation failed (concat)."));
                 return null;
             }
@@ -761,11 +781,23 @@ public sealed class ReplayBufferService : IDisposable
             var encode = await RunWatchedFfmpegAsync(
                 FFmpegCommandBuilder.BuildGif(tempMp4, partPath, gifSec, g.Framerate, g.Width),
                 partPath, gifSec, stallLimit: ConcatWatch.SafetyCap(gifSec)).ConfigureAwait(false);
-            if (!encode.Succeeded || !ClipOutputFiles.Finish(partPath, outputPath, encode.ExitCode))
+            if (encode.AbortedBy is { } why)
             {
                 ClipOutputFiles.Discard(partPath);
-                if (encode.AbortedBy is { } why)
-                    Logger.Warn($"SaveGif: encode aborted ({why}) — output discarded.");
+                Logger.Warn($"SaveGif: encode aborted ({why}) — output discarded.");
+                BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
+                return null;
+            }
+
+            var outcome = await ClipOutputFiles.FinishAsync(partPath, outputPath, encode.ExitCode).ConfigureAwait(false);
+            if (outcome == FinishOutcome.RenameFailed)
+            {
+                BufferError?.Invoke(this, L.T($"GIF gespeichert, aber Umbenennen fehlgeschlagen: {partPath}",
+                                              $"GIF saved, but renaming failed: {partPath}"));
+                return null;
+            }
+            if (outcome != FinishOutcome.Published)
+            {
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
                 return null;
             }
@@ -793,7 +825,7 @@ public sealed class ReplayBufferService : IDisposable
     /// is killed; a slow but working one is left alone. Never throws for a missing ffmpeg.
     /// </summary>
     private async Task<WatchedRun> RunWatchedFfmpegAsync(string args, string outputPath, int clipSeconds,
-        TimeSpan? stallLimit = null)
+        TimeSpan? stallLimit = null, ConcatExpectation? expected = null)
     {
         _concatFfmpeg?.Dispose();
         _concatFfmpeg = new FFmpegService();
@@ -802,7 +834,7 @@ public sealed class ReplayBufferService : IDisposable
         _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
         _concatFfmpeg.Start(args);
 
-        var watch = new ConcatWatch(DateTime.UtcNow, clipSeconds, stallLimit);
+        var watch = new ConcatWatch(DateTime.UtcNow, clipSeconds, stallLimit, expected);
         while (true)
         {
             var done = await Task.WhenAny(tcs.Task, Task.Delay(ConcatWatch.PollInterval)).ConfigureAwait(false);
@@ -881,7 +913,7 @@ public sealed class ReplayBufferService : IDisposable
                     // The limit follows the same keep rule as prune: a fixed byte cap restarted a
                     // perfectly healthy ring every 30 s once it held two rings of high-bitrate
                     // footage. Only prune failing to keep up can exceed this.
-                    var keep = CurrentRingPlan().Keep;
+                    var keep = EffectiveKeep();
                     if (BufferHealth.IsRunaway(total, keep, largest))
                     {
                         long limit = BufferHealth.RunawayLimitBytes(keep, largest);
@@ -908,10 +940,13 @@ public sealed class ReplayBufferService : IDisposable
     private void PruneOldSegments()
     {
         if (string.IsNullOrEmpty(_bufferDir)) return;
+        // A save's concat opens its input files one after another; deleting one it has not
+        // reached yet (the settings were shortened meanwhile) would break or splice the clip.
+        if (Volatile.Read(ref _saving) != 0) return;
         try
         {
             // Keep the window we might save plus a full extra generation of slack.
-            int keep = CurrentRingPlan().Keep;
+            int keep = EffectiveKeep();
 
             var files = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
@@ -945,6 +980,9 @@ public sealed class ReplayBufferService : IDisposable
         var rb = _settings.Current.ReplayBuffer;
         return RingPlan.Create(rb.DurationSeconds, rb.SegmentDurationSeconds);
     }
+
+    /// <summary>Keep count for prune and the size watchdog: the larger of running and configured ring.</summary>
+    private int EffectiveKeep() => RingPlan.KeepFor(_runningRing, CurrentRingPlan());
 
     /// <summary>
     /// A save interrupted by a crash or kill leaves "Clip_*.mp4.part" / "Gif_*.gif.part" behind.
