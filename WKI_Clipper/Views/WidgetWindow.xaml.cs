@@ -27,13 +27,17 @@ public partial class WidgetWindow : Window
     public event Action<WidgetWindow>? PinToggled;
     /// <summary>Raised when the user closes the widget (hide + persist Visible=false).</summary>
     public event Action<WidgetWindow>? CloseRequested;
-    /// <summary>Raised after a drag/resize settles, so the host can persist geometry.</summary>
-    public event Action<WidgetWindow>? GeometryChanged;
     /// <summary>Raised when the user picks a new opacity, so the host can persist it.</summary>
     public event Action<WidgetWindow>? OpacityChanged;
-    /// <summary>A title-bar drag ended (host: resolve overlaps when the grid is on).</summary>
+    /// <summary>
+    /// A title-bar drag that actually moved the window ended: the user's own change (host:
+    /// persist the place, resolve overlaps when the grid is on). Not raised for a plain click.
+    /// </summary>
     public event Action<WidgetWindow>? DragFinished;
-    /// <summary>A resize-grip drag ended (host: make room for the grown window).</summary>
+    /// <summary>
+    /// A resize-grip drag that actually changed the size ended: the user's own change (host:
+    /// persist, make room for the grown window).
+    /// </summary>
     public event Action<WidgetWindow>? ResizeFinished;
 
     /// <summary>
@@ -335,10 +339,15 @@ public partial class WidgetWindow : Window
     private void OnTitleDrag(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
+        var before = DisplayGeometry.BoundsOf(this);
         try { DragMove(); } catch { /* DragMove throws if the button was already released */ }
-        GeometryChanged?.Invoke(this);
+        // A click on the title bar runs through here too. Nothing moved, so nothing is the
+        // user's to save — least of all a spot the app itself had put the window at.
+        if (before is { } b0 && DisplayGeometry.BoundsOf(this) is { } b1 && b0 == b1) return;
         DragFinished?.Invoke(this);
     }
+
+    private bool _resizeChanged;
 
     private void OnResize(object sender, DragDeltaEventArgs e)
     {
@@ -353,13 +362,17 @@ public partial class WidgetWindow : Window
             w = pw / s;
             h = ph / s;
         }
-        Width = Math.Max(MinWidth, w);
-        Height = Math.Max(MinHeight, h);
+        w = Math.Max(MinWidth, w);
+        h = Math.Max(MinHeight, h);
+        if (w != Width || h != Height) _resizeChanged = true;
+        Width = w;
+        Height = h;
     }
 
     private void OnResizeCompleted(object sender, DragCompletedEventArgs e)
     {
-        GeometryChanged?.Invoke(this);
+        if (!_resizeChanged) return;   // grabbed the grip without changing the size
+        _resizeChanged = false;
         ResizeFinished?.Invoke(this);
     }
 
@@ -373,13 +386,6 @@ public partial class WidgetWindow : Window
     {
         base.OnStateChanged(e);
         if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
-    }
-
-    protected override void OnDeactivated(EventArgs e)
-    {
-        base.OnDeactivated(e);
-        // Persist size after a resize grip drag ends (deactivation is a cheap settle point).
-        GeometryChanged?.Invoke(this);
     }
 
     private void OnPinChanged(object sender, RoutedEventArgs e) => PinToggled?.Invoke(this);
