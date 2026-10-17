@@ -71,10 +71,30 @@ public sealed class ReplayBufferService : IDisposable
     public event EventHandler<string>? BufferError;
     public event EventHandler<string>? BufferInfo;           // non-error notices (save busy, restarting)
     public event EventHandler<bool>? BufferStateChanged;     // true=running
+    /// <summary>
+    /// A clip/GIF save passed every guard and is about to run. Raised at the key press, not when the
+    /// file is done - a long clip takes a while to write and the feedback belongs to the press.
+    /// </summary>
+    public event EventHandler<SaveKind>? SaveStarted;
+    /// <summary>A save was refused or failed (busy, buffer off, no material, stale, aborted, ffmpeg failure).</summary>
+    public event EventHandler<SaveFailure>? SaveFailed;
 
     public ReplayBufferService(SettingsService settings)
     {
         _settings = settings;
+    }
+
+    // Subscribers (sound cues) must never be able to break a save.
+    private void SignalStarted(SaveKind kind)
+    {
+        try { SaveStarted?.Invoke(this, kind); }
+        catch (Exception ex) { Logger.Warn("SaveStarted handler threw: " + ex.Message); }
+    }
+
+    private void SignalFailed(SaveKind kind, SaveFailureReason reason)
+    {
+        try { SaveFailed?.Invoke(this, new SaveFailure(kind, reason)); }
+        catch (Exception ex) { Logger.Warn("SaveFailed handler threw: " + ex.Message); }
     }
 
     /// <summary>Cold start: clears the buffer directory and starts a fresh generation.</summary>
@@ -509,6 +529,7 @@ public sealed class ReplayBufferService : IDisposable
         if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
             BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
+            SignalFailed(SaveKind.Clip, SaveFailureReason.Busy);
             return null;
         }
         try
@@ -517,6 +538,7 @@ public sealed class ReplayBufferService : IDisposable
             {
                 BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht (evtl. Neustart) — gleich nochmal probieren.",
                                              "Buffer isn't running right now (possibly restarting) — try again in a moment."));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.NotRunning);
                 return null;
             }
 
@@ -529,7 +551,7 @@ public sealed class ReplayBufferService : IDisposable
             var pick = CollectRecentSegments(neededSegments, out var material);
             if (material == BufferMaterial.Stalled)
             {
-                ReportStalled();
+                ReportStalled(SaveKind.Clip);
                 return null;
             }
             if (pick.Count == 0)
@@ -538,8 +560,12 @@ public sealed class ReplayBufferService : IDisposable
                 BufferInfo?.Invoke(this,
                     L.T("Buffer wurde gerade neu gestartet — noch nicht genug Material. Gleich nochmal.",
                         "Buffer just restarted — not enough material yet. Try again shortly."));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.NotEnoughMaterial);
                 return null;
             }
+
+            // Every guard passed: from here on the clip is going to be written.
+            SignalStarted(SaveKind.Clip);
 
             var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
@@ -567,6 +593,7 @@ public sealed class ReplayBufferService : IDisposable
                 Logger.Warn($"SaveLast: concat aborted ({why}) after {pick.Count} segments — output discarded.");
                 BufferError?.Invoke(this, L.T("Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.",
                                               "Clip creation took too long and was aborted."));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.Aborted);
                 return null;
             }
 
@@ -577,6 +604,7 @@ public sealed class ReplayBufferService : IDisposable
                 // The clip itself is fine and still on disk as .part - tell the user where, not "concat code 0".
                 BufferError?.Invoke(this, L.T($"Clip gespeichert, aber Umbenennen fehlgeschlagen: {partPath}",
                                               $"Clip saved, but renaming failed: {partPath}"));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.RenameFailed);
                 return null;
             }
             if (outcome == FinishOutcome.Published)
@@ -594,8 +622,16 @@ public sealed class ReplayBufferService : IDisposable
             {
                 BufferError?.Invoke(this, L.T($"Clip-Erstellung fehlgeschlagen (concat code {exitCode}).",
                                               $"Clip creation failed (concat code {exitCode})."));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.Failed);
                 return null;
             }
+        }
+        catch (Exception ex)
+        {
+            // An IO error (clips folder, concat list) used to surface only as a log line from the hotkey handler.
+            Logger.Warn("SaveLast: unexpected error: " + ex.Message);
+            SignalFailed(SaveKind.Clip, SaveFailureReason.Failed);
+            throw;
         }
         finally
         {
@@ -626,12 +662,13 @@ public sealed class ReplayBufferService : IDisposable
     /// real, and a restart is the only recovery — the ffmpeg process is still alive, so
     /// nothing times out or crashes on its own.
     /// </summary>
-    private void ReportStalled()
+    private void ReportStalled(SaveKind kind)
     {
         Logger.Warn("Replay buffer is stale — no new completed segment. Refusing the clip and restarting.");
         BufferError?.Invoke(this, L.T(
             "Der Buffer liefert keine neuen Daten mehr — der Clip wäre veraltet. Buffer wird neu gestartet.",
             "The buffer stopped producing data — the clip would be stale. Restarting the buffer."));
+        SignalFailed(kind, SaveFailureReason.Stale);
         RequestRestart();
     }
 
@@ -722,6 +759,7 @@ public sealed class ReplayBufferService : IDisposable
         if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
             BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
+            SignalFailed(SaveKind.Gif, SaveFailureReason.Busy);
             return null;
         }
         string? tempMp4 = null;
@@ -731,6 +769,7 @@ public sealed class ReplayBufferService : IDisposable
             if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
             {
                 BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht — gleich nochmal.", "Buffer isn't running right now — try again shortly."));
+                SignalFailed(SaveKind.Gif, SaveFailureReason.NotRunning);
                 return null;
             }
 
@@ -745,15 +784,18 @@ public sealed class ReplayBufferService : IDisposable
             var pick = CollectRecentSegments(neededSegments, out var gifMaterial);
             if (gifMaterial == BufferMaterial.Stalled)
             {
-                ReportStalled();
+                ReportStalled(SaveKind.Gif);
                 return null;
             }
             if (pick.Count == 0)
             {
                 BufferInfo?.Invoke(this, L.T("Noch nicht genug Material für ein GIF. Gleich nochmal.",
                                              "Not enough material for a GIF yet. Try again shortly."));
+                SignalFailed(SaveKind.Gif, SaveFailureReason.NotEnoughMaterial);
                 return null;
             }
+
+            SignalStarted(SaveKind.Gif);
 
             var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
@@ -772,6 +814,7 @@ public sealed class ReplayBufferService : IDisposable
                 if (concat.AbortedBy is { } concatWhy)
                     Logger.Warn($"SaveGif: concat aborted ({concatWhy}) — GIF not created.");
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen (Concat).", "GIF creation failed (concat)."));
+                SignalFailed(SaveKind.Gif, concat.AbortedBy is null ? SaveFailureReason.Failed : SaveFailureReason.Aborted);
                 return null;
             }
 
@@ -786,6 +829,7 @@ public sealed class ReplayBufferService : IDisposable
                 ClipOutputFiles.Discard(partPath);
                 Logger.Warn($"SaveGif: encode aborted ({why}) — output discarded.");
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
+                SignalFailed(SaveKind.Gif, SaveFailureReason.Aborted);
                 return null;
             }
 
@@ -794,16 +838,24 @@ public sealed class ReplayBufferService : IDisposable
             {
                 BufferError?.Invoke(this, L.T($"GIF gespeichert, aber Umbenennen fehlgeschlagen: {partPath}",
                                               $"GIF saved, but renaming failed: {partPath}"));
+                SignalFailed(SaveKind.Gif, SaveFailureReason.RenameFailed);
                 return null;
             }
             if (outcome != FinishOutcome.Published)
             {
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
+                SignalFailed(SaveKind.Gif, SaveFailureReason.Failed);
                 return null;
             }
 
             GifSaved?.Invoke(this, outputPath);
             return outputPath;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("SaveGif: unexpected error: " + ex.Message);
+            SignalFailed(SaveKind.Gif, SaveFailureReason.Failed);
+            throw;
         }
         finally
         {

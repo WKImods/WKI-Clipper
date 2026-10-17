@@ -93,11 +93,22 @@ public sealed class SettingsService
             Current = loaded;
         }
 
+        EnsureSections(Current);
         if (MigrateIfNeeded(Current))
             Save();
 
         EnsureOutputDirs();
         return Current;
+    }
+
+    /// <summary>
+    /// A missing section keeps its initializer, but an explicit <c>null</c> in the file replaces it.
+    /// Sections added without a schema bump are guarded here so a hand-edited file cannot null them out.
+    /// </summary>
+    internal static void EnsureSections(AppSettings s)
+    {
+        s.Sounds ??= new SoundSettings();
+        s.Sounds.CustomFiles ??= new();
     }
 
     /// <summary>Parsed settings, or null when the file is missing, empty or not valid settings JSON.</summary>

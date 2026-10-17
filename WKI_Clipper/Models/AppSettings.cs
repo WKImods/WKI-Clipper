@@ -27,6 +27,7 @@ public sealed class AppSettings
     public SpotifySettings Spotify { get; set; } = new();
     public WhatsAppSettings WhatsApp { get; set; } = new();
     public PerfOverlaySettings PerfOverlay { get; set; } = new();
+    public SoundSettings Sounds { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
@@ -376,6 +377,30 @@ public sealed class PerfOverlaySettings
     public bool ShowRam { get; set; } = true;
     public bool ShowVram { get; set; } = true;
     public bool ShowClock { get; set; }
+}
+
+/// <summary>
+/// Short feedback sounds (clip saved, screenshot, recording start/stop, error). The section has
+/// an initializer for every value, so a settings file written before it existed simply loads
+/// the defaults - no schema migration needed.
+/// </summary>
+public sealed class SoundSettings
+{
+    /// <summary>Master switch.</summary>
+    public bool Enabled { get; set; } = true;
+    /// <summary>0..1, applied on top of the device volume.</summary>
+    public double Volume { get; set; } = 0.6;
+    /// <summary>MMDevice id (or friendly name) of the output. null = Windows default render device.</summary>
+    public string? DeviceId { get; set; }
+
+    public bool ClipSaved { get; set; } = true;
+    public bool Screenshot { get; set; } = true;
+    /// <summary>Covers both the start and the stop cue.</summary>
+    public bool Recording { get; set; } = true;
+    public bool Errors { get; set; } = true;
+
+    /// <summary>Optional own .wav per cue, keyed by the cue name (e.g. "ClipSaved").</summary>
+    public Dictionary<string, string> CustomFiles { get; set; } = new();
 }
 
 /// <summary>WhatsApp Web widget.</summary>

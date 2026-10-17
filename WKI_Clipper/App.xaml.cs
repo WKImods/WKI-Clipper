@@ -97,8 +97,13 @@ public partial class App : Application
             {
                 ToastService.Show(Views.ToastKind.Info, L.T("Replay-Buffer", "Replay buffer"), msg, durationSeconds: 3.5);
             };
+            // Sound cues. A save plays its cue when it STARTS (a long clip takes a while to write, the
+            // feedback belongs to the key press); only save refusals/failures map to the error cue.
+            Host.ReplayBuffer.SaveStarted += (_, _) => Host.Sounds.Play(SoundCue.ClipSaved);
+            Host.ReplayBuffer.SaveFailed += (_, _) => Host.Sounds.Play(SoundCue.Error);
             Host.ManualRecording.RecordingStarted += (_, path) =>
             {
+                Host.Sounds.Play(SoundCue.RecordingStarted);
                 TrayHost.UpdateState(TrayState.Recording, System.IO.Path.GetFileNameWithoutExtension(path));
                 ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gestartet", "Recording started"),
                     System.IO.Path.GetFileName(path), durationSeconds: 2.5);
@@ -110,6 +115,7 @@ public partial class App : Application
                 // Revert the tray icon regardless of outcome.
                 TrayHost.UpdateState(Host.ReplayBuffer.IsRunning ? TrayState.BufferActive : TrayState.Idle,
                     Host.ReplayBuffer.IsRunning ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
+                Host.Sounds.Play(result.Success ? SoundCue.RecordingStopped : SoundCue.Error);
                 if (result.Success)
                     ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gespeichert", "Recording saved"),
                         System.IO.Path.GetFileName(result.Path), result.Path);
@@ -119,9 +125,12 @@ public partial class App : Application
             };
             Host.Screenshots.ScreenshotSaved += (_, path) =>
             {
+                Host.Sounds.Play(SoundCue.Screenshot);
                 ToastService.Show(Views.ToastKind.Screenshot, "Screenshot",
                     System.IO.Path.GetFileName(path), path);
             };
+            // Failed screenshots used to be silent.
+            Host.Screenshots.ScreenshotFailed += (_, _) => Host.Sounds.Play(SoundCue.Error);
 
             if (Host.Settings.Current.ReplayBuffer.Enabled && Host.Settings.Current.Behavior.StartBufferOnLaunch)
             {
