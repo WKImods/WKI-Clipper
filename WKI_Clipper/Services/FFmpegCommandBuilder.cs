@@ -266,8 +266,10 @@ public static class FFmpegCommandBuilder
     // -map 0 copies ALL streams (video + every audio track). Without it the concat
     // demuxer keeps only one audio stream per output, which would silently drop the
     // second track of a separate-mic-track recording. Harmless for single-track clips.
+    // -f mp4 is explicit because the output is written as "<name>.mp4.part" (renamed on success):
+    // ffmpeg would otherwise guess the container from the ".part" extension and fail.
     public static string BuildConcat(string listFilePath, string outputPath)
-        => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -map 0 -c copy -movflags +faststart \"{outputPath}\"";
+        => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -map 0 -c copy -movflags +faststart -f mp4 \"{outputPath}\"";
 
     /// <summary>
     /// Turns the LAST <paramref name="durationSec"/> seconds of a source video into a
@@ -282,7 +284,7 @@ public static class FFmpegCommandBuilder
         string scale = width > 0 ? $"scale={width}:-1:flags=lanczos," : "";
         string vf = $"fps={fps},{scale}split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3";
         return $"-hide_banner -loglevel warning -sseof -{durationSec} -i \"{sourcePath}\" -t {durationSec} " +
-               $"-vf \"{vf}\" -loop 0 -y \"{outputPath}\"";
+               $"-vf \"{vf}\" -f gif -loop 0 -y \"{outputPath}\"";   // -f gif: output is "<name>.gif.part"
     }
 
     // hwdownload,format=bgra is REQUIRED: ddagrab emits D3D11 GPU frames the PNG

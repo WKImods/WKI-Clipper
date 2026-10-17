@@ -61,8 +61,271 @@ public partial class AudioSettingsView : UserControl
         RowsContainer.Children.Add(BuildSeparateTrackCard(host));
         RowsContainer.Children.Add(BuildSyncCard(host));
         RowsContainer.Children.Add(BuildGameAudioCard(host));
+        RowsContainer.Children.Add(BuildSoundCuesCard(host));
 
         StartMeter();
+    }
+
+    // ---- sound cues ----
+
+    private DispatcherTimer? _soundSaveTimer;
+
+    private sealed record SoundDeviceItem(string? Id, string Name)
+    {
+        public override string ToString() => Name;
+    }
+
+    private FrameworkElement BuildSoundCuesCard(AppHost host)
+    {
+        // Always read through the host: the settings object is the one the service reads at every cue.
+        Models.SoundSettings Cfg() => host.Settings.Current.Sounds;
+
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = L.T("Hinweis-Töne", "Sound cues"),
+            FontWeight = System.Windows.FontWeights.SemiBold,
+            FontSize = 14,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 0, 0, 6)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = L.T("Kurze Töne, wenn ein Clip gespeichert, ein Screenshot gemacht oder eine Aufnahme gestartet bzw. beendet wird — und wenn etwas schiefgeht. Der Clip-Ton kommt direkt beim Tastendruck, nicht erst wenn die Datei fertig ist.",
+                       "Short sounds when a clip is saved, a screenshot is taken, a recording starts or stops — and when something goes wrong. The clip sound plays right at the key press, not when the file is finished."),
+            Style = (Style)FindResource("MutedStyle"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10)
+        });
+
+        var master = new System.Windows.Controls.CheckBox
+        {
+            Content = L.T("Hinweis-Töne aktivieren", "Enable sound cues"),
+            IsChecked = Cfg().Enabled,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        stack.Children.Add(master);
+
+        // Everything below the master switch greys out with it.
+        var body = new StackPanel { IsEnabled = Cfg().Enabled };
+        stack.Children.Add(body);
+        master.Checked += (_, _) => { Cfg().Enabled = true; body.IsEnabled = true; host.Settings.Save(); };
+        master.Unchecked += (_, _) => { Cfg().Enabled = false; body.IsEnabled = false; host.Settings.Save(); };
+
+        // Volume: applies live (the service reads it per cue), the file is written once the slider settles.
+        var volume = new System.Windows.Controls.Slider
+        {
+            Minimum = 0, Maximum = 100,
+            SmallChange = 1, LargeChange = 10,
+            // A hand-edited NaN would make Slider.Value throw and take the whole page down.
+            Value = double.IsFinite(Cfg().Volume) ? Math.Clamp(Cfg().Volume * 100.0, 0, 100) : SoundCuePolicy.DefaultVolume * 100.0,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var volumeLabel = new TextBlock
+        {
+            Text = $"{volume.Value:0} %",
+            Foreground = (Brush)FindResource("TextBrush"),
+            FontWeight = System.Windows.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            MinWidth = 48,
+            TextAlignment = TextAlignment.Right
+        };
+        volume.ValueChanged += (_, _) =>
+        {
+            volumeLabel.Text = $"{volume.Value:0} %";
+            Cfg().Volume = Math.Round(volume.Value) / 100.0;
+            SaveSoundSettingsDebounced();
+        };
+        var volumeRow = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(volumeLabel, Dock.Right);
+        volumeRow.Children.Add(volumeLabel);
+        volumeRow.Children.Add(volume);
+        body.Children.Add(BuildLabeledRow(L.T("Lautstärke", "Volume"), volumeRow));
+
+        body.Children.Add(BuildLabeledRow(L.T("Ausgabe", "Output"), BuildSoundDeviceBox(host)));
+
+        void AddGroup(string title, Func<bool> get, Action<bool> set, params (SoundCue Cue, string? Label)[] cues)
+        {
+            var box = new System.Windows.Controls.CheckBox
+            {
+                Content = title,
+                IsChecked = get(),
+                Foreground = (Brush)FindResource("TextBrush"),
+                Margin = new Thickness(0, 10, 0, 0)
+            };
+            box.Checked += (_, _) => { set(true); host.Settings.Save(); };
+            box.Unchecked += (_, _) => { set(false); host.Settings.Save(); };
+            body.Children.Add(box);
+            foreach (var (cue, label) in cues)
+                body.Children.Add(BuildCueRow(host, cue, label));
+        }
+
+        AddGroup(L.T("Clip / GIF gespeichert", "Clip / GIF saved"),
+            () => Cfg().ClipSaved, v => Cfg().ClipSaved = v, (SoundCue.ClipSaved, null));
+        AddGroup(L.T("Screenshot", "Screenshot"),
+            () => Cfg().Screenshot, v => Cfg().Screenshot = v, (SoundCue.Screenshot, null));
+        AddGroup(L.T("Aufnahme Start / Stopp", "Recording start / stop"),
+            () => Cfg().Recording, v => Cfg().Recording = v,
+            (SoundCue.RecordingStarted, L.T("Start", "Start")), (SoundCue.RecordingStopped, L.T("Stopp", "Stop")));
+        AddGroup(L.T("Fehler (Speichern abgelehnt oder fehlgeschlagen)", "Errors (save refused or failed)"),
+            () => Cfg().Errors, v => Cfg().Errors = v, (SoundCue.Error, null));
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = L.T("Im Modus \"Alle Sounds aufnehmen\" kann ein Ton im NÄCHSTEN Clip landen, und über Lautsprecher abgespielte Töne nimmt das Mikrofon mit auf — Kopfhörer empfohlen.",
+                       "In \"capture all sounds\" mode a cue can end up in the NEXT clip, and cues played over speakers can be picked up by the microphone — headphones recommended."),
+            Style = (Style)FindResource("MutedStyle"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 12, 0, 0)
+        });
+
+        return Card(stack);
+    }
+
+    private System.Windows.Controls.ComboBox BuildSoundDeviceBox(AppHost host)
+    {
+        var items = new List<SoundDeviceItem> { new(null, L.T("Windows-Standard", "Windows default")) };
+        try
+        {
+            items.AddRange(host.AudioDevices.ListRenderDevices().Select(d => new SoundDeviceItem(d.Id, d.Name)));
+        }
+        catch (Exception ex) { Logger.Warn("SoundCues: could not list output devices: " + ex.Message); }
+
+        int selected = 0;
+        var saved = host.Settings.Current.Sounds.DeviceId;
+        if (!string.IsNullOrWhiteSpace(saved))
+        {
+            int found = SoundCuePolicy.PickDeviceIndex(
+                items.Skip(1).Select(d => (d.Id!, d.Name)).ToList(), saved);
+            if (found >= 0) selected = found + 1;
+            else
+            {
+                // Unplugged: keep the saved choice visible (and unchanged) instead of silently showing the default.
+                items.Add(new SoundDeviceItem(saved, L.T("Gespeichertes Gerät (nicht verfügbar)", "Saved device (unavailable)")));
+                selected = items.Count - 1;
+            }
+        }
+
+        var box = new System.Windows.Controls.ComboBox { MinWidth = 200, DisplayMemberPath = nameof(SoundDeviceItem.Name) };
+        foreach (var item in items) box.Items.Add(item);
+        box.SelectedIndex = selected;   // before the handler: loading must not rewrite the setting
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedItem is not SoundDeviceItem d) return;
+            host.Settings.Current.Sounds.DeviceId = d.Id;
+            host.Settings.Save();
+        };
+        return box;
+    }
+
+    /// <summary>One cue: which sound it uses, a test button, and an own-WAV picker with a reset.</summary>
+    private FrameworkElement BuildCueRow(AppHost host, SoundCue cue, string? label)
+    {
+        string key = cue.ToString();
+        var status = new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 0, 2)
+        };
+        System.Windows.Controls.Button MakeButton(string text) => new()
+        {
+            Content = text,
+            Padding = new Thickness(10, 3, 10, 3),
+            Margin = new Thickness(0, 2, 6, 2),
+            Cursor = Cursors.Hand
+        };
+        var test = MakeButton(L.T("▶ Test", "▶ Test"));
+        var pick = MakeButton(L.T("Eigene WAV…", "Custom WAV…"));
+        var reset = MakeButton(L.T("Standard", "Default"));
+
+        void Refresh()
+        {
+            host.Settings.Current.Sounds.CustomFiles.TryGetValue(key, out var path);
+            bool has = !string.IsNullOrWhiteSpace(path);
+            string state;
+            if (!has) state = L.T("Standard-Ton", "Built-in sound");
+            else
+            {
+                var name = System.IO.Path.GetFileName(path!);
+                state = File.Exists(path)
+                    ? name
+                    : name + L.T(" (Datei fehlt — Standard-Ton)", " (file missing — built-in sound)");
+            }
+            status.Text = label is null ? state : $"{label}: {state}";
+            status.ToolTip = has ? path : null;
+            reset.IsEnabled = has;
+        }
+
+        test.Click += (_, _) => host.Sounds.Preview(cue);
+        pick.Click += (_, _) =>
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = L.T("WAV-Dateien (*.wav)|*.wav", "WAV files (*.wav)|*.wav"),
+                CheckFileExists = true
+            };
+            if (dlg.ShowDialog() != true) return;
+            if (SoundWav.TryReadFile(dlg.FileName, out var problem) is null)
+            {
+                Logger.Warn($"SoundCues: refused custom file '{dlg.FileName}' ({problem})");
+                MessageBox.Show(
+                    L.T($"Diese Datei lässt sich nicht als Hinweis-Ton verwenden (WAV mit PCM oder Float, höchstens {SoundWav.MaxSeconds} s).",
+                        $"This file cannot be used as a sound cue (WAV with PCM or float samples, at most {SoundWav.MaxSeconds} s)."),
+                    "WKI Clipper", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            SetCustomFile(host, key, dlg.FileName);
+            Refresh();
+            host.Sounds.Preview(cue);
+        };
+        reset.Click += (_, _) =>
+        {
+            SetCustomFile(host, key, null);
+            Refresh();
+        };
+        Refresh();
+
+        var buttons = new WrapPanel();
+        buttons.Children.Add(test);
+        buttons.Children.Add(pick);
+        buttons.Children.Add(reset);
+
+        var panel = new StackPanel { Margin = new Thickness(22, 2, 0, 4) };
+        panel.Children.Add(status);
+        panel.Children.Add(buttons);
+        return panel;
+    }
+
+    // The map is replaced, never edited: the service reads it from a pool thread while the UI writes.
+    private static void SetCustomFile(AppHost host, string key, string? path)
+    {
+        var cfg = host.Settings.Current.Sounds;
+        var map = new Dictionary<string, string>(cfg.CustomFiles);
+        if (string.IsNullOrWhiteSpace(path)) map.Remove(key);
+        else map[key] = path;
+        cfg.CustomFiles = map;
+        host.Settings.Save();
+    }
+
+    private void SaveSoundSettingsDebounced()
+    {
+        if (_soundSaveTimer is null)
+        {
+            _soundSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            _soundSaveTimer.Tick += (_, _) => { _soundSaveTimer.Stop(); App.Host?.Settings.Save(); };
+        }
+        _soundSaveTimer.Stop();
+        _soundSaveTimer.Start();
+    }
+
+    // The widget can close within the debounce window; the last slider move must not get lost.
+    private void FlushSoundSettings()
+    {
+        if (_soundSaveTimer is not { IsEnabled: true }) return;
+        _soundSaveTimer.Stop();
+        App.Host?.Settings.Save();
     }
 
     private FrameworkElement BuildGameAudioCard(AppHost host)
@@ -375,7 +638,11 @@ public partial class AudioSettingsView : UserControl
         return Card(stack);
     }
 
-    private void OnUnloaded(object sender, RoutedEventArgs e) => StopMeter();
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        StopMeter();
+        FlushSoundSettings();
+    }
 
     private void StartMeter()
     {

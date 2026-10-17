@@ -46,6 +46,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Cue sounds travel inside the exe (single-file publish, no loose files). The explicit logical
+         name keeps the manifest name independent of folder moves; SoundCueResources.Prefix mirrors it. -->
+    <EmbeddedResource Include="Assets\Sounds\*.wav" LogicalName="WKI_Clipper.Sounds.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="Assets\ffmpeg\ffmpeg.exe">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

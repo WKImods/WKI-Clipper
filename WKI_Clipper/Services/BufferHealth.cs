@@ -54,4 +54,27 @@ public static class BufferHealth
         => nowUtc - newestCompletedUtc > StaleAfter(segmentSeconds)
             ? BufferMaterial.Stalled
             : BufferMaterial.Ok;
+
+    /// <summary>Slack on top of the ring's own footprint before the size watchdog fires.</summary>
+    public const long RunawayMarginBytes = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// The most the buffer folder can legitimately hold: prune keeps <paramref name="keepSegments"/>
+    /// files, the largest of which is <paramref name="largestSegmentBytes"/>. Derived from the same
+    /// keep rule as prune (a fixed byte cap cannot be - two rings at 25-30 Mbit/s already
+    /// approached 2 GiB, and a 30 minute buffer holds 13 GiB by design), with 50 % headroom for
+    /// segments that vary in size and 64 MiB for the open one.
+    /// </summary>
+    public static long RunawayLimitBytes(int keepSegments, long largestSegmentBytes)
+    {
+        double ring = Math.Max(0, keepSegments) * (double)Math.Max(0, largestSegmentBytes);
+        return (long)(ring * 1.5) + RunawayMarginBytes;
+    }
+
+    /// <summary>
+    /// True when, even after pruning, the folder holds clearly more than the ring can account
+    /// for - i.e. prune is not doing its job and a restart is the only way back.
+    /// </summary>
+    public static bool IsRunaway(long totalBytes, int keepSegments, long largestSegmentBytes)
+        => totalBytes > RunawayLimitBytes(keepSegments, largestSegmentBytes);
 }

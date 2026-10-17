@@ -22,52 +22,122 @@ public sealed class SettingsService
     public const int CurrentSchemaVersion = 9;
 
     public string SettingsFilePath { get; }
+    /// <summary>Previous version of settings.json, kept by every Save (see <see cref="Save"/>).</summary>
+    public string BackupFilePath { get; }
+    private string TempFilePath => SettingsFilePath + ".tmp";
     public string AppDataDir { get; }
 
     public AppSettings Current { get; private set; } = new();
 
     public event EventHandler<AppSettings>? SettingsChanged;
 
+    // Save runs from the UI thread, hotkeys and widget callbacks; two writers on one temp file
+    // would corrupt exactly what the temp file is there to protect.
+    private readonly object _saveLock = new();
+
     public SettingsService()
-    {
-        AppDataDir = Path.Combine(
+        : this(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "WKI_Clipper");
+            "WKI_Clipper"))
+    {
+    }
+
+    // Test seam: lets tests run against a throwaway directory instead of the real AppData.
+    internal SettingsService(string appDataDir)
+    {
+        AppDataDir = appDataDir;
         Directory.CreateDirectory(AppDataDir);
         SettingsFilePath = Path.Combine(AppDataDir, "settings.json");
+        BackupFilePath = SettingsFilePath + ".bak";
     }
 
     public AppSettings Load()
     {
-        if (!File.Exists(SettingsFilePath))
+        bool mainExists = File.Exists(SettingsFilePath);
+        var loaded = TryRead(SettingsFilePath);
+
+        if (loaded == null)
         {
-            // Fresh install: use the modern defaults (Auto capture + coupled audio),
-            // no legacy migration needed.
-            Current = new AppSettings { SchemaVersion = CurrentSchemaVersion };
-            Save();
-            return Current;
+            // A truncated or missing settings.json is what an interrupted write used to leave
+            // behind; the previous version is one Save away.
+            var fromBackup = TryRead(BackupFilePath);
+
+            if (mainExists)
+            {
+                // Move the broken file aside BEFORE any Save: Save rotates settings.json into
+                // the .bak, and that must never be the broken copy.
+                var broken = SettingsFilePath + ".broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                try { File.Move(SettingsFilePath, broken); } catch { }
+            }
+
+            if (fromBackup != null)
+            {
+                Logger.Warn(mainExists
+                    ? "Settings: settings.json is unreadable — restored the previous version from settings.json.bak"
+                    : "Settings: settings.json is missing — restored the previous version from settings.json.bak");
+                Current = fromBackup;
+                Save();
+            }
+            else
+            {
+                // Fresh install (nothing on disk), or corrupt with no usable backup: modern
+                // defaults (Auto capture + coupled audio), no legacy migration needed.
+                if (mainExists) Logger.Warn("Settings: settings.json is unreadable and there is no usable backup — starting with defaults");
+                Current = new AppSettings { SchemaVersion = CurrentSchemaVersion };
+                Save();
+                if (!mainExists) return Current;
+            }
+        }
+        else
+        {
+            Current = loaded;
         }
 
-        try
-        {
-            var json = File.ReadAllText(SettingsFilePath);
-            var loaded = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
-            Current = loaded ?? new AppSettings { SchemaVersion = CurrentSchemaVersion };
-        }
-        catch (Exception)
-        {
-            // Corrupt settings file → back it up, start fresh
-            var backup = SettingsFilePath + ".broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            try { File.Move(SettingsFilePath, backup); } catch { }
-            Current = new AppSettings { SchemaVersion = CurrentSchemaVersion };
-            Save();
-        }
-
+        EnsureSections(Current);
         if (MigrateIfNeeded(Current))
             Save();
 
         EnsureOutputDirs();
         return Current;
+    }
+
+    /// <summary>
+    /// A missing section keeps its initializer, but an explicit <c>null</c> in the file replaces it.
+    /// Sections added without a schema bump are guarded here so a hand-edited file cannot null them out.
+    /// </summary>
+    internal static void EnsureSections(AppSettings s)
+    {
+        s.Sounds ??= new SoundSettings();
+        s.Sounds.CustomFiles ??= new();
+    }
+
+    /// <summary>Parsed settings, or null when the file is missing, empty or not valid settings JSON.</summary>
+    private static AppSettings? TryRead(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Removes settings.json together with its .bak and .tmp. Deleting only settings.json would
+    /// not reset anything: the next Load would restore the backup.
+    /// </summary>
+    public void DeleteSettingsFiles()
+    {
+        lock (_saveLock)
+        {
+            foreach (var path in new[] { SettingsFilePath, BackupFilePath, TempFilePath })
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
     }
 
     /// <summary>
@@ -220,6 +290,12 @@ public sealed class SettingsService
         return changed;
     }
 
+    /// <summary>
+    /// Writes settings.json atomically: the new content goes to settings.json.tmp first and is
+    /// then swapped in with File.Replace, which also keeps the previous version as
+    /// settings.json.bak. Saving straight into settings.json (once per slider move) meant any
+    /// interrupted write left a truncated file and Load() reset every setting to default.
+    /// </summary>
     public void Save()
     {
         // A failed save must never take the app down (it is called from startup,
@@ -227,8 +303,17 @@ public sealed class SettingsService
         // in-memory settings instead.
         try
         {
-            var json = JsonSerializer.Serialize(Current, JsonOptions);
-            File.WriteAllText(SettingsFilePath, json);
+            lock (_saveLock)
+            {
+                var json = JsonSerializer.Serialize(Current, JsonOptions);
+                File.WriteAllText(TempFilePath, json);
+                if (File.Exists(SettingsFilePath))
+                    // ignoreMetadataErrors: merging ACLs/attributes from the old file can fail on some
+                    // volumes (synced or redirected AppData) and must not turn into a lost save.
+                    File.Replace(TempFilePath, SettingsFilePath, BackupFilePath, ignoreMetadataErrors: true);
+                else
+                    File.Move(TempFilePath, SettingsFilePath);
+            }
         }
         catch (Exception ex)
         {

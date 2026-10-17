@@ -27,6 +27,8 @@ public sealed class AppHost : IDisposable
     public TwitchChatService Chat { get; }
     public MusicPlayerService Music { get; }
     public CrosshairLibraryService Crosshairs { get; }
+    /// <summary>Short feedback sounds (clip saved, screenshot, recording, error).</summary>
+    public SoundCueService Sounds { get; }
     /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
     public SpotifyMediaService Spotify { get; } = new();
 
@@ -87,6 +89,7 @@ public sealed class AppHost : IDisposable
         };
         Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
+        Sounds = new SoundCueService(Settings);
 
         WireCaptureExclusivity();
         WireGameFolders();
@@ -330,6 +333,7 @@ public sealed class AppHost : IDisposable
         Obs.Dispose();
         Chat.Dispose();
         Music.Dispose();
+        Sounds.Dispose();
         Spotify.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
