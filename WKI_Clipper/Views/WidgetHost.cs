@@ -242,7 +242,7 @@ public sealed class WidgetHost : IDisposable
     private void RebuildForLanguageChange()
     {
         bool wasOpen = _boardOpen;
-        foreach (var (id, w) in _windows) CaptureGeometry(id, w);
+        foreach (var (id, w) in _windows) CaptureGeometry(id, w, "language-rebuild");
 
         foreach (var (id, w) in _windows.ToList())
         {
@@ -358,9 +358,9 @@ public sealed class WidgetHost : IDisposable
     /// the user asks for it.
     ///
     /// Safe by construction: windows show at -20000/-20000 with ShowActivated=false, so
-    /// nothing is visible and nothing takes focus; GeometryChanged fires only on user
-    /// drags/deactivation, so stored positions are untouched, and the real open re-places
-    /// every window via PositionWindow anyway.
+    /// nothing is visible and nothing takes focus; only user drags/resizes ever save a
+    /// geometry (see <see cref="PlacementLedger"/>), so stored positions are untouched, and
+    /// the real open re-places every window via PositionWindow anyway.
     /// </summary>
     public async Task PrewarmAsync()
     {
@@ -398,8 +398,8 @@ public sealed class WidgetHost : IDisposable
 
     public void CloseBoard()
     {
-        // Persist live geometry before hiding.
-        foreach (var (id, w) in _windows) CaptureGeometry(id, w);
+        // Persist what the user changed and has not been saved yet — never a spot the app chose.
+        foreach (var (id, w) in _windows) CaptureGeometry(id, w, "board-close");
 
         foreach (var (id, w) in _windows)
         {
@@ -501,6 +501,8 @@ public sealed class WidgetHost : IDisposable
         if (_boardOpen) w.SetBoardOpen(true);
         w.Show();
         if (_boardOpen) BumpTopmost(w); // re-assert above the just-activated backdrop
+        // Only now has the window its final size and monitor scale; before Show the rect is stale.
+        RecordSystemPlacement(w);
         if (KeepApart) MoveToFreeSpot(w, userMove: false);
 
         // Web widgets boot their browser on the first REAL show — the prewarm path shows
@@ -535,7 +537,6 @@ public sealed class WidgetHost : IDisposable
         w.SetIcon(IconGlyph.ForWidget(id, 15, (Brush)Application.Current.FindResource("AccentBrush")));
         w.PinToggled += OnPinToggled;
         w.CloseRequested += OnWidgetClosed;
-        w.GeometryChanged += ww => CaptureGeometry(id, ww);
         w.OpacityChanged += ww =>
         {
             // Slider drags fire per pixel — update in memory immediately, write the
@@ -547,8 +548,8 @@ public sealed class WidgetHost : IDisposable
         };
 
         ApplySnapHooks(w);
-        w.DragFinished += ww => { if (KeepApart) MoveToFreeSpot(ww, userMove: true); };
-        w.ResizeFinished += ww => { if (KeepApart) MakeRoomAround(ww); CaptureGeometry(id, ww); };
+        w.DragFinished += OnWidgetDragged;
+        w.ResizeFinished += OnWidgetResized;
         // Each window gets a DPI message when the scaling changes; the debounced
         // signature check turns that burst into one re-layout.
         w.DpiChanged += (_, _) => ScheduleDisplayCheck();
@@ -584,6 +585,10 @@ public sealed class WidgetHost : IDisposable
     /// <summary>
     /// Compact and full Spotify view each keep their own window size: the size of the
     /// view being left is stored, the other one applied (clamped onto the screen).
+    /// The switch is a user resize: the window grows from its top-left corner, so the stored
+    /// centre is recomputed for the new size from that corner (otherwise the old centre would
+    /// reopen it shifted by half the growth). The clamp onto the screen stays a system move —
+    /// what is stored is the intended rectangle, and restoring it clamps to the same spot.
     /// </summary>
     private void ApplySpotifyViewSize(WidgetWindow w, bool full)
     {
@@ -597,17 +602,30 @@ public sealed class WidgetHost : IDisposable
         w.Width = Math.Max(w.MinWidth, width);
         w.Height = Math.Max(w.MinHeight, height);
 
+        var st = Settings.GetOrAdd(WidgetId.Spotify);
+        st.Width = w.Width;
+        st.Height = w.Height;
+
         // Keep the grown window on its screen.
         if (DisplayGeometry.BoundsOf(w) is { } b)
         {
             var screen = DisplayGeometry.ScreenOf(b);
             var area = DisplayGeometry.WorkArea(screen);
-            double margin = EdgeMarginDip * DisplayGeometry.ScaleOf(screen);
-            var (x, y) = WidgetLayout.Clamp(b.X, b.Y, b.W, b.H, area.X, area.Y, area.Right, area.Bottom, margin);
+            double s = DisplayGeometry.ScaleOf(screen);
+            // The new size from the DIPs just set — the window's own rectangle may still show the old one.
+            var intended = WidgetPlacementPlanner.IntendedAfterResize(b, w.Width, w.Height, s);
+            var (rx, ry) = WidgetLayout.ToRelative(intended, area);
+            st.RelX = rx;
+            st.RelY = ry;
+            st.X = intended.X;
+            st.Y = intended.Y;
+            st.MonitorDeviceName = screen.DeviceName;
+
+            var (x, y) = WidgetLayout.Clamp(intended.X, intended.Y, intended.W, intended.H, area.X, area.Y, area.Right, area.Bottom, EdgeMarginDip * s);
             if (Math.Abs(x - b.X) > 0.5 || Math.Abs(y - b.Y) > 0.5) DisplayGeometry.MoveTo(w, x, y);
         }
-        if (KeepApart) MakeRoomAround(w);
-        CaptureGeometry(WidgetId.Spotify, w);
+        RecordSystemPlacement(w);
+        if (KeepApart) MakeRoomAround(w);   // neighbours step aside as a consequence of the user's switch
         _host.Settings.Save();
     }
 
@@ -640,54 +658,73 @@ public sealed class WidgetHost : IDisposable
         bool legacy = st.RelX is null && WidgetLayout.HasValidGeometry(st.Width, st.Height) && (st.X != 0 || st.Y != 0);
         var screen = ScreenByDeviceName(st.MonitorDeviceName)
                      ?? (legacy ? DisplayGeometry.ScreenAt(st.X, st.Y) : defaultScreen);
-        double s = DisplayGeometry.ScaleOf(screen);
-        var area = DisplayGeometry.WorkArea(screen);
-        double pw = w.Width * s, ph = w.Height * s, margin = EdgeMarginDip * s;
-
-        double x, y;
-        if (st.RelX is double rx && st.RelY is double ry)
-            (x, y) = WidgetLayout.FromRelative(rx, ry, pw, ph, area, margin);
-        else if (legacy)
-            // Saved before v0.13: X/Y came from WPF at the old 100 % assumption, i.e. pixels.
-            (x, y) = WidgetLayout.Clamp(st.X, st.Y, pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
-        else
-            // Never placed: staggered default within the monitor's work area.
-            // Right of the (expanded) sidebar, staggered.
-            (x, y) = WidgetLayout.Clamp(area.X + (WidgetSidebarWindow.ExpandedWidth + 40 + index * 44) * s, area.Y + (40 + index * 44) * s,
-                                        pw, ph, area.X, area.Y, area.Right, area.Bottom, margin);
-        DisplayGeometry.MoveTo(w, x, y);
-        RememberSystemPlacement(w);
+        var r = _planner.Restore(st, w.Width, w.Height, index, legacy, DisplayGeometry.WorkArea(screen), DisplayGeometry.ScaleOf(screen));
+        DisplayGeometry.MoveTo(w, r.X, r.Y);
+        // No system placement is recorded here: callers do it once the window is shown and sized.
     }
 
     /// <summary>
-    /// Where the APP last put each window (restore, clamp, re-layout after a scaling
-    /// change). Saving such a spot back as the user's choice would be lossy: a window
-    /// clamped inward at 150 % would come back 100+ px off the edge at 100 %. Only a
-    /// window that has moved since — i.e. the user moved or resized it — is saved.
+    /// Persistence is opt-in. Where the APP puts a window (restore, clamp, sidebar clearance,
+    /// re-layout after a scaling change) is a system placement and is never saved: the stored
+    /// place is relative to the work area, so at another display scaling it only round-trips
+    /// while it stays the user's own — a 175 % emergency spot written back displaced the
+    /// widgets after switching back to 100 %. Only a drag, a resize or a deliberate
+    /// re-arrangement marks a window as user-changed. The rules live in the planner (pure,
+    /// unit-tested); this class only reads and moves the real windows.
     /// </summary>
-    private readonly Dictionary<WidgetId, LayoutRect> _systemPlaced = new();
+    private readonly WidgetPlacementPlanner _planner = new();
 
-    private void RememberSystemPlacement(WidgetWindow w)
+    /// <summary>Record where the app has just put the window (call after it is shown and sized).</summary>
+    private void RecordSystemPlacement(WidgetWindow w)
     {
-        if (DisplayGeometry.BoundsOf(w) is { } b) _systemPlaced[w.Id] = b;
+        if (DisplayGeometry.BoundsOf(w) is { } b) _planner.Placed(w.Id, b);
     }
 
-    private void CaptureGeometry(WidgetId id, WidgetWindow w)
+    /// <summary>
+    /// Writes the window's current place into its <see cref="WidgetState"/> — but only when the
+    /// planner says the user made it. <paramref name="reason"/> goes into the log line, so a
+    /// displaced layout can be traced to the action that saved it.
+    /// <paramref name="applied"/>: the geometry the code has JUST set on the window (physical
+    /// rectangle and DIP size). A window that was resized a moment ago does not report that yet
+    /// (ActualWidth follows with the next layout pass), so reading it back would save the old size.
+    /// </summary>
+    private void CaptureGeometry(WidgetId id, WidgetWindow w, string reason,
+                                 (LayoutRect Rect, double WidthDip, double HeightDip)? applied = null)
     {
-        if (!w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b) return;
+        if (!w.IsVisible) return;
+        LayoutRect b;
+        double width, height;
+        if (applied is { } a) { b = a.Rect; width = a.WidthDip; height = a.HeightDip; }
+        else if (DisplayGeometry.BoundsOf(w) is { } live)
+        {
+            b = live;
+            width = w.ActualWidth > 0 ? w.ActualWidth : w.Width;
+            height = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
+        }
+        else return;
         if (b.X < -10000 || b.Y < -10000) return;   // prewarm parking spot, never a user choice
-        if (_systemPlaced.TryGetValue(id, out var placed) && placed == b) return;   // untouched since we placed it
-        _systemPlaced.Remove(id);
-        var st = Settings.GetOrAdd(id);
+
         var screen = DisplayGeometry.ScreenOf(b);
-        var (rx, ry) = WidgetLayout.ToRelative(b, DisplayGeometry.WorkArea(screen));
-        st.RelX = rx;
-        st.RelY = ry;
-        st.X = b.X;
-        st.Y = b.Y;
-        st.Width = w.ActualWidth > 0 ? w.ActualWidth : w.Width;
-        st.Height = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
-        st.MonitorDeviceName = screen.DeviceName;
+        if (!_planner.Commit(Settings.GetOrAdd(id), b, width, height, DisplayGeometry.WorkArea(screen), screen.DeviceName))
+            return;   // a system placement, or nothing changed
+        Logger.Info(FormattableString.Invariant(
+            $"Widget {id}: place saved ({reason}) — {b.W:0}x{b.H:0} px at {b.X:0},{b.Y:0} on {screen.DeviceName}, scale {DisplayGeometry.ScaleOf(screen):0.##}."));
+    }
+
+    /// <summary>A title-bar drag moved the window: the user's own change, saved (after resolving overlaps).</summary>
+    private void OnWidgetDragged(WidgetWindow w)
+    {
+        _planner.UserChanged(w.Id);
+        if (KeepApart) MoveToFreeSpot(w, userMove: true);
+        else CaptureGeometry(w.Id, w, "drag");
+    }
+
+    /// <summary>A resize grip changed the size: saved, and neighbours in the way step aside (and are saved too).</summary>
+    private void OnWidgetResized(WidgetWindow w)
+    {
+        _planner.UserChanged(w.Id);
+        if (KeepApart) MakeRoomAround(w);
+        CaptureGeometry(w.Id, w, "resize");
     }
 
     // ---- Grid & snapping ("Raster" switch in the launcher) ----
@@ -695,7 +732,8 @@ public sealed class WidgetHost : IDisposable
     // All geometry here is in physical pixels of one monitor; the DIP constants are scaled
     // with that monitor's display scaling so the grid feels the same at 100 and 150 %.
 
-    private const double GridDip = 16, GapDip = 8, SnapDistanceDip = 14, EdgeMarginDip = 8;
+    private const double GridDip = 16, SnapDistanceDip = 14,
+                         GapDip = WidgetPlacementPlanner.GapDip, EdgeMarginDip = WidgetPlacementPlanner.EdgeMarginDip;
 
     private bool SnapOn => Settings.Snap;
 
@@ -713,7 +751,7 @@ public sealed class WidgetHost : IDisposable
         if (Settings.Snap == on) return;
         Settings.Snap = on;
         foreach (var w in _windows.Values) ApplySnapHooks(w);
-        if (on) ArrangeVisible(snapToGrid: true, persist: true);
+        if (on) ArrangeVisible(snapToGrid: true, persist: true, reason: "grid");
         _host.Settings.Save();
         Logger.Info($"Widget grid {(on ? "on — widgets arranged" : "off")}.");
     }
@@ -726,7 +764,7 @@ public sealed class WidgetHost : IDisposable
     {
         if (Settings.AllowOverlap == allow) return;
         Settings.AllowOverlap = allow;
-        if (!allow && SnapOn) ArrangeVisible(snapToGrid: false, persist: true);
+        if (!allow && SnapOn) ArrangeVisible(snapToGrid: false, persist: true, reason: "overlap");
         _host.Settings.Save();
         Logger.Info($"Widget overlap {(allow ? "allowed (stacking)" : "prevented")}.");
     }
@@ -744,13 +782,25 @@ public sealed class WidgetHost : IDisposable
         return list;
     }
 
-    /// <summary>The sidebar's on-screen rectangle while the board is open.</summary>
+    /// <summary>
+    /// The sidebar's on-screen rectangle while the board is open — computed from the board
+    /// monitor's work area and scaling (see <see cref="WidgetLayout.SidebarRect"/>), so it is
+    /// right even in the moment a display change has not yet reached the sidebar's own HWND.
+    /// </summary>
     private LayoutRect? SidebarRect()
-        => _sidebar is { IsVisible: true } ? DisplayGeometry.BoundsOf(_sidebar) : null;
+    {
+        if (_sidebar is not { IsVisible: true }) return null;
+        if (_boardScreen is { } screen)
+            return WidgetLayout.SidebarRect(DisplayGeometry.WorkArea(screen), DisplayGeometry.ScaleOf(screen), _sidebar.Collapsed);
+        return DisplayGeometry.BoundsOf(_sidebar);
+    }
 
     /// <summary>
-    /// Widgets left under where the sidebar now sits (layouts from before v0.15, or a
-    /// sidebar that was just expanded) move to its right edge. Saved, so it happens once.
+    /// Widgets left under where the sidebar now sits (a layout from a smaller scaling, or a
+    /// sidebar that was just expanded) move to its right edge. A system move: never saved,
+    /// the stored place stays the user's and this re-runs, idempotently, on every open. The
+    /// sidebar is 280 DIP wide, so at 175 % it reaches 518 px instead of 296 px — saving that
+    /// emergency spot is what displaced the widgets after switching back to 100 %.
     /// </summary>
     private void KeepWidgetsClearOfSidebar()
     {
@@ -758,14 +808,16 @@ public sealed class WidgetHost : IDisposable
         var screen = DisplayGeometry.ScreenOf(sb);
         double s = DisplayGeometry.ScaleOf(screen);
         var area = DisplayGeometry.WorkArea(screen);
+        var visible = new List<(WidgetId Id, LayoutRect Rect)>();
         foreach (var w in _windows.Values)
+            if (w.IsVisible && DisplayGeometry.BoundsOf(w) is { } b) visible.Add((w.Id, b));
+        foreach (var (id, moved) in _planner.ClearOfSidebar(visible, sb, area, s))
         {
-            if (!w.IsVisible || DisplayGeometry.BoundsOf(w) is not { } b || !b.Overlaps(sb)) continue;
-            var (x, y) = WidgetLayout.Clamp(sb.Right + GapDip * s, b.Y, b.W, b.H, area.X, area.Y, area.Right, area.Bottom, EdgeMarginDip * s);
-            DisplayGeometry.MoveTo(w, x, y);
-            CaptureGeometry(w.Id, w);
+            var w = _windows[id];
+            DisplayGeometry.MoveTo(w, moved.X, moved.Y);
+            RecordSystemPlacement(w);
         }
-        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: true);
+        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false, reason: "sidebar");
     }
 
     private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)
@@ -801,28 +853,41 @@ public sealed class WidgetHost : IDisposable
         double gap = GapDip * DisplayGeometry.ScaleOf(screen);
         var area = DisplayGeometry.WorkArea(screen);
         var obstacles = ObstaclesOn(area, w);
+        bool moved = false;
         if (obstacles.Exists(o => b.Overlaps(o, gap))
             && WidgetLayout.FindFreeSpot(b, obstacles, area, gap) is { } spot)   // null = screen full: leave it
+        {
             DisplayGeometry.MoveTo(w, spot.X, spot.Y);
-        if (userMove) CaptureGeometry(w.Id, w);
-        else RememberSystemPlacement(w);
+            moved = true;
+        }
+        if (userMove)
+        {
+            _planner.UserChanged(w.Id);
+            CaptureGeometry(w.Id, w, moved ? "free-spot" : "drag");
+        }
+        else RecordSystemPlacement(w);
     }
 
-    /// <summary>A widget grew (resize grip, Spotify view switch): neighbours in the way step aside.</summary>
+    /// <summary>
+    /// A widget grew (resize grip, Spotify view switch): neighbours in the way step aside. They
+    /// move as a direct consequence of the user's action at the current scaling, so — unlike a
+    /// system move — their new places are saved.
+    /// </summary>
     private void MakeRoomAround(WidgetWindow grown)
     {
         if (DisplayGeometry.BoundsOf(grown) is not { } b) return;
         var fixedObstacles = new List<LayoutRect> { b };
         if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
-        RearrangeOn(DisplayGeometry.ScreenOf(b), except: grown, snapToGrid: false, fixedObstacles, persist: true);
+        RearrangeOn(DisplayGeometry.ScreenOf(b), except: grown, snapToGrid: false, fixedObstacles, persist: true, reason: "make-room");
     }
 
     /// <summary>
     /// Tidies every visible widget, per monitor. <paramref name="persist"/>: the user asked
-    /// for it (switch turned on) — false after a display change, where the tidy layout is
-    /// only a consequence of the new scaling and must not replace the user's places.
+    /// for it (switch turned on) — false after a display change or for the sidebar clearance,
+    /// where the tidy layout is only a consequence of the new scaling and must not replace the
+    /// user's places. <paramref name="reason"/> names the action in the log when it is saved.
     /// </summary>
-    private void ArrangeVisible(bool snapToGrid, bool persist)
+    private void ArrangeVisible(bool snapToGrid, bool persist, string reason)
     {
         var screens = new Dictionary<string, WinForms.Screen>();
         foreach (var w in _windows.Values)
@@ -835,12 +900,12 @@ public sealed class WidgetHost : IDisposable
         {
             var fixedObstacles = new List<LayoutRect>();
             if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
-            RearrangeOn(screen, except: null, snapToGrid, fixedObstacles, persist);
+            RearrangeOn(screen, except: null, snapToGrid, fixedObstacles, persist, reason);
         }
     }
 
     private void RearrangeOn(WinForms.Screen screen, WidgetWindow? except, bool snapToGrid,
-                             List<LayoutRect> fixedObstacles, bool persist)
+                             List<LayoutRect> fixedObstacles, bool persist, string reason)
     {
         double s = DisplayGeometry.ScaleOf(screen);
         var area = DisplayGeometry.WorkArea(screen);
@@ -862,15 +927,29 @@ public sealed class WidgetHost : IDisposable
         {
             var w = windows[i];
             var r = arranged[i];
-            if (Math.Abs(r.W - rects[i].W) > 0.5 || Math.Abs(r.H - rects[i].H) > 0.5)
+            // The size the window will have, in DIPs: from what is set below, not read back
+            // afterwards (ActualWidth only follows with the next layout pass).
+            double dipW = w.ActualWidth > 0 ? w.ActualWidth : w.Width, dipH = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
+            bool sized = Math.Abs(r.W - rects[i].W) > 0.5 || Math.Abs(r.H - rects[i].H) > 0.5;
+            if (sized)
             {
-                w.Width = Math.Max(w.MinWidth, r.W / s);
-                w.Height = Math.Max(w.MinHeight, r.H / s);
+                dipW = Math.Max(w.MinWidth, r.W / s);
+                dipH = Math.Max(w.MinHeight, r.H / s);
+                w.Width = dipW;
+                w.Height = dipH;
             }
-            if (Math.Abs(r.X - rects[i].X) > 0.5 || Math.Abs(r.Y - rects[i].Y) > 0.5)
-                DisplayGeometry.MoveTo(w, r.X, r.Y);
-            if (persist) CaptureGeometry(w.Id, w);
-            else RememberSystemPlacement(w);
+            bool moved = Math.Abs(r.X - rects[i].X) > 0.5 || Math.Abs(r.Y - rects[i].Y) > 0.5;
+            if (moved) DisplayGeometry.MoveTo(w, r.X, r.Y);
+            if (!persist) RecordSystemPlacement(w);
+            else if (moved || sized)
+            {
+                // Only a window the arrangement actually changed is the user's new place; one it
+                // left alone keeps what is stored (it may sit at a system spot of this scaling).
+                // The arranged geometry is passed explicitly: the window cannot be asked yet.
+                _planner.UserChanged(w.Id);
+                var applied = new LayoutRect(Math.Round(r.X), Math.Round(r.Y), dipW * s, dipH * s);
+                CaptureGeometry(w.Id, w, reason, (applied, dipW, dipH));
+            }
         }
     }
 
@@ -925,6 +1004,7 @@ public sealed class WidgetHost : IDisposable
                 w.Width = st.Width > 0 ? st.Width : w.Width;
                 w.Height = st.Height > 0 ? st.Height : w.Height;
                 PositionWindow(w, st, _boardScreen ?? PrimaryScreen(), index);
+                RecordSystemPlacement(w);   // the app's re-layout, not a user choice
             }
             index++;
         }
@@ -934,7 +1014,7 @@ public sealed class WidgetHost : IDisposable
             _backdrop?.Cover(screen);
             _sidebar?.Reposition(screen);
         }
-        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false);
+        if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false, reason: "display-change");
         ApplyCrosshair();
         ApplyPerfOverlay();
     }

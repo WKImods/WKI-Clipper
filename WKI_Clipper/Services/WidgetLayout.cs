@@ -78,6 +78,40 @@ public static class WidgetLayout
         return Clamp(x, y, width, height, area.X, area.Y, area.Right, area.Bottom, margin);
     }
 
+    // ---- Sidebar clearance --------------------------------------------------------
+    //
+    // The sidebar is sized in DIPs, so its pixel width follows the display scaling (296 px
+    // right edge at 100 %, 518 px at 175 %). A widget that fit beside it at one scaling can
+    // end up underneath at another; the app then moves it aside — a system placement, never
+    // the user's saved place.
+
+    /// <summary>
+    /// The sidebar's rectangle in physical pixels: top-left of <paramref name="area"/> plus the
+    /// edge margin, full height, expanded or collapsed to the icon rail. Mirrors
+    /// WidgetSidebarWindow.Reposition (the width/margin constants are shared; they are plain
+    /// consts, so this stays free of any WPF type at run time).
+    /// </summary>
+    public static LayoutRect SidebarRect(LayoutRect area, double scale, bool collapsed)
+    {
+        if (scale <= 0) scale = 1;
+        double margin = Views.WidgetSidebarWindow.EdgeMarginDip;
+        double width = collapsed ? Views.WidgetSidebarWindow.CollapsedWidth : Views.WidgetSidebarWindow.ExpandedWidth;
+        double heightDip = Math.Max(240, area.H / scale - 2 * margin);
+        return new LayoutRect(area.X + margin * scale, area.Y + margin * scale, width * scale, heightDip * scale);
+    }
+
+    /// <summary>
+    /// Top-left for <paramref name="rect"/> after moving it to the right of
+    /// <paramref name="obstacle"/> (one <paramref name="gap"/> beyond its edge), clamped onto the
+    /// area. A rectangle that does not overlap the obstacle keeps its position.
+    /// </summary>
+    public static (double X, double Y) ClearOf(LayoutRect rect, LayoutRect obstacle, LayoutRect area,
+                                               double gap, double margin)
+    {
+        if (!rect.Overlaps(obstacle)) return (rect.X, rect.Y);
+        return Clamp(obstacle.Right + gap, rect.Y, rect.W, rect.H, area.X, area.Y, area.Right, area.Bottom, margin);
+    }
+
     // ---- Grid & snapping ----------------------------------------------------------
     //
     // The grid has gutters: window STARTS sit on o + k·grid, window ENDS on o + k·grid − gap
