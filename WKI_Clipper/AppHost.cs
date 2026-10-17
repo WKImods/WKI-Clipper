@@ -19,6 +19,8 @@ public sealed class AppHost : IDisposable
     public ScreenshotService Screenshots { get; }
     public AudioDeviceService AudioDevices { get; }
     public FFmpegService FFmpeg { get; }
+    /// <summary>Finite encodes (Discord compress, clip editor): one at a time, cancellable. Not the F9 path.</summary>
+    public FFmpegJobRunner Jobs { get; }
     public PerformanceMonitorService Performance { get; }
     public GalleryMetaService GalleryMeta { get; }
     public ObsWebSocketService Obs { get; }
@@ -57,6 +59,7 @@ public sealed class AppHost : IDisposable
         Settings.SettingsChanged += (_, s) => L.Init(s);
 
         FFmpeg = new FFmpegService();
+        Jobs = new FFmpegJobRunner(FFmpeg);
         Hotkeys = new HotkeyService(Settings);
         ManualRecording = new ManualRecordingService(Settings);
         ReplayBuffer = new ReplayBufferService(Settings);
@@ -171,6 +174,8 @@ public sealed class AppHost : IDisposable
         Hotkeys.Initialize();
         // Codec detection runs async; not blocking startup.
         _ = DetectCodecsAsync();
+        // A crash mid-encode leaves "*.mp4.part" behind; sweep those off the UI thread.
+        _ = Task.Run(() => Jobs.CleanupStaleParts());
         StartGameWatcherIfNeeded();
 
         // Event-based foreground tracking for the Auto mode (re-pins the buffer
@@ -316,6 +321,8 @@ public sealed class AppHost : IDisposable
 
     public void Dispose()
     {
+        // Last chance for notes that could not be saved earlier (locked file).
+        try { GalleryMeta.Flush(); } catch (Exception ex) { Logger.Warn("GalleryMeta flush on exit failed: " + ex.Message); }
         Foreground?.Dispose();
         GameWatcher?.Dispose();
         Performance.Dispose();
@@ -327,6 +334,7 @@ public sealed class AppHost : IDisposable
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();
+        Jobs.Dispose();
         FFmpeg.Dispose();
     }
 }

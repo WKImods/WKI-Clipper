@@ -23,6 +23,13 @@
             <TextBox x:Name="SearchBox" TextChanged="OnSearchChanged" />
         </DockPanel>
 
+        <!-- Shown while notes/stars cannot be read or saved (file locked, disk problem) -->
+        <Border x:Name="MetaWarning" DockPanel.Dock="Top" Visibility="Collapsed"
+                Background="#26E5484D" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1"
+                CornerRadius="10" Padding="12,8" Margin="0,0,0,10">
+            <TextBlock x:Name="MetaWarningText" TextWrapping="Wrap" />
+        </Border>
+
         <TextBlock x:Name="EmptyHint"
                    DockPanel.Dock="Top"
                    Visibility="Collapsed"

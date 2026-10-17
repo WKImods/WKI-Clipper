@@ -21,6 +21,9 @@ internal static class IconGlyph
                         Volume = "", Refresh = "", Grid = "",
                         Stack = "";   // two overlapping pages ("Copy")
 
+    /// <summary>Pencil (edit) and the horizontal ellipsis ("more actions").</summary>
+    public const string Edit = "", More = "";
+
     public static TextBlock Make(string glyph, double size = 14) => new()
     {
         Text = glyph,

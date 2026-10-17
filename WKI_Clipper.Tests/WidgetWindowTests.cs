@@ -15,6 +15,7 @@ namespace WKI_Clipper.Tests;
 /// Real widget windows (STA thread, app theme loaded). Covers what only the Win32 window
 /// itself can tell: which system behaviours Windows applies to it.
 /// </summary>
+[Collection("WpfApplication")]   // only one System.Windows.Application per process: never run alongside the other WPF tests
 public class WidgetWindowTests
 {
     private const int GWL_STYLE = -16;
