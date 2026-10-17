@@ -140,6 +140,7 @@ public sealed class ReplayBufferService : IDisposable
         if (clearHistory)
         {
             ClearBufferDir(_bufferDir);
+            CleanStaleClipParts();
             _generation = 0;
             _sessionStartUtc = DateTime.UtcNow;
             _genIdentity.Clear();
@@ -160,10 +161,11 @@ public sealed class ReplayBufferService : IDisposable
         CurrentPlan = plan;
 
         _segmentPattern = Path.Combine(_bufferDir, $"seg_{_generation}_%02d.mp4");
-        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-        int durSec = Math.Max(segSec, _settings.Current.ReplayBuffer.DurationSeconds);
-        // Wrap = how many segments this run holds. ceil(dur/seg) + 1 for tail tolerance.
-        int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
+        var ring = CurrentRingPlan();
+        int segSec = ring.SegmentSeconds;
+        // Wrap = how many segments this run holds: what a save picks, +1 for tail tolerance,
+        // + RingPlan.Reserve so the oldest picked segment is not the next one overwritten.
+        int wrap = ring.Wrap;
         Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
@@ -493,7 +495,7 @@ public sealed class ReplayBufferService : IDisposable
 
     /// <summary>
     /// Save the most recent N seconds into a single MP4. Concat demuxer + stream
-    /// copy — no re-encoding, instant. Reentrancy-guarded and timeout-bounded.
+    /// copy — no re-encoding, instant. Reentrancy-guarded and stall-bounded (see <see cref="ConcatWatch"/>).
     /// </summary>
     public async Task<string?> SaveLastAsync()
     {
@@ -513,9 +515,9 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
-            int targetSec = _settings.Current.ReplayBuffer.DurationSeconds;
-            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-            int neededSegments = (int)Math.Ceiling((double)targetSec / segSec);
+            var ring = CurrentRingPlan();
+            int segSec = ring.SegmentSeconds;
+            int neededSegments = ring.PickCount;
 
             var pick = CollectRecentSegments(neededSegments, out var material);
             if (material == BufferMaterial.Stalled)
@@ -534,6 +536,8 @@ public sealed class ReplayBufferService : IDisposable
 
             var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
+            // Written as .part and renamed on success, so the gallery never lists a half-written clip.
+            var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
             var listPath = Path.Combine(_bufferDir, "_concat_list.txt");
             await File.WriteAllLinesAsync(
@@ -541,29 +545,24 @@ public sealed class ReplayBufferService : IDisposable
                 pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")
             ).ConfigureAwait(false);
 
-            var args = FFmpegCommandBuilder.BuildConcat(listPath, outputPath);
+            var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath);
 
-            _concatFfmpeg?.Dispose();
-            _concatFfmpeg = new FFmpegService();
-            var tcs = new TaskCompletionSource<int>();
-            _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
-            _concatFfmpeg.Start(args);
-
-            // Bound the wait so a hung concat can't block every future save.
-            var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+            // Waits for the concat as long as its output keeps growing, so a hung process
+            // can't block every future save but a slow disk doesn't kill a good clip.
+            var run = await RunWatchedFfmpegAsync(args, partPath, pick.Count * segSec).ConfigureAwait(false);
             try { File.Delete(listPath); } catch { }
 
-            if (completed != tcs.Task)
+            if (run.AbortedBy is { } why)
             {
-                try { _concatFfmpeg?.Dispose(); } catch { }
-                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                ClipOutputFiles.Discard(partPath);
+                Logger.Warn($"SaveLast: concat aborted ({why}) after {pick.Count} segments — output discarded.");
                 BufferError?.Invoke(this, L.T("Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.",
                                               "Clip creation took too long and was aborted."));
                 return null;
             }
 
-            int exitCode = await tcs.Task.ConfigureAwait(false);
-            if (exitCode == 0 && File.Exists(outputPath))
+            int exitCode = run.ExitCode;
+            if (ClipOutputFiles.Finish(partPath, outputPath, exitCode))
             {
                 // F9 used to leave no trace at all, which turned one bad clip into file
                 // forensics. One line is enough to answer "what did it actually grab".
@@ -576,7 +575,6 @@ public sealed class ReplayBufferService : IDisposable
             }
             else
             {
-                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
                 BufferError?.Invoke(this, L.T($"Clip-Erstellung fehlgeschlagen (concat code {exitCode}).",
                                               $"Clip creation failed (concat code {exitCode})."));
                 return null;
@@ -721,8 +719,11 @@ public sealed class ReplayBufferService : IDisposable
 
             var g = _settings.Current.Gif;
             int gifSec = Math.Clamp(g.DurationSeconds, 1, 30);
-            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-            int neededSegments = (int)Math.Ceiling((double)gifSec / segSec) + 1; // +1 so the trim has enough material
+            var ring = CurrentRingPlan();
+            int segSec = ring.SegmentSeconds;
+            // +1 so the trim has enough material; never more than the ring hands out, or the
+            // oldest segment would sit inside the overwrite reserve.
+            int neededSegments = ring.ClampPick((int)Math.Ceiling((double)gifSec / segSec) + 1);
 
             var pick = CollectRecentSegments(neededSegments, out var gifMaterial);
             if (gifMaterial == BufferMaterial.Stalled)
@@ -739,24 +740,32 @@ public sealed class ReplayBufferService : IDisposable
 
             var clipsDir = OutputDirectory();
             var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
+            var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
             // 1) concat the covering segments into a temp mp4 (stream copy, instant).
             tempMp4 = Path.Combine(_bufferDir, "_gif_src.mp4");
             listPath = Path.Combine(_bufferDir, "_gif_list.txt");
             await File.WriteAllLinesAsync(listPath,
                 pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")).ConfigureAwait(false);
-            if (!await RunConcatFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4), 30).ConfigureAwait(false)
-                || !File.Exists(tempMp4))
+            var concat = await RunWatchedFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4),
+                tempMp4, pick.Count * segSec).ConfigureAwait(false);
+            if (!concat.Succeeded || !File.Exists(tempMp4))
             {
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen (Concat).", "GIF creation failed (concat)."));
                 return null;
             }
 
-            // 2) last gifSec seconds of the temp mp4 → gif.
-            if (!await RunConcatFfmpegAsync(FFmpegCommandBuilder.BuildGif(tempMp4, outputPath, gifSec, g.Framerate, g.Width), 60).ConfigureAwait(false)
-                || !File.Exists(outputPath))
+            // 2) last gifSec seconds of the temp mp4 → gif. palettegen needs every frame before
+            // it emits the first byte, so the output is silent for the whole analysis pass: the
+            // 20 s stall rule would kill a healthy encode, only the absolute cap applies here.
+            var encode = await RunWatchedFfmpegAsync(
+                FFmpegCommandBuilder.BuildGif(tempMp4, partPath, gifSec, g.Framerate, g.Width),
+                partPath, gifSec, stallLimit: ConcatWatch.SafetyCap(gifSec)).ConfigureAwait(false);
+            if (!encode.Succeeded || !ClipOutputFiles.Finish(partPath, outputPath, encode.ExitCode))
             {
-                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                ClipOutputFiles.Discard(partPath);
+                if (encode.AbortedBy is { } why)
+                    Logger.Warn($"SaveGif: encode aborted ({why}) — output discarded.");
                 BufferError?.Invoke(this, L.T("GIF-Erstellung fehlgeschlagen.", "GIF creation failed."));
                 return null;
             }
@@ -772,18 +781,62 @@ public sealed class ReplayBufferService : IDisposable
         }
     }
 
-    /// <summary>Runs a one-shot ffmpeg (concat/gif) on the shared concat slot, timeout-bounded. True on exit 0.</summary>
-    private async Task<bool> RunConcatFfmpegAsync(string args, int timeoutSec)
+    /// <summary>Outcome of <see cref="RunWatchedFfmpegAsync"/>. AbortedBy is set when we killed ffmpeg.</summary>
+    private readonly record struct WatchedRun(int ExitCode, ConcatVerdict? AbortedBy)
+    {
+        public bool Succeeded => AbortedBy is null && ExitCode == 0;
+    }
+
+    /// <summary>
+    /// Runs a one-shot ffmpeg (concat/gif) on the shared concat slot and waits for it while
+    /// <paramref name="outputPath"/> keeps growing (<see cref="ConcatWatch"/>). A hung process
+    /// is killed; a slow but working one is left alone. Never throws for a missing ffmpeg.
+    /// </summary>
+    private async Task<WatchedRun> RunWatchedFfmpegAsync(string args, string outputPath, int clipSeconds,
+        TimeSpan? stallLimit = null)
     {
         _concatFfmpeg?.Dispose();
         _concatFfmpeg = new FFmpegService();
-        if (!_concatFfmpeg.IsAvailable()) return false;
-        var tcs = new TaskCompletionSource<int>();
+        if (!_concatFfmpeg.IsAvailable()) return new WatchedRun(-1, null);
+        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
         _concatFfmpeg.Start(args);
-        var done = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(timeoutSec))).ConfigureAwait(false);
-        if (done != tcs.Task) { try { _concatFfmpeg?.Dispose(); } catch { } return false; }
-        return await tcs.Task.ConfigureAwait(false) == 0;
+
+        var watch = new ConcatWatch(DateTime.UtcNow, clipSeconds, stallLimit);
+        while (true)
+        {
+            var done = await Task.WhenAny(tcs.Task, Task.Delay(ConcatWatch.PollInterval)).ConfigureAwait(false);
+            if (done == tcs.Task)
+                return new WatchedRun(await tcs.Task.ConfigureAwait(false), null);
+
+            var verdict = watch.Observe(DateTime.UtcNow, OutputLength(outputPath));
+            if (verdict != ConcatVerdict.Progressing)
+            {
+                try { _concatFfmpeg?.Dispose(); } catch { }
+                return new WatchedRun(-1, verdict);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Current size of a file another process is still writing. Asks the open handle rather than
+    /// the directory entry, which NTFS updates lazily for a file that is being written - a stale
+    /// size would read as "stopped growing" and abort a healthy concat.
+    /// </summary>
+    private static long OutputLength(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return fs.Length;
+        }
+        catch (FileNotFoundException) { return 0; }
+        catch (DirectoryNotFoundException) { return 0; }
+        catch
+        {
+            try { return new FileInfo(path).Length; } catch { return 0; }
+        }
     }
 
     private void StartWatchdog()
@@ -812,15 +865,31 @@ public sealed class ReplayBufferService : IDisposable
                     }
 
                     PruneOldSegments();
-                    long total = 0;
+                    long total = 0, largest = 0;
+                    int count = 0;
                     foreach (var f in Directory.EnumerateFiles(_bufferDir, "seg_*.mp4"))
                     {
-                        try { total += new FileInfo(f).Length; } catch { }
+                        try
+                        {
+                            long len = new FileInfo(f).Length;
+                            total += len;
+                            largest = Math.Max(largest, len);
+                            count++;
+                        }
+                        catch { }
                     }
-                    // Over 2 GiB even after pruning means something is wrong — restart.
-                    if (total > 2L * 1024 * 1024 * 1024)
+                    // The limit follows the same keep rule as prune: a fixed byte cap restarted a
+                    // perfectly healthy ring every 30 s once it held two rings of high-bitrate
+                    // footage. Only prune failing to keep up can exceed this.
+                    var keep = CurrentRingPlan().Keep;
+                    if (BufferHealth.IsRunaway(total, keep, largest))
                     {
-                        BufferError?.Invoke(this, "buffer exceeded 2 GiB — restarting");
+                        long limit = BufferHealth.RunawayLimitBytes(keep, largest);
+                        Logger.Warn($"Replay buffer holds {total / (1024 * 1024)} MiB in {count} segments, over the ring limit of " +
+                                    $"{limit / (1024 * 1024)} MiB (keep={keep}, largest segment {largest / (1024 * 1024)} MiB) — prune is not keeping up, restarting.");
+                        BufferError?.Invoke(this, L.T(
+                            $"Buffer-Ordner ist auf {total / (1024 * 1024)} MiB angewachsen (Limit {limit / (1024 * 1024)} MiB) — wird neu gestartet.",
+                            $"Buffer folder grew to {total / (1024 * 1024)} MiB (limit {limit / (1024 * 1024)} MiB) — restarting."));
                         await RestartIfRunningAsync().ConfigureAwait(false);
                         return;
                     }
@@ -841,11 +910,8 @@ public sealed class ReplayBufferService : IDisposable
         if (string.IsNullOrEmpty(_bufferDir)) return;
         try
         {
-            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-            int durSec = Math.Max(segSec, _settings.Current.ReplayBuffer.DurationSeconds);
-            int wrap = (int)Math.Ceiling((double)durSec / segSec) + 1;
             // Keep the window we might save plus a full extra generation of slack.
-            int keep = (int)Math.Ceiling((double)durSec / segSec) + wrap + 2;
+            int keep = CurrentRingPlan().Keep;
 
             var files = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
                 .Select(p => new FileInfo(p))
@@ -872,6 +938,30 @@ public sealed class ReplayBufferService : IDisposable
                && int.TryParse(parts[1], out int gen)
                && _genIdentity.TryGetValue(gen, out var genId)
                && genId == id;
+    }
+
+    private RingPlan CurrentRingPlan()
+    {
+        var rb = _settings.Current.ReplayBuffer;
+        return RingPlan.Create(rb.DurationSeconds, rb.SegmentDurationSeconds);
+    }
+
+    /// <summary>
+    /// A save interrupted by a crash or kill leaves "Clip_*.mp4.part" / "Gif_*.gif.part" behind.
+    /// Sweeps those once per cold start; off the lifecycle lock because the clips folder can be big.
+    /// </summary>
+    private void CleanStaleClipParts()
+    {
+        var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                int n = ClipOutputFiles.DeleteStaleParts(clipsDir, DateTime.UtcNow);
+                if (n > 0) Logger.Info($"ReplayBuffer: removed {n} stale partial clip file(s) from '{clipsDir}'");
+            }
+            catch (Exception ex) { Logger.Warn("Stale partial clip cleanup failed: " + ex.Message); }
+        });
     }
 
     private static void ClearBufferDir(string dir)
