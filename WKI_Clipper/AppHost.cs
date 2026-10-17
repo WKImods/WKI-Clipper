@@ -22,6 +22,12 @@ public sealed class AppHost : IDisposable
     /// <summary>Finite encodes (Discord compress, clip editor): one at a time, cancellable. Not the F9 path.</summary>
     public FFmpegJobRunner Jobs { get; }
     public PerformanceMonitorService Performance { get; }
+    /// <summary>
+    /// FPS / frame times / 1 % lows of a game via a passive ETW session (the PresentMon mechanism, no
+    /// injection). Created on first access; the session itself runs only while someone subscribes.
+    /// </summary>
+    public FrameTimeMonitor FrameTimes => LazyInitializer.EnsureInitialized(ref _frameTimes);
+    private FrameTimeMonitor? _frameTimes;
     public GalleryMetaService GalleryMeta { get; }
     public ObsWebSocketService Obs { get; }
     public TwitchChatService Chat { get; }
@@ -179,6 +185,8 @@ public sealed class AppHost : IDisposable
         _ = DetectCodecsAsync();
         // A crash mid-encode leaves "*.mp4.part" behind; sweep those off the UI thread.
         _ = Task.Run(() => Jobs.CleanupStaleParts());
+        // A crashed clipper leaves its FPS session running (providers stay enabled until reboot).
+        _ = Task.Run(FrameTimeMonitor.StopOrphanedSession);
         StartGameWatcherIfNeeded();
 
         // Event-based foreground tracking for the Auto mode (re-pins the buffer
@@ -329,6 +337,7 @@ public sealed class AppHost : IDisposable
         Foreground?.Dispose();
         GameWatcher?.Dispose();
         Performance.Dispose();
+        _frameTimes?.Dispose();
         Crosshairs.Dispose();
         Obs.Dispose();
         Chat.Dispose();
