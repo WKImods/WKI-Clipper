@@ -29,6 +29,8 @@ public sealed class AppHost : IDisposable
     public CrosshairLibraryService Crosshairs { get; }
     /// <summary>Short feedback sounds (clip saved, screenshot, recording, error).</summary>
     public SoundCueService Sounds { get; }
+    /// <summary>"Discord 20 MB" / "Discord 500 MB": re-encodes a gallery clip to fit an upload limit.</summary>
+    public DiscordCompressService Discord { get; }
     /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
     public SpotifyMediaService Spotify { get; } = new();
 
@@ -90,6 +92,15 @@ public sealed class AppHost : IDisposable
         Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
         Sounds = new SoundCueService(Settings);
+        Discord = new DiscordCompressService(Jobs, () => Settings.Current, GalleryMeta)
+        {
+            // Detection runs after startup; until it is done this is empty and the compress uses libx264.
+            AvailableEncoders = () => AvailableCodecs.Select(c => c.FFmpegName),
+            // Lazy on purpose: the foreground tracker is created later in startup.
+            GameInForeground = () => GameForegroundDetector.IsGameInForeground(
+                () => Foreground?.LastExternalForegroundPid,
+                Settings.Current.Capture.Mode == CaptureMode.Window ? Settings.Current.Capture.TargetProcessName : null)
+        };
 
         WireCaptureExclusivity();
         WireGameFolders();
@@ -338,6 +349,7 @@ public sealed class AppHost : IDisposable
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();
+        Discord.Dispose();
         Jobs.Dispose();
         FFmpeg.Dispose();
     }

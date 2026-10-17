@@ -59,6 +59,8 @@ public partial class AboutView : UserControl
         langStack.Children.Add(langNote);
         InfoContainer.Children.Add(SectionCard(L.T("Sprache / Language", "Language / Sprache"), langStack));
 
+        InfoContainer.Children.Add(BuildDiscordCard(host));
+
         // App info
         InfoContainer.Children.Add(Card(
             "App",
@@ -212,6 +214,77 @@ public partial class AboutView : UserControl
         InfoContainer.Children.Add(SectionCard(L.T("Einstellungen & Aktionen", "Settings & actions"), actionsStack));
     }
 
+    /// <summary>
+    /// The two size targets behind the gallery's "Discord ..." entries, and whether a running game holds
+    /// a compress back.
+    /// </summary>
+    private FrameworkElement BuildDiscordCard(AppHost host)
+    {
+        var discord = host.Settings.Current.Discord;
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10),
+            Text = L.T("Im „…“-Menü jedes Clips: auf diese Größe komprimieren, in „Komprimiert <Größe>“ ablegen und in die Zwischenablage legen (Strg+V in Discord). "
+                       + "Discord: kostenlos 20 MB, Nitro Basic 50 MB, Nitro bis 1 GB (Stand 10/2026).",
+                       "In the “…” menu of every clip: compress to this size, store it in “Komprimiert <size>” and copy it to the clipboard (Ctrl+V in Discord). "
+                       + "Discord: free 20 MB, Nitro Basic 50 MB, Nitro up to 1 GB (as of 10/2026).")
+        });
+
+        stack.Children.Add(TargetRow(L.T("Kleines Ziel", "Small target"), discord.SmallTargetBytes, bytes =>
+        {
+            discord.SmallTargetBytes = bytes;
+            host.Settings.Save();
+        }));
+        stack.Children.Add(TargetRow(L.T("Großes Ziel", "Large target"), discord.LargeTargetBytes, bytes =>
+        {
+            discord.LargeTargetBytes = bytes;
+            host.Settings.Save();
+        }));
+
+        var onlyNoGame = new System.Windows.Controls.CheckBox
+        {
+            Content = L.T("Nur komprimieren, wenn kein Spiel im Vordergrund läuft", "Only compress while no game is in the foreground"),
+            IsChecked = discord.OnlyWhenNoGame,
+            Foreground = (Brush)FindResource("TextBrush"),
+            ToolTip = L.T("Der Auftrag wartet in der Warteschlange, bis das Spiel beendet oder verlassen wurde (kostet sonst FPS).",
+                          "The job waits until you leave the game (compressing costs FPS)."),
+            Margin = new Thickness(0, 2, 0, 0)
+        };
+        onlyNoGame.Checked += (_, _) => { discord.OnlyWhenNoGame = true; host.Settings.Save(); };
+        onlyNoGame.Unchecked += (_, _) => { discord.OnlyWhenNoGame = false; host.Settings.Save(); };
+        stack.Children.Add(onlyNoGame);
+
+        return SectionCard("Discord", stack);
+    }
+
+    /// <summary>A labelled drop-down of the preset sizes; a value outside the presets (hand-edited file) is listed too.</summary>
+    private FrameworkElement TargetRow(string label, long current, Action<long> onChanged)
+    {
+        var sizes = DiscordCompressRules.TargetPresets.ToList();
+        long effective = DiscordCompressRules.EffectiveTarget(current, sizes[1]);
+        if (!sizes.Contains(effective)) { sizes.Add(effective); sizes.Sort(); }
+
+        var box = new System.Windows.Controls.ComboBox { MinWidth = 160, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+        foreach (var bytes in sizes) box.Items.Add(new ComboBoxItem { Content = DiscordCompressRules.TargetLabel(bytes), Tag = bytes });
+        box.SelectedIndex = sizes.IndexOf(effective);
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedItem is ComboBoxItem { Tag: long bytes }) onChanged(bytes);
+        };
+
+        var row = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = (Brush)FindResource("TextBrush"),
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        row.Children.Add(box);
+        return row;
+    }
     private void UpdateFFmpegStatus(AppHost host)
     {
         if (_ffmpegStatus is null) return;

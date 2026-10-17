@@ -131,6 +131,12 @@ public sealed class FFmpegJobRunner : IDisposable
         if (!File.Exists(_ffmpegPath))
             return Failed(-1, L.T($"ffmpeg.exe nicht gefunden ({_ffmpegPath}).", $"ffmpeg.exe not found ({_ffmpegPath})."), "");
 
+        if (job.DiscardOutput)
+        {
+            // Nothing is written, so there is no folder to make, no space to reserve and no ".part" to track.
+            return await ExecuteAsync(job, progress, ct).ConfigureAwait(false);
+        }
+
         var part = job.PartPath;
         var dir = Path.GetDirectoryName(Path.GetFullPath(job.FinalPath)) ?? "";
         try { Directory.CreateDirectory(dir); }
@@ -161,7 +167,8 @@ public sealed class FFmpegJobRunner : IDisposable
 
     private async Task<FFmpegJobResult> ExecuteAsync(FFmpegJob job, IProgress<FFmpegProgress>? progress, CancellationToken ct)
     {
-        var part = job.PartPath;
+        // A discarding job has no part file: every delete below is then a no-op.
+        var part = job.DiscardOutput ? null : job.PartPath;
         var tail = new TailBuffer(StderrTailLines);
 
         var psi = new ProcessStartInfo
@@ -292,6 +299,12 @@ public sealed class FFmpegJobRunner : IDisposable
                 DeleteQuietly(part);
                 return Failed(exitCode, L.T("ffmpeg hat seine Ausgabe nicht sauber beendet.",
                                             "ffmpeg did not finish its output cleanly."), stderr);
+            }
+            if (part is null)
+            {
+                progress?.Report(new FFmpegProgress(1.0, job.ExpectedDuration));
+                Logger.Info("FFmpeg job done (no output file): " + job.FinalPath);
+                return new FFmpegJobResult(FFmpegJobStatus.Succeeded, null, 0, "", stderr);
             }
             if (!File.Exists(part) || new FileInfo(part).Length == 0)
             {
@@ -612,14 +625,15 @@ public sealed class FFmpegJobRunner : IDisposable
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
     }
 
-    private static void DeleteQuietly(string path)
+    private static void DeleteQuietly(string? path)
     {
+        if (path is null) return;
         try { if (File.Exists(path)) File.Delete(path); }
         catch (Exception ex) { Logger.Warn($"Could not delete '{path}': {ex.Message}"); }
     }
 
     /// <summary>Free bytes on the drive of <paramref name="dir"/>; null for network paths (check skipped).</summary>
-    private static long? DefaultFreeSpace(string dir)
+    internal static long? DefaultFreeSpace(string dir)
     {
         try
         {

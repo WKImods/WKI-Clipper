@@ -109,6 +109,7 @@ public sealed class SettingsService
     {
         s.Sounds ??= new SoundSettings();
         s.Sounds.CustomFiles ??= new();
+        s.Discord ??= new DiscordCompressSettings();
     }
 
     /// <summary>Parsed settings, or null when the file is missing, empty or not valid settings JSON.</summary>

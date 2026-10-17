@@ -35,6 +35,19 @@ public static class GameFolderNaming
         "Betriebssystem Microsoft Windows",
     };
 
+    // "Komprimiert 20MB", "Komprimiert 1GB", "Komprimiert 8.5MB": exactly what the Discord compress creates.
+    private static readonly Regex CompressedFolderRx = new(
+        @"^Komprimiert [0-9]+(\.[0-9]+)?(MB|GB)\z",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// A "Komprimiert 20MB" folder directly under the clips base holds compressed copies for Discord, not
+    /// footage of a game called "Komprimiert 20MB": the gallery shows its files under their own kind
+    /// instead of the game filter.
+    /// </summary>
+    public static bool IsCompressedFolder(string? folderName)
+        => folderName is not null && CompressedFolderRx.IsMatch(folderName);
+
     /// <summary>
     /// True for executables shipped with Windows itself (anything under the Windows
     /// directory). Language-independent, unlike product names, which Windows localizes
