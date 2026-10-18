@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using WKI_Clipper.Models;
+using WKI_Clipper.Native;
 
 namespace WKI_Clipper.Services;
 
@@ -25,6 +29,7 @@ namespace WKI_Clipper.Services;
 public sealed class ReplayBufferService : IDisposable
 {
     private readonly SettingsService _settings;
+    private readonly BufferFolderRecord _record;
     private FFmpegService? _ffmpeg;
     private FFmpegService? _concatFfmpeg;
     private AudioTrackSet? _audio;
@@ -33,8 +38,11 @@ public sealed class ReplayBufferService : IDisposable
     private CancellationTokenSource? _watchdogCts;
     private string _bufferDir = "";
     private string _segmentPattern = "";
+    // The buffer folder of the previous StartCore in this process (the registry record covers earlier runs).
+    private string _lastBufferDir = "";
     // StartCore runs on every warm restart; the unsafe-folder warning is logged once.
     private bool _bufferFolderWarned;
+    private bool _unknownDriveLogged;
 
     // Serializes every lifecycle transition (Start/Stop/Restart).
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -45,28 +53,48 @@ public sealed class ReplayBufferService : IDisposable
     // this session, so stragglers from a previous run (e.g. locked files a cold
     // ClearBufferDir couldn't delete) can never be spliced into a clip.
     private DateTime _sessionStartUtc = DateTime.MinValue;
-    // Video identity per generation (window+size or monitor+size). F9 only ever
-    // concatenates segments of the CURRENT identity — a freecam window switch can
-    // never splice two windows/resolutions into one clip, and after a quick
-    // A→B→A detour the earlier A-segments are still usable.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _genIdentity = new();
-    private string? _currentIdentity;
+    // What each generation recorded (window+size or monitor+size, and how it was encoded). F9 only ever
+    // concatenates segments of the CURRENT identity - a freecam window switch can never splice two
+    // windows/resolutions/codecs into one clip, and after a quick A→B→A detour the earlier A-segments
+    // are still usable.
+    private readonly ConcurrentDictionary<int, GenerationInfo> _generations = new();
+    private volatile SegmentIdentity? _currentIdentity;
+    // Pauses of the buffer for manual recordings: they explain a hole in a stitched clip.
+    private readonly object _suspendLock = new();
+    private readonly List<SuspendInterval> _suspensions = new();
+    private const int MaxSuspensions = 64;
     // Trailing-debounce for coalescing restart bursts.
     private readonly object _debounceLock = new();
     private CancellationTokenSource? _restartDebounceCts;
     // Reentrancy guard for SaveLastAsync (0 = idle, 1 = saving).
     private int _saving;
+    // Progress of the running clip save (null when none) - the busy text of a second F8/F9 reads it.
+    private volatile SaveProgressInfo? _currentSave;
     // When the current generation's ffmpeg started — the stall check needs a grace period.
     private DateTime _genStartedUtc = DateTime.MaxValue;
     // The ring the RUNNING ffmpeg was started with. Settings change instantly but segment_wrap is
     // fixed until the debounced restart, so picks and prune must be sized from this, not from
     // the settings alone. A reference (RingPlan is a class) so another thread never sees a torn plan.
     private volatile RingPlan _runningRing = RingPlan.Create(60, 5);
+    // The ring, the identity and the generation of the RUNNING ffmpeg as one reference: a save reads it once and works
+    // with that snapshot throughout. Reading the three separately (or the identity again for every file) lets a warm
+    // restart in the middle of a scan - Alt-Tab in Auto mode - change the answer halfway and mix two recordings.
+    private volatile BufferEpoch? _epoch;
+    // The registry record is trusted once per process (the first start). If the write keeps failing, every
+    // later start would otherwise look like a folder move and empty the folder in use.
+    private bool _recordChecked;
+    // Ends waits that must not outlive the service (the old-folder cleanup waits for a running save).
+    private readonly CancellationTokenSource _disposeCts = new();
+    // The longest lookback the buffer drive can hold (0 = no decision yet). Decided at every (re)start and by
+    // the low-space guard; min'ed with the configured length in EffectiveDurationSeconds.
+    private volatile int _diskCapSeconds;
+    private volatile bool _diskLimited;
+    private int _lastAnnouncedCap = -1;
 
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
     public CaptureTargetResolver.CapturePlan? CurrentPlan { get; private set; }
-    public event EventHandler<string>? ReplaySaved;          // final clip path
+    public event EventHandler<ReplaySavedInfo>? ReplaySaved;
     public event EventHandler<string>? GifSaved;             // final gif path
     public event EventHandler<string>? BufferError;
     public event EventHandler<string>? BufferInfo;           // non-error notices (save busy, restarting)
@@ -78,10 +106,15 @@ public sealed class ReplayBufferService : IDisposable
     public event EventHandler<SaveKind>? SaveStarted;
     /// <summary>A save was refused or failed (busy, buffer off, no material, stale, aborted, ffmpeg failure).</summary>
     public event EventHandler<SaveFailure>? SaveFailed;
+    /// <summary>Progress of a running clip save, about once a second (raised from a worker thread).</summary>
+    public event EventHandler<SaveProgressInfo>? SaveProgress;
 
-    public ReplayBufferService(SettingsService settings)
+    public ReplayBufferService(SettingsService settings) : this(settings, new BufferFolderRecord()) { }
+
+    internal ReplayBufferService(SettingsService settings, BufferFolderRecord record)
     {
         _settings = settings;
+        _record = record;
     }
 
     // Subscribers (sound cues) must never be able to break a save.
@@ -96,6 +129,29 @@ public sealed class ReplayBufferService : IDisposable
         try { SaveFailed?.Invoke(this, new SaveFailure(kind, reason)); }
         catch (Exception ex) { Logger.Warn("SaveFailed handler threw: " + ex.Message); }
     }
+
+    private void SignalProgress(SaveProgressInfo info)
+    {
+        try { SaveProgress?.Invoke(this, info); }
+        catch (Exception ex) { Logger.Warn("SaveProgress handler threw: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// The lookback the buffer actually holds: the configured length (clamped to the supported range) or, when the
+    /// buffer drive is too small for it, the shorter length decided at the last (re)start.
+    /// </summary>
+    public int EffectiveDurationSeconds
+    {
+        get
+        {
+            int configured = DurationText.Clamp(_settings.Current.ReplayBuffer.DurationSeconds);
+            int cap = _diskCapSeconds;
+            return cap > 0 ? Math.Min(configured, cap) : configured;
+        }
+    }
+
+    /// <summary>True while the lookback runs shorter than configured because the buffer drive is too small.</summary>
+    public bool DiskLimited => _diskLimited;
 
     /// <summary>Cold start: clears the buffer directory and starts a fresh generation.</summary>
     public void Start() => _ = StartInternalAsync(clearHistory: true);
@@ -114,6 +170,11 @@ public sealed class ReplayBufferService : IDisposable
     public async Task SuspendAsync()
     {
         Suspended = true;
+        lock (_suspendLock)
+        {
+            _suspensions.Add(new SuspendInterval(DateTime.UtcNow, null));
+            while (_suspensions.Count > MaxSuspensions) _suspensions.RemoveAt(0);
+        }
         await StopAsync().ConfigureAwait(false);
     }
 
@@ -121,7 +182,18 @@ public sealed class ReplayBufferService : IDisposable
     public void Resume()
     {
         Suspended = false;
+        lock (_suspendLock)
+        {
+            int last = _suspensions.Count - 1;
+            if (last >= 0 && _suspensions[last].ToUtc is null)
+                _suspensions[last] = _suspensions[last] with { ToUtc = DateTime.UtcNow };
+        }
         _ = StartInternalAsync(clearHistory: false);
+    }
+
+    private SuspendInterval[] SuspensionsSnapshot()
+    {
+        lock (_suspendLock) return _suspensions.ToArray();
     }
 
     private async Task StartInternalAsync(bool clearHistory)
@@ -137,21 +209,67 @@ public sealed class ReplayBufferService : IDisposable
         finally { _lifecycleLock.Release(); }
     }
 
+    /// <summary>
+    /// The buffer folder to use now, always a fully qualified path: the configured one, unless it is not a real folder
+    /// ("D:", "D:\", a relative path), is the program's own folder, or overlaps the clips/screenshots folder - then the
+    /// default, for this run. The settings file is left alone; the Paths page tells the user.
+    /// </summary>
+    private string ResolveBufferDir(bool warn)
+    {
+        var output = _settings.Current.Output;
+        var bufferFolder = PathRules.SafeBufferFolder(output.BufferFolder, output.ClipsFolder, output.ScreenshotsFolder,
+            PathRules.DefaultBufferFolder, PathRules.InstallDirectory);
+        if (warn && !string.Equals(bufferFolder, output.BufferFolder, StringComparison.Ordinal) && !_bufferFolderWarned)
+        {
+            _bufferFolderWarned = true;
+            var problem = PathRules.BufferFolderProblem(output.BufferFolder, PathRules.InstallDirectory);
+            var why = problem switch
+            {
+                FolderProblem.NotFullyQualified => "it is not a full path (a bare drive or relative path means different folders to ffmpeg and to this program)",
+                FolderProblem.DriveRoot => "it is the root of a drive",
+                FolderProblem.InstallDirectory => "it is the program's own folder (or inside it)",
+                _ => "it is the clips or screenshots folder (or inside it): its segments would show up as clips"   // a segment every few seconds
+            };
+            Logger.Warn($"ReplayBuffer: buffer folder '{output.BufferFolder}' is not usable - {why} - using '{SettingsService.ExpandPath(bufferFolder)}' instead for this run");
+        }
+        return SettingsService.ExpandPath(bufferFolder);
+    }
+
+    /// <summary>
+    /// The segment muxer's output pattern. Fully qualified on purpose: ffmpeg runs in its own directory, so a relative
+    /// folder would put the ring where this program never looks.
+    /// </summary>
+    internal static string SegmentPatternFor(string bufferDir, int generation)
+        => Path.Combine(Path.GetFullPath(bufferDir), $"seg_{generation}_%02d.mp4");
+
+    /// <summary>
+    /// Cold start: a fresh session. The generation number keeps counting - it is never reused within a process, because
+    /// a save that is still reading seg_N_* when the buffer is switched off and on would otherwise find the new run
+    /// writing over the very files it is about to open. The old segments are deleted here only while no save runs;
+    /// otherwise the session start (everything older is unusable) lets the retention rules remove them once the
+    /// save is over (<see cref="PruneAfterSave"/>).
+    /// </summary>
+    private void ResetHistoryForColdStart()
+    {
+        if (Volatile.Read(ref _saving) == 0)
+            ClearBufferDir(_bufferDir);
+        else
+            Logger.Info("ReplayBuffer: a clip is still being written - the old segments are removed after it.");
+        CleanStaleClipParts();
+        _generation++;
+        _sessionStartUtc = DateTime.UtcNow;
+        _generations.Clear();
+        _lastAnnouncedCap = -1;
+    }
+
     // Assumes _lifecycleLock is held.
     private void StartCore(bool clearHistory)
     {
-        var output = _settings.Current.Output;
-        var bufferFolder = PathRules.SafeBufferFolder(
-            output.BufferFolder, output.ClipsFolder, output.ScreenshotsFolder, PathRules.DefaultBufferFolder);
-        if (!string.Equals(bufferFolder, output.BufferFolder, StringComparison.Ordinal) && !_bufferFolderWarned)
-        {
-            // Segments inside the clips folder would show up as a new "clip" every few seconds.
-            // The settings file is left alone; the user fixes it on the Paths page.
-            _bufferFolderWarned = true;
-            Logger.Warn($"ReplayBuffer: buffer folder '{SettingsService.ExpandPath(output.BufferFolder)}' is the clips or screenshots folder (or inside it) — using '{SettingsService.ExpandPath(bufferFolder)}' instead for this run");
-        }
-        _bufferDir = SettingsService.ExpandPath(bufferFolder);
+        _bufferDir = ResolveBufferDir(warn: true);
         Directory.CreateDirectory(_bufferDir);
+
+        // A moved buffer folder: the new one starts fresh, the old one (gigabytes at 30 minutes) is emptied.
+        bool folderMoved = HandleBufferFolderChange();
 
         // Resolve the single capture plan (video monitor + audio route) FIRST, so
         // we can tell whether the capture target changed across a warm restart.
@@ -163,11 +281,7 @@ public sealed class ReplayBufferService : IDisposable
 
         if (clearHistory)
         {
-            ClearBufferDir(_bufferDir);
-            CleanStaleClipParts();
-            _generation = 0;
-            _sessionStartUtc = DateTime.UtcNow;
-            _genIdentity.Clear();
+            ResetHistoryForColdStart();
         }
         else
         {
@@ -176,22 +290,23 @@ public sealed class ReplayBufferService : IDisposable
             // monitor), the previous segments are a different display/resolution.
             // Start a fresh save-window so they can never be spliced into a clip
             // (which would give wrong footage or break the stream-copy concat).
-            if (prevPlan is { } pp && pp.MonitorIndex != plan.MonitorIndex)
+            if (folderMoved || (prevPlan is { } pp && pp.MonitorIndex != plan.MonitorIndex))
                 _sessionStartUtc = DateTime.UtcNow;
-            // Keep the buffer folder from growing without bound across restarts.
-            PruneOldSegments();
         }
+
+        // Does the lookback fit on the buffer drive? Decided before anything is started.
+        if (!DecideDiskPlan(plan)) return;
 
         CurrentPlan = plan;
 
-        _segmentPattern = Path.Combine(_bufferDir, $"seg_{_generation}_%02d.mp4");
+        _segmentPattern = SegmentPatternFor(_bufferDir, _generation);
         var ring = CurrentRingPlan();
         _runningRing = ring;
         int segSec = ring.SegmentSeconds;
         // Wrap = how many segments this run holds: what a save picks, +1 for tail tolerance,
         // + RingPlan.Reserve so the oldest picked segment is not the next one overwritten.
         int wrap = ring.Wrap;
-        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
+        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"}), lookback={DurationText.Format(EffectiveDurationSeconds)}");
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
         // If audio init fails, fall back to video-only.
@@ -248,18 +363,31 @@ public sealed class ReplayBufferService : IDisposable
             }
         }
 
-        // Record this generation's video identity — F9 only concatenates segments
-        // of the SAME identity (same window+size or monitor+size).
-        string identity = _wgc != null && videoArgs != null
-            ? $"wgc:{plan.Hwnd}:{_wgc.Width}x{_wgc.Height}"
-            : $"mon:{plan.MonitorIndex}:{plan.MonitorWidth}x{plan.MonitorHeight}";
-        _genIdentity[_generation] = identity;
+        // Record this generation's identity - F9 only concatenates segments of the SAME identity: the same
+        // source (window+size or monitor+size) AND the same encoding (codec, fps, resolution, audio tracks,
+        // capture path, keyframes). A codec or fps change followed by F9 within the ring would otherwise
+        // concat H.264 with HEVC.
+        var settings = _settings.Current;
+        var keyframes = KeyframePolicy.Effective(settings.ReplayBuffer);
+        string capturePath = videoArgs != null
+            ? "wgc"
+            : FFmpegCommandBuilder.UsesAmfNativeCapture(settings, rawInput: false) ? "amf" : "dda";
+        string source = _wgc != null && videoArgs != null
+            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.MonitorIndex)
+            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.MonitorWidth, plan.MonitorHeight, plan.MonitorIndex);
+        string stream = SegmentIdentity.StreamKey(settings.Video.Codec, settings.Video.Framerate,
+            settings.Video.Resolution, audioArgs?.Count ?? 0, capturePath, keyframes);
+        var identity = new SegmentIdentity(source, stream);
+        int ownGeneration = _generation;
+        _generations[ownGeneration] = new GenerationInfo(ownGeneration, identity,
+            plan.TargetProcess ?? $"Monitor {plan.MonitorIndex + 1}", DateTime.UtcNow, null);
         _currentIdentity = identity;
+        _epoch = new BufferEpoch(ring, identity, ownGeneration, _bufferDir);
 
-        var args = FFmpegCommandBuilder.Build(_settings.Current, _segmentPattern,
+        var args = FFmpegCommandBuilder.Build(settings, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
             audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
-            videoInputArgs: videoArgs);
+            videoInputArgs: videoArgs, keyframes: keyframes);
         Logger.Info("[buffer-ffmpeg] CMD: " + args);
 
         _ffmpeg = new FFmpegService();
@@ -311,12 +439,18 @@ public sealed class ReplayBufferService : IDisposable
             // StopRequested exit (our own graceful/forced stop) is silent.
             if (!ownFfmpeg.StopRequested)
             {
+                MarkGenerationStopped(ownGeneration);
                 // Genuine crash: drop the dead instance so IsRunning is accurate
                 // and the process handle isn't held until GC. (Re-check we're
                 // still the current instance to avoid nulling a fresh restart.)
                 if (_ffmpeg == ownFfmpeg) _ffmpeg = null;
-                BufferError?.Invoke(this, L.T($"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.",
-                                              $"Buffer stopped unexpectedly (ffmpeg code {code}) — check the log."));
+                // A full drive is the one crash with an obvious cause the user can fix.
+                if (DiskProbe.TryGetFreeSpace(_bufferDir, out long freeNow, out string driveNow)
+                    && freeNow < DiskPlan.CriticalBytes)
+                    BufferError?.Invoke(this, FullDiskMessage(driveNow));
+                else
+                    BufferError?.Invoke(this, L.T($"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.",
+                                                  $"Buffer stopped unexpectedly (ffmpeg code {code}) — check the log."));
             }
         };
 
@@ -324,6 +458,8 @@ public sealed class ReplayBufferService : IDisposable
         {
             _ffmpeg.Start(args);
             _genStartedUtc = DateTime.UtcNow;
+            if (_generations.TryGetValue(ownGeneration, out var started))
+                _generations[ownGeneration] = started with { StartedUtc = _genStartedUtc };
             BufferStateChanged?.Invoke(this, true);
             StartWatchdog();
         }
@@ -331,6 +467,218 @@ public sealed class ReplayBufferService : IDisposable
         {
             BufferError?.Invoke(this, ex.Message);
         }
+
+        // Only now: the prune rules need the new generation registered and the running ring set.
+        PruneOldSegments();
+    }
+
+    private static string FullDiskMessage(string drive)
+        => L.T($"Speicher auf {drive} fast voll — Buffer gestoppt, damit Windows nicht vollläuft. Platz schaffen und Buffer wieder einschalten (Strg+F10).",
+               $"Drive {drive} is almost full — buffer stopped so Windows does not run out of space. Free some space and turn the buffer back on (Ctrl+F10).");
+
+    private void MarkGenerationStopped(int generation)
+    {
+        if (_generations.TryGetValue(generation, out var info) && info.StoppedUtc is null)
+            _generations.TryUpdate(generation, info with { StoppedUtc = DateTime.UtcNow }, info);
+    }
+
+    // ---- buffer folder change ----
+
+    /// <summary>
+    /// A different buffer folder than before starts fresh: the own files of the NEW folder are removed (never while a
+    /// save runs - the retention rules do it afterwards) and the OLD folder's segments are deleted in the background
+    /// once no save can still be reading them. "Before" is the folder of the previous start in this process; the
+    /// HKCU record (the folder of an earlier run) is trusted only at the first start of the process - if writing it
+    /// kept failing, every warm restart would otherwise look like a move and empty the folder in use. Old folders
+    /// whose cleanup never finished (app closed, save outlasted the wait) are listed in the record and retried at
+    /// the first start of the next run.
+    /// </summary>
+    private bool HandleBufferFolderChange()
+    {
+        bool first = !_recordChecked;
+        _recordChecked = true;
+
+        var left = new List<string>();   // folders the buffer has moved away from
+        if (first)
+        {
+            var recorded = _record.Read();
+            if (BufferFolderRules.IsDifferentFolder(recorded, _bufferDir)) left.Add(recorded!);
+        }
+        if (!string.IsNullOrEmpty(_lastBufferDir) && BufferFolderRules.IsDifferentFolder(_lastBufferDir, _bufferDir)
+            && !left.Any(o => !BufferFolderRules.IsDifferentFolder(o, _lastBufferDir)))
+            left.Add(_lastBufferDir);
+
+        var cleanup = new List<string>(left);
+        if (first)
+        {
+            foreach (var pending in _record.ReadPending())
+                if (BufferFolderRules.IsDifferentFolder(pending, _bufferDir)
+                    && !cleanup.Any(o => !BufferFolderRules.IsDifferentFolder(o, pending)))
+                    cleanup.Add(pending);
+                else if (!BufferFolderRules.IsDifferentFolder(pending, _bufferDir))
+                    _record.RemovePending(pending);   // the folder is in use again: nothing to clean
+        }
+
+        _lastBufferDir = _bufferDir;
+        _record.Write(_bufferDir);
+
+        foreach (var folder in cleanup)
+        {
+            _record.AddPending(folder);   // before the work: it survives a closed app
+            ScheduleOldFolderCleanup(folder);
+        }
+        if (left.Count == 0) return false;
+
+        if (Volatile.Read(ref _saving) == 0)
+        {
+            int cleared = BufferFolderRules.DeleteOwnFiles(_bufferDir);
+            Logger.Info($"ReplayBuffer: buffer folder is now '{_bufferDir}' (was '{string.Join("', '", left)}') - starting fresh, removed {cleared} old file(s) from the new folder");
+        }
+        else
+        {
+            Logger.Info($"ReplayBuffer: buffer folder is now '{_bufferDir}' (was '{string.Join("', '", left)}') - a clip is being written, old files in the new folder are removed after it");
+        }
+        return true;
+    }
+
+    private void ScheduleOldFolderCleanup(string oldDir)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var ct = _disposeCts.Token;
+                // A save still reading from the old folder must finish first, however long a 30-minute clip takes on a
+                // slow disk - giving up after a fixed time would leave gigabytes behind that nothing knows about.
+                while (Volatile.Read(ref _saving) != 0)
+                    await Task.Delay(500, ct).ConfigureAwait(false);
+
+                // The user may have switched back meanwhile - never empty the folder in use.
+                if (!BufferFolderRules.IsDifferentFolder(oldDir, _bufferDir))
+                {
+                    _record.RemovePending(oldDir);
+                    return;
+                }
+                int n = BufferFolderRules.DeleteOwnFiles(oldDir);
+                if (BufferFolderRules.HasOwnFiles(oldDir))
+                {
+                    Logger.Warn($"ReplayBuffer: the old buffer folder '{oldDir}' still holds files that could not be deleted ({n} removed) - tried again at the next start");
+                    return;   // stays listed as pending
+                }
+                _record.RemovePending(oldDir);
+                Logger.Info($"ReplayBuffer: emptied the old buffer folder '{oldDir}' ({n} file(s))");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.Warn("Old buffer folder cleanup failed: " + ex.Message); }
+        });
+    }
+    // ---- disk planning ----
+
+    /// <summary>The newest complete segments of matching generations, ascending, as (bytes, end time).</summary>
+    private List<(long Bytes, DateTime EndUtc)> RecentSamples(Func<GenerationInfo, bool> match, int max)
+    {
+        try
+        {
+            var files = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
+                .Where(fi => fi.Length > 1024 && fi.LastWriteTimeUtc >= _sessionStartUtc
+                             && SegmentName.TryParseGeneration(fi.Name, out int g)
+                             && _generations.TryGetValue(g, out var info) && match(info))
+                .OrderBy(fi => fi.LastWriteTimeUtc)
+                .ToList();
+            // The newest may still be open (and small).
+            if (files.Count > 0) files.RemoveAt(files.Count - 1);
+            return files.TakeLast(max).Select(fi => (fi.Length, fi.LastWriteTimeUtc)).ToList();
+        }
+        catch { return new List<(long, DateTime)>(); }
+    }
+
+    private DiskForecast BuildForecast(string dir, int durationSeconds, int segSec, int monitorIndex, long? observedBps)
+    {
+        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, monitorIndex);
+        long segBytes = DiskPlan.SegmentBytes(DiskPlan.EstimateSegmentBytes(segSec, videoBps), observedBps, segSec);
+        long required = DiskPlan.RequiredBytes(durationSeconds, segSec, segBytes);
+        if (!DiskProbe.TryGetFreeSpace(dir, out long free, out string drive))
+            return new DiskForecast(durationSeconds, required, 0, "", false,
+                new DiskDecision(durationSeconds, false, false, required, long.MaxValue));
+
+        // Our own segments in the folder are freed again when pruned - they count as usable.
+        long usable = free + DiskProbe.OwnSegmentBytes(dir);
+        return new DiskForecast(durationSeconds, required, free, drive, true,
+            DiskPlan.Decide(durationSeconds, segSec, segBytes, usable));
+    }
+
+    /// <summary>
+    /// What a lookback of <paramref name="durationSeconds"/> would cost on the buffer drive, and what the buffer would
+    /// do about it. No side effects - the settings page shows it next to the length picker.
+    /// </summary>
+    public DiskForecast Forecast(int durationSeconds)
+    {
+        var rb = _settings.Current.ReplayBuffer;
+        string dir = string.IsNullOrEmpty(_bufferDir) ? ResolveBufferDir(warn: false) : _bufferDir;
+        var plan = CurrentPlan ?? CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+        return BuildForecast(dir, DurationText.Clamp(durationSeconds), Math.Max(1, rb.SegmentDurationSeconds), plan.MonitorIndex, null);
+    }
+
+    /// <summary>
+    /// Pre-start check: the configured lookback if it fits, a shorter one if not, none if even the shortest does not.
+    /// Returns false when the buffer must not start.
+    /// </summary>
+    private bool DecideDiskPlan(CaptureTargetResolver.CapturePlan plan)
+    {
+        var s = _settings.Current;
+        var rb = s.ReplayBuffer;
+        int configured = DurationText.Clamp(rb.DurationSeconds);
+        int seg = Math.Max(1, rb.SegmentDurationSeconds);
+
+        // The previous generation's rate is the best guess for the next one - if it encoded the same way.
+        // (Audio track count is not known yet, so only codec, fps and resolution are matched.)
+        string prefix = $"{s.Video.Codec}|{s.Video.Framerate}|{s.Video.Resolution}|";
+        var observed = DiskPlan.ObservedBytesPerSecond(RecentSamples(
+            g => g.Identity.Stream.StartsWith(prefix, StringComparison.Ordinal), 12));
+
+        var f = BuildForecast(_bufferDir, configured, seg, plan.MonitorIndex, observed);
+        if (!f.Known)
+        {
+            // UNC/unknown drive: no way to ask, so no check.
+            if (!_unknownDriveLogged)
+            {
+                _unknownDriveLogged = true;
+                Logger.Info($"ReplayBuffer: free space of '{_bufferDir}' is unknown (network or unavailable drive) - skipping the disk check");
+            }
+            _diskCapSeconds = 0;
+            _diskLimited = false;
+            return true;
+        }
+
+        var d = f.Decision;
+        if (d.CannotStart)
+        {
+            _diskCapSeconds = 0;
+            _diskLimited = false;
+            Logger.Warn($"ReplayBuffer: not starting - {DiskPlan.FormatBytes(f.FreeBytes)} free on {f.Drive}, even {DurationText.Format(DurationText.MinSeconds)} needs more");
+            BufferError?.Invoke(this, L.T(
+                $"Zu wenig Speicher auf {f.Drive} (frei {DiskPlan.FormatBytes(f.FreeBytes)}) — Buffer startet nicht. Platz schaffen oder Buffer-Ordner auf ein anderes Laufwerk legen (Einstellungen → Pfade).",
+                $"Not enough space on {f.Drive} ({DiskPlan.FormatBytes(f.FreeBytes)} free) — the buffer will not start. Free some space or move the buffer folder to another drive (Settings → Paths)."));
+            return false;
+        }
+
+        _diskCapSeconds = d.EffectiveSeconds;
+        _diskLimited = d.Shortened;
+        if (d.Shortened)
+        {
+            if (d.EffectiveSeconds != _lastAnnouncedCap)
+            {
+                _lastAnnouncedCap = d.EffectiveSeconds;
+                BufferInfo?.Invoke(this, L.T(
+                    $"Zu wenig Speicher auf {f.Drive} für {DurationText.Format(configured)} Rückblick (braucht ~{DiskPlan.FormatBytes(d.RequiredBytes)}, frei {DiskPlan.FormatBytes(f.FreeBytes)}) — Buffer läuft mit {DurationText.Format(d.EffectiveSeconds)}. Tipp: Buffer-Ordner auf ein Laufwerk mit mehr Platz legen.",
+                    $"Not enough space on {f.Drive} for a {DurationText.Format(configured)} lookback (needs ~{DiskPlan.FormatBytes(d.RequiredBytes)}, {DiskPlan.FormatBytes(f.FreeBytes)} free) — the buffer runs with {DurationText.Format(d.EffectiveSeconds)}. Tip: move the buffer folder to a drive with more space."));
+            }
+        }
+        else
+        {
+            _lastAnnouncedCap = -1;
+        }
+        return true;
     }
 
     public async Task StopAsync()
@@ -350,6 +698,7 @@ public sealed class ReplayBufferService : IDisposable
         _watchdogCts?.Cancel();
         if (_ffmpeg is not null)
             await _ffmpeg.StopAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        MarkGenerationStopped(_generation);
         _ffmpeg?.Dispose();
         _ffmpeg = null;
         _audio?.Dispose();
@@ -495,22 +844,24 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
-    /// Approximate seconds currently available to save (complete segments × seg
-    /// length, capped at the configured buffer length). For honest UI display.
+    /// Approximate seconds currently available to save (complete segments of the current identity inside the
+    /// lookback window × segment length, capped at the effective lookback). For honest UI display.
     /// </summary>
     public int AvailableSeconds()
     {
         if (!IsRunning || string.IsNullOrEmpty(_bufferDir)) return 0;
-        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-        int target = _settings.Current.ReplayBuffer.DurationSeconds;
+        int segSec = Math.Max(1, _runningRing.SegmentSeconds);
+        int target = EffectiveDurationSeconds;
+        var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(target);
+        var identity = _currentIdentity;   // read once: not once per file
         int complete;
         try
         {
-            complete = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
-                .Select(p => new FileInfo(p))
+            complete = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
                 .Count(fi => fi.Length > 1024
                              && fi.LastWriteTimeUtc >= _sessionStartUtc
-                             && IsCurrentIdentity(fi.Name));
+                             && fi.LastWriteTimeUtc > cutoff
+                             && IsCurrentIdentity(fi.Name, identity));
         }
         catch { return 0; }
         // Exclude the one segment currently being written.
@@ -518,9 +869,16 @@ public sealed class ReplayBufferService : IDisposable
         return Math.Min(target, complete * segSec);
     }
 
+    private static string LocalClock(DateTime utc)
+        => utc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+
+    private sealed record ClipScan(BufferMaterial Material, StitchPlan? Plan);
+    private sealed record GifScan(BufferMaterial Material, IReadOnlyList<SegmentCandidate> Pick);
+
     /// <summary>
     /// Save the most recent N seconds into a single MP4. Concat demuxer + stream
-    /// copy — no re-encoding, instant. Reentrancy-guarded and stall-bounded (see <see cref="ConcatWatch"/>).
+    /// copy — no re-encoding, instant for short clips, tens of seconds for 30 minutes.
+    /// Reentrancy-guarded and stall-bounded (see <see cref="ConcatWatch"/>).
     /// </summary>
     public async Task<string?> SaveLastAsync()
     {
@@ -528,13 +886,18 @@ public sealed class ReplayBufferService : IDisposable
         // the running concat (which would corrupt the first clip).
         if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
-            BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
+            BufferInfo?.Invoke(this, ClipSavePolicy.BusyMessage(_currentSave, SaveKind.Clip));
             SignalFailed(SaveKind.Clip, SaveFailureReason.Busy);
             return null;
         }
+        string? listPath = null;
+        string? chaptersPath = null;
         try
         {
-            if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
+            // One snapshot of the running recording - ring, identity, generation, folder - for the whole save. A warm
+            // restart during the scan (Alt-Tab in Auto mode) must not change the answer halfway.
+            var epoch = _epoch;
+            if (!IsRunning || epoch is null)
             {
                 BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht (evtl. Neustart) — gleich nochmal probieren.",
                                              "Buffer isn't running right now (possibly restarting) — try again in a moment."));
@@ -544,17 +907,21 @@ public sealed class ReplayBufferService : IDisposable
 
             // Sized from the RUNNING ring: a duration raised a moment ago (restart still pending)
             // must not make this save reach into the overwrite reserve of the old, smaller ring.
-            var ring = _runningRing;
-            int segSec = ring.SegmentSeconds;
-            int neededSegments = ring.PickForSeconds(_settings.Current.ReplayBuffer.DurationSeconds);
+            int requested = EffectiveDurationSeconds;
+            var bufferDir = epoch.BufferDir;
+            var nowUtc = DateTime.UtcNow;
+            // What is on screen NOW decides the game folder - not what is on screen when the scan is done.
+            string? game = ResolveGameAtPress();
 
-            var pick = CollectRecentSegments(neededSegments, out var material);
-            if (material == BufferMaterial.Stalled)
+            // Directory scan + 360 header reads + planning: never on the UI thread (F9 arrives there).
+            var scan = await Task.Run(() => ScanForClip(epoch, requested, nowUtc)).ConfigureAwait(false);
+            if (scan.Material == BufferMaterial.Stalled)
             {
                 ReportStalled(SaveKind.Clip);
                 return null;
             }
-            if (pick.Count == 0)
+            var plan = scan.Plan;
+            if (plan is null || plan.Segments.Count == 0)
             {
                 Logger.Info("SaveLast: no complete segments yet.");
                 BufferInfo?.Invoke(this,
@@ -564,33 +931,67 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
+            // The clip is a full copy of the footage: refuse before writing when the clips drive cannot hold it.
+            var o = _settings.Current.Output;
+            long need = (long)(plan.TotalBytes * 1.02) + 256L * 1024 * 1024;
+            if (DiskProbe.TryGetFreeSpace(SettingsService.ExpandPath(o.ClipsFolder), out long clipsFree, out string clipsDrive)
+                && clipsFree < need)
+            {
+                BufferError?.Invoke(this, L.T(
+                    $"Zu wenig Speicher auf {clipsDrive} für den Clip (braucht ~{DiskPlan.FormatBytes(need)}, frei {DiskPlan.FormatBytes(clipsFree)}).",
+                    $"Not enough space on {clipsDrive} for the clip (needs ~{DiskPlan.FormatBytes(need)}, {DiskPlan.FormatBytes(clipsFree)} free)."));
+                SignalFailed(SaveKind.Clip, SaveFailureReason.NoDiskSpace);
+                return null;
+            }
+
             // Every guard passed: from here on the clip is going to be written.
             SignalStarted(SaveKind.Clip);
 
-            var clipsDir = OutputDirectory();
+            var clipsDir = OutputDirectory(game);
             var outputPath = Path.Combine(clipsDir, $"Clip_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
             // Written as .part and renamed on success, so the gallery never lists a half-written clip.
             var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
-            var listPath = Path.Combine(_bufferDir, "_concat_list.txt");
-            await File.WriteAllLinesAsync(
-                listPath,
-                pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")
-            ).ConfigureAwait(false);
+            listPath = Path.Combine(bufferDir, "_concat_list.txt");
+            await File.WriteAllLinesAsync(listPath, ClipStitcher.ConcatListLines(plan.Segments)).ConfigureAwait(false);
 
-            var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath);
+            // Gaps become chapters (ffmetadata is a second ffmpeg input; the concat demuxer has no chapter option).
+            string? chapters = null;
+            if (plan.Chapters.Count > 0)
+            {
+                chaptersPath = Path.Combine(bufferDir, "_chapters.txt");
+                await File.WriteAllTextAsync(chaptersPath, ClipStitcher.ChapterMetadata(plan.Chapters),
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)).ConfigureAwait(false);
+                chapters = chaptersPath;
+            }
+
+            bool faststart = ClipSavePolicy.UseFaststart(plan.TotalBytes);
+            var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath, faststart, chapters);
+
+            int clipSeconds = (int)Math.Ceiling(plan.TotalDuration.TotalSeconds);
+            var startedUtc = DateTime.UtcNow;
+            _currentSave = new SaveProgressInfo(SaveKind.Clip, clipSeconds, 0, SavePhase.Copying, TimeSpan.Zero);
 
             // Waits for the concat as long as its output keeps growing, so a hung process
             // can't block every future save but a slow disk doesn't kill a good clip. Also aborts
             // a copy slower than the recording (the muxer would overwrite segments still unread).
-            var run = await RunWatchedFfmpegAsync(args, partPath, pick.Count * segSec,
-                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Length).ToList(), segSec)).ConfigureAwait(false);
-            try { File.Delete(listPath); } catch { }
+            var expected = new ConcatExpectation(plan.TotalBytes,
+                plan.TotalBytes / Math.Max(1.0, plan.TotalDuration.TotalSeconds));
+            var run = await RunWatchedFfmpegAsync(args, partPath, clipSeconds, expected: expected,
+                onOutputLength: len =>
+                {
+                    var info = new SaveProgressInfo(SaveKind.Clip, clipSeconds,
+                        ClipSavePolicy.Fraction(len, plan.TotalBytes),
+                        ClipSavePolicy.Phase(len, plan.TotalBytes, faststart),
+                        DateTime.UtcNow - startedUtc);
+                    _currentSave = info;
+                    SignalProgress(info);
+                }).ConfigureAwait(false);
 
             if (run.AbortedBy is { } why)
             {
                 ClipOutputFiles.Discard(partPath);
-                Logger.Warn($"SaveLast: concat aborted ({why}) after {pick.Count} segments — output discarded.");
+                Logger.Warn($"SaveLast: concat aborted ({why}) after {plan.Segments.Count} segments — output discarded.");
                 BufferError?.Invoke(this, L.T("Clip-Erstellung hat zu lange gedauert und wurde abgebrochen.",
                                               "Clip creation took too long and was aborted."));
                 SignalFailed(SaveKind.Clip, SaveFailureReason.Aborted);
@@ -611,11 +1012,12 @@ public sealed class ReplayBufferService : IDisposable
             {
                 // F9 used to leave no trace at all, which turned one bad clip into file
                 // forensics. One line is enough to answer "what did it actually grab".
-                double covered = (pick[^1].LastWriteTimeUtc - pick[0].LastWriteTimeUtc).TotalSeconds + segSec;
-                double ageSec = (DateTime.UtcNow - pick[^1].LastWriteTimeUtc).TotalSeconds;
-                Logger.Info($"SaveLast: {pick.Count} segments ≈{covered:0}s (newest {ageSec:0.0}s old) → " +
-                            $"{Path.GetFileName(outputPath)} ({new FileInfo(outputPath).Length / (1024 * 1024)} MB)");
-                ReplaySaved?.Invoke(this, outputPath);
+                long outBytes = new FileInfo(outputPath).Length;
+                double ageSec = (DateTime.UtcNow - plan.Segments[^1].EndUtc).TotalSeconds;
+                Logger.Info($"SaveLast: {plan.Segments.Count} segments ≈{plan.TotalDuration.TotalSeconds:0}s gaps={plan.Gaps.Count} faststart={faststart} " +
+                            $"(newest {ageSec:0.0}s old) → {Path.GetFileName(outputPath)} ({outBytes / (1024 * 1024)} MB)");
+                ReplaySaved?.Invoke(this, new ReplaySavedInfo(outputPath, plan.TotalDuration.TotalSeconds,
+                    requested, game, plan.Gaps, outBytes));
                 return outputPath;
             }
             else
@@ -635,26 +1037,44 @@ public sealed class ReplayBufferService : IDisposable
         }
         finally
         {
+            try { if (listPath != null && File.Exists(listPath)) File.Delete(listPath); } catch { }
+            try { if (chaptersPath != null && File.Exists(chaptersPath)) File.Delete(chaptersPath); } catch { }
+            _currentSave = null;
             Interlocked.Exchange(ref _saving, 0);
+            PruneAfterSave();
         }
     }
 
+    /// <summary>A prune that was blocked by the save runs now; off the caller's thread, the folder can hold hundreds of files.</summary>
+    private void PruneAfterSave() => _ = Task.Run(PruneOldSegments);
+
     /// <summary>
-    /// Names the game folder for a capture of the given plan. Set by the composition root;
+    /// Names the game folder for a capture of the current plan. Set by the composition root;
     /// without it (or with sorting off) everything lands in the clips folder as before.
     /// </summary>
     public Func<CaptureTargetResolver.CapturePlan?, string>? GameFolderFor { get; set; }
 
     /// <summary>
-    /// Clip/GIF target folder, resolved at press time: the footage is the past seconds,
-    /// and what is on screen when F9 is hit is the best evidence of which game that was.
+    /// The game folder, resolved at press time: the footage is the past seconds, and what is on screen
+    /// when F9 is hit is the best evidence of which game that was. Evaluated exactly once per save.
     /// </summary>
-    private string OutputDirectory()
+    private string? ResolveGameAtPress()
+    {
+        if (!_settings.Current.Output.SortByGame || GameFolderFor is not { } f) return null;
+        try { return f(CurrentPlan); }
+        catch (Exception ex)
+        {
+            Logger.Warn("Game folder lookup failed: " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Clip/GIF target folder for a game folder resolved earlier by <see cref="ResolveGameAtPress"/>.</summary>
+    private string OutputDirectory(string? game)
     {
         var o = _settings.Current.Output;
-        var plan = CurrentPlan;
         return GameFolderNaming.PrepareDirectory(o.ClipsFolder, o.SortByGame,
-            GameFolderFor is { } f ? () => f(plan) : null);
+            GameFolderFor is not null ? () => game : null);
     }
 
     /// <summary>
@@ -690,9 +1110,9 @@ public sealed class ReplayBufferService : IDisposable
             var sinceStart = DateTime.UtcNow - _genStartedUtc;
             if (sinceStart < stale + TimeSpan.FromSeconds(segSec)) return false;
 
-            var times = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
-                .Select(p => new FileInfo(p))
-                .Where(fi => fi.Length > 1024 && IsCurrentIdentity(fi.Name))
+            var identity = _currentIdentity;   // read once: not once per file
+            var times = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
+                .Where(fi => fi.Length > 1024 && IsCurrentIdentity(fi.Name, identity))
                 .Select(fi => fi.LastWriteTimeUtc)
                 .OrderBy(t => t)
                 .ToList();
@@ -707,45 +1127,88 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
-    /// The most recent COMPLETE segments of the current identity, oldest→newest, capped
-    /// to <paramref name="neededSegments"/>. Excludes the segment ffmpeg is still writing
-    /// (no moov atom yet) and files from a previous session/monitor. Empty = not enough
-    /// material yet. Assumes the buffer is running and <see cref="_bufferDir"/> is set.
+    /// The complete segments of the identity in <paramref name="epoch"/>, oldest→newest: everything the ring holds,
+    /// session-filtered, without the segment ffmpeg is still writing (no moov atom yet). Everything that depends on
+    /// "the running recording" - identity, generation, folder, ring - comes from the one snapshot.
     /// </summary>
-    private List<FileInfo> CollectRecentSegments(int neededSegments, out BufferMaterial material)
+    private (List<SegmentCandidate> Complete, BufferMaterial Material) CollectComplete(BufferEpoch epoch, DateTime nowUtc)
     {
-        material = BufferMaterial.NotEnoughYet;
-
-        var segments = Directory.EnumerateFiles(_bufferDir!, "seg_*.mp4")
-            .Select(p => new FileInfo(p))
+        var ring = epoch.Ring;
+        var files = new DirectoryInfo(epoch.BufferDir).EnumerateFiles("seg_*.mp4")
             .Where(fi => fi.Length > 1024
                          && fi.LastWriteTimeUtc >= _sessionStartUtc
-                         && IsCurrentIdentity(fi.Name))
+                         && IsCurrentIdentity(fi.Name, epoch.Identity))
             .OrderBy(fi => fi.LastWriteTimeUtc)
             .ToList();
-        // The newest file is the one being written — exclude it.
-        if (segments.Count > 1) segments.RemoveAt(segments.Count - 1);
-        if (segments.Count == 0) return segments;
 
-        int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+        // The newest file is the one being written - but only if it belongs to the running generation. Dropping
+        // the newest unconditionally threw away a good segment of the previous generation right after a restart.
+        if (files.Count > 0 && SegmentName.TryParseGeneration(files[^1].Name, out int newestGen) && newestGen == epoch.Generation)
+            files.RemoveAt(files.Count - 1);
+        if (files.Count == 0) return (new List<SegmentCandidate>(), BufferMaterial.NotEnoughYet);
 
         // _sessionStartUtc is the only other time filter, and after hours of uptime it lets
         // everything through. A ring that stopped turning therefore used to be served as
         // "the last N seconds": one real case handed out a single 15-hour-old segment, and
         // did so identically on every press because nothing on disk changed any more.
-        if (BufferHealth.Judge(segments[^1].LastWriteTimeUtc, DateTime.UtcNow, segSec) == BufferMaterial.Stalled)
+        if (BufferHealth.Judge(files[^1].LastWriteTimeUtc, nowUtc, Math.Max(1, ring.SegmentSeconds)) == BufferMaterial.Stalled)
+            return (new List<SegmentCandidate>(), BufferMaterial.Stalled);
+
+        var list = files.Select(fi =>
         {
-            material = BufferMaterial.Stalled;
-            return new List<FileInfo>();
+            SegmentName.TryParseGeneration(fi.Name, out int g);
+            return new SegmentCandidate(fi.FullName, g, fi.LastWriteTimeUtc, fi.Length, null);
+        }).ToList();
+        return (list, BufferMaterial.Ok);
+    }
+
+    /// <summary>
+    /// Picks and plans a clip: with stitching on, everything inside the lookback window (holes become gaps with
+    /// chapters), otherwise only the newest uninterrupted run. Runs on a worker thread.
+    /// </summary>
+    private ClipScan ScanForClip(BufferEpoch epoch, int requestedSeconds, DateTime nowUtc)
+    {
+        var ring = epoch.Ring;
+        var (complete, material) = CollectComplete(epoch, nowUtc);
+        if (material == BufferMaterial.Stalled) return new ClipScan(BufferMaterial.Stalled, null);
+        if (complete.Count == 0) return new ClipScan(BufferMaterial.NotEnoughYet, null);
+
+        IReadOnlyList<SegmentCandidate> selected;
+        if (_settings.Current.ReplayBuffer.StitchAcrossGaps)
+        {
+            selected = ClipStitcher.SelectWindow(complete, nowUtc, requestedSeconds, ring.PickCount);
+        }
+        else
+        {
+            // Only the newest uninterrupted run counts as "just now".
+            int start = BufferHealth.ContiguousTailStart(complete.Select(c => c.EndUtc).ToList(), ring.SegmentSeconds);
+            selected = complete.Skip(start).TakeLast(ring.PickForSeconds(requestedSeconds)).ToList();
         }
 
-        // Only the newest uninterrupted run counts as "just now".
-        int start = BufferHealth.ContiguousTailStart(
-            segments.Select(f => f.LastWriteTimeUtc).ToList(), segSec);
-        if (start > 0) segments.RemoveRange(0, start);
+        // The real durations drive the chapters and the saved length; an unreadable header (segment still open) drops the segment.
+        var withDurations = selected
+            .Select(c => c with { Duration = Mp4Duration.TryRead(c.Path, out var d) ? d : null })
+            .ToList();
 
-        material = BufferMaterial.Ok;
-        return segments.TakeLast(Math.Max(1, neededSegments)).ToList();
+        var current = epoch.Identity;
+        var generations = _generations.Values.ToList();
+        var suspensions = SuspensionsSnapshot();
+        var plan = ClipStitcher.Plan(withDurations,
+            (from, to) => ClipStitcher.ClassifyGap(from, to, nowUtc, current, generations, suspensions),
+            (run, from, to, gap) => ClipStitcher.ChapterTitle(run, from, to, gap, LocalClock));
+        return new ClipScan(BufferMaterial.Ok, plan);
+    }
+
+    /// <summary>The newest uninterrupted run, capped to <paramref name="neededSegments"/> (a GIF never jumps across a gap).</summary>
+    private GifScan ScanForGif(BufferEpoch epoch, int neededSegments, DateTime nowUtc)
+    {
+        var ring = epoch.Ring;
+        var (complete, material) = CollectComplete(epoch, nowUtc);
+        if (material != BufferMaterial.Ok) return new GifScan(material, Array.Empty<SegmentCandidate>());
+
+        int start = BufferHealth.ContiguousTailStart(complete.Select(c => c.EndUtc).ToList(), ring.SegmentSeconds);
+        var pick = complete.Skip(start).TakeLast(Math.Max(1, neededSegments)).ToList();
+        return new GifScan(BufferMaterial.Ok, pick);
     }
 
     /// <summary>
@@ -758,7 +1221,7 @@ public sealed class ReplayBufferService : IDisposable
     {
         if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
         {
-            BufferInfo?.Invoke(this, L.T("Speichern läuft bereits — kurz warten.", "A save is already in progress — one moment."));
+            BufferInfo?.Invoke(this, ClipSavePolicy.BusyMessage(_currentSave, SaveKind.Gif));
             SignalFailed(SaveKind.Gif, SaveFailureReason.Busy);
             return null;
         }
@@ -766,7 +1229,8 @@ public sealed class ReplayBufferService : IDisposable
         string? listPath = null;
         try
         {
-            if (!IsRunning || string.IsNullOrEmpty(_bufferDir))
+            var epoch = _epoch;   // one snapshot of the running recording for the whole save (see SaveLastAsync)
+            if (!IsRunning || epoch is null)
             {
                 BufferInfo?.Invoke(this, L.T("Buffer läuft gerade nicht — gleich nochmal.", "Buffer isn't running right now — try again shortly."));
                 SignalFailed(SaveKind.Gif, SaveFailureReason.NotRunning);
@@ -775,18 +1239,22 @@ public sealed class ReplayBufferService : IDisposable
 
             var g = _settings.Current.Gif;
             int gifSec = Math.Clamp(g.DurationSeconds, 1, 30);
-            var ring = _runningRing;   // the running ffmpeg's ring, not what the settings say now
+            var ring = epoch.Ring;   // the running ffmpeg's ring, not what the settings say now
             int segSec = ring.SegmentSeconds;
             // +1 so the trim has enough material; never more than the ring hands out, or the
             // oldest segment would sit inside the overwrite reserve.
             int neededSegments = ring.ClampPick((int)Math.Ceiling((double)gifSec / segSec) + 1);
+            var bufferDir = epoch.BufferDir;
+            var nowUtc = DateTime.UtcNow;
+            string? game = ResolveGameAtPress();
 
-            var pick = CollectRecentSegments(neededSegments, out var gifMaterial);
-            if (gifMaterial == BufferMaterial.Stalled)
+            var scan = await Task.Run(() => ScanForGif(epoch, neededSegments, nowUtc)).ConfigureAwait(false);
+            if (scan.Material == BufferMaterial.Stalled)
             {
                 ReportStalled(SaveKind.Gif);
                 return null;
             }
+            var pick = scan.Pick;
             if (pick.Count == 0)
             {
                 BufferInfo?.Invoke(this, L.T("Noch nicht genug Material für ein GIF. Gleich nochmal.",
@@ -797,18 +1265,18 @@ public sealed class ReplayBufferService : IDisposable
 
             SignalStarted(SaveKind.Gif);
 
-            var clipsDir = OutputDirectory();
+            var clipsDir = OutputDirectory(game);
             var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
             var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
             // 1) concat the covering segments into a temp mp4 (stream copy, instant).
-            tempMp4 = Path.Combine(_bufferDir, "_gif_src.mp4");
-            listPath = Path.Combine(_bufferDir, "_gif_list.txt");
+            tempMp4 = Path.Combine(bufferDir, "_gif_src.mp4");
+            listPath = Path.Combine(bufferDir, "_gif_list.txt");
             await File.WriteAllLinesAsync(listPath,
-                pick.Select(fi => $"file '{fi.FullName.Replace("'", @"'\''")}'")).ConfigureAwait(false);
+                pick.Select(c => $"file '{c.Path.Replace("'", @"'\''")}'")).ConfigureAwait(false);
             var concat = await RunWatchedFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4),
                 tempMp4, pick.Count * segSec,
-                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Length).ToList(), segSec)).ConfigureAwait(false);
+                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Bytes).ToList(), segSec)).ConfigureAwait(false);
             if (!concat.Succeeded || !File.Exists(tempMp4))
             {
                 if (concat.AbortedBy is { } concatWhy)
@@ -862,8 +1330,12 @@ public sealed class ReplayBufferService : IDisposable
             try { if (listPath != null && File.Exists(listPath)) File.Delete(listPath); } catch { }
             try { if (tempMp4 != null && File.Exists(tempMp4)) File.Delete(tempMp4); } catch { }
             Interlocked.Exchange(ref _saving, 0);
+            PruneAfterSave();
         }
     }
+
+    /// <summary>Test seam: the ffmpeg.exe the one-shot concat/gif runs use (null = the usual lookup).</summary>
+    internal string? FfmpegPathOverride { get; set; }
 
     /// <summary>Outcome of <see cref="RunWatchedFfmpegAsync"/>. AbortedBy is set when we killed ffmpeg.</summary>
     private readonly record struct WatchedRun(int ExitCode, ConcatVerdict? AbortedBy)
@@ -875,12 +1347,13 @@ public sealed class ReplayBufferService : IDisposable
     /// Runs a one-shot ffmpeg (concat/gif) on the shared concat slot and waits for it while
     /// <paramref name="outputPath"/> keeps growing (<see cref="ConcatWatch"/>). A hung process
     /// is killed; a slow but working one is left alone. Never throws for a missing ffmpeg.
+    /// <paramref name="onOutputLength"/> gets the sampled output size once per poll (progress).
     /// </summary>
     private async Task<WatchedRun> RunWatchedFfmpegAsync(string args, string outputPath, int clipSeconds,
-        TimeSpan? stallLimit = null, ConcatExpectation? expected = null)
+        TimeSpan? stallLimit = null, ConcatExpectation? expected = null, Action<long>? onOutputLength = null)
     {
         _concatFfmpeg?.Dispose();
-        _concatFfmpeg = new FFmpegService();
+        _concatFfmpeg = new FFmpegService(FfmpegPathOverride);
         if (!_concatFfmpeg.IsAvailable()) return new WatchedRun(-1, null);
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         _concatFfmpeg.Exited += (_, code) => tcs.TrySetResult(code);
@@ -893,7 +1366,13 @@ public sealed class ReplayBufferService : IDisposable
             if (done == tcs.Task)
                 return new WatchedRun(await tcs.Task.ConfigureAwait(false), null);
 
-            var verdict = watch.Observe(DateTime.UtcNow, OutputLength(outputPath));
+            long length = OutputLength(outputPath);
+            if (onOutputLength is not null)
+            {
+                try { onOutputLength(length); }
+                catch (Exception ex) { Logger.Warn("Save progress handler threw: " + ex.Message); }
+            }
+            var verdict = watch.Observe(DateTime.UtcNow, length);
             if (verdict != ConcatVerdict.Progressing)
             {
                 try { _concatFfmpeg?.Dispose(); } catch { }
@@ -940,6 +1419,13 @@ public sealed class ReplayBufferService : IDisposable
                     // returns the same stale footage. Restarting is the only way back.
                     if (IsStalled(out var stalledFor))
                     {
+                        // A full drive stalls ffmpeg too - restarting it in a loop would only make that worse.
+                        if (DiskProbe.TryGetFreeSpace(_bufferDir, out long freeStalled, out string driveStalled)
+                            && freeStalled < DiskPlan.CriticalBytes)
+                        {
+                            await StopForFullDiskAsync(driveStalled).ConfigureAwait(false);
+                            return;
+                        }
                         Logger.Warn($"Replay buffer stalled: no completed segment for {stalledFor.TotalSeconds:0}s — restarting.");
                         BufferError?.Invoke(this, L.T(
                             $"Buffer lieferte {stalledFor.TotalSeconds:0}s lang keine neuen Daten — wurde neu gestartet.",
@@ -949,6 +1435,10 @@ public sealed class ReplayBufferService : IDisposable
                     }
 
                     PruneOldSegments();
+
+                    // A 30-minute ring is gigabytes: watch the drive, not just the ring.
+                    if (await GuardDiskAsync().ConfigureAwait(false)) return;
+
                     long total = 0, largest = 0;
                     int count = 0;
                     foreach (var f in Directory.EnumerateFiles(_bufferDir, "seg_*.mp4"))
@@ -984,10 +1474,61 @@ public sealed class ReplayBufferService : IDisposable
         }, token);
     }
 
+    /// <summary>Stops the buffer for good (Enabled stays as the user set it) and says why.</summary>
+    private async Task StopForFullDiskAsync(string drive)
+    {
+        Logger.Warn($"Replay buffer: drive {drive} is almost full - stopping the buffer.");
+        await StopAsync().ConfigureAwait(false);
+        BufferError?.Invoke(this, FullDiskMessage(drive));
+    }
+
     /// <summary>
-    /// Keeps the newest segments (enough to cover the buffer window plus the
-    /// currently-filling generation) and deletes older ones. This is what bounds
-    /// disk usage now that restarts no longer wipe the directory.
+    /// Runtime disk guard, once per watchdog tick. Critical free space stops the buffer; low free space shortens
+    /// the lookback to what still fits and restarts (the warm restart prunes with the smaller window). The decision
+    /// uses the OBSERVED segment size, so an underestimated bitrate cannot loop shrink→same cap.
+    /// Returns true when it stopped or restarted the buffer (the watchdog then ends).
+    /// </summary>
+    private async Task<bool> GuardDiskAsync()
+    {
+        if (!DiskProbe.TryGetFreeSpace(_bufferDir, out long free, out string drive)) return false;
+
+        if (free < DiskPlan.CriticalBytes)
+        {
+            await StopForFullDiskAsync(drive).ConfigureAwait(false);
+            return true;
+        }
+        if (free >= DiskPlan.LowSpaceBytes) return false;
+
+        int seg = Math.Max(1, _runningRing.SegmentSeconds);
+        int current = EffectiveDurationSeconds;
+        int gen = _generation;
+        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, CurrentPlan?.MonitorIndex ?? 0);
+        long segBytes = DiskPlan.SegmentBytes(DiskPlan.EstimateSegmentBytes(seg, videoBps),
+            DiskPlan.ObservedBytesPerSecond(RecentSamples(g => g.Generation == gen, 12)), seg);
+        var d = DiskPlan.Decide(current, seg, segBytes, free + DiskProbe.OwnSegmentBytes(_bufferDir));
+
+        if (d.CannotStart)
+        {
+            await StopForFullDiskAsync(drive).ConfigureAwait(false);
+            return true;
+        }
+        if (d.EffectiveSeconds >= current) return false;
+
+        _diskCapSeconds = d.EffectiveSeconds;
+        _diskLimited = true;
+        _lastAnnouncedCap = d.EffectiveSeconds;
+        Logger.Warn($"Replay buffer: only {DiskPlan.FormatBytes(free)} free on {drive} - shortening the lookback to {DurationText.Format(d.EffectiveSeconds)}.");
+        BufferInfo?.Invoke(this, L.T(
+            $"Wenig Speicher auf {drive} — Rückblick auf {DurationText.Format(d.EffectiveSeconds)} gekürzt (frei {DiskPlan.FormatBytes(free)}).",
+            $"Low space on {drive} — lookback shortened to {DurationText.Format(d.EffectiveSeconds)} ({DiskPlan.FormatBytes(free)} free)."));
+        await RestartIfRunningAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// Deletes what can never be part of a clip again (see <see cref="SegmentRetention"/>) and, as a backstop,
+    /// anything beyond the keep count. This is what bounds disk usage now that restarts no longer wipe the directory:
+    /// the previous generation goes as soon as it is unusable instead of staying next to the current ring.
     /// </summary>
     private void PruneOldSegments()
     {
@@ -997,14 +1538,26 @@ public sealed class ReplayBufferService : IDisposable
         if (Volatile.Read(ref _saving) != 0) return;
         try
         {
+            var files = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4").ToList();
+            var deleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (_currentIdentity is { } identity)
+            {
+                var ctx = new RetentionContext(DateTime.UtcNow, _sessionStartUtc,
+                    SegmentRetention.AgeWindowSeconds(_runningRing, CurrentRingPlan()),
+                    _generation, identity, _generations, User32.IsWindow);
+                foreach (var fi in files)
+                {
+                    if (!SegmentRetention.ShouldDelete(new SegmentFileFacts(fi.Name, fi.LastWriteTimeUtc), ctx)) continue;
+                    try { fi.Delete(); deleted.Add(fi.FullName); } catch { }
+                }
+            }
+
             // Keep the window we might save plus a full extra generation of slack.
             int keep = EffectiveKeep();
-
-            var files = Directory.EnumerateFiles(_bufferDir, "seg_*.mp4")
-                .Select(p => new FileInfo(p))
-                .OrderByDescending(fi => fi.LastWriteTimeUtc)
-                .ToList();
-            foreach (var fi in files.Skip(keep))
+            foreach (var fi in files.Where(f => !deleted.Contains(f.FullName))
+                                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                                    .Skip(keep))
             {
                 try { fi.Delete(); } catch { }
             }
@@ -1013,24 +1566,21 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
-    /// True when the segment file belongs to a generation with the CURRENT video
-    /// identity (same window+size / monitor+size). Filenames are seg_{gen}_{NN}.mp4.
+    /// True when the segment file belongs to a generation with the CURRENT identity (same window+size /
+    /// monitor+size and the same encoding). Filenames are seg_{gen}_{NN}.mp4.
     /// </summary>
-    private bool IsCurrentIdentity(string fileName)
+    private bool IsCurrentIdentity(string fileName, SegmentIdentity? id)
     {
-        var id = _currentIdentity;
         if (id is null) return true;
-        var parts = Path.GetFileNameWithoutExtension(fileName).Split('_');
-        return parts.Length == 3
-               && int.TryParse(parts[1], out int gen)
-               && _genIdentity.TryGetValue(gen, out var genId)
-               && genId == id;
+        return SegmentName.TryParseGeneration(fileName, out int gen)
+               && _generations.TryGetValue(gen, out var info)
+               && info.Identity == id;
     }
 
     private RingPlan CurrentRingPlan()
     {
         var rb = _settings.Current.ReplayBuffer;
-        return RingPlan.Create(rb.DurationSeconds, rb.SegmentDurationSeconds);
+        return RingPlan.Create(EffectiveDurationSeconds, rb.SegmentDurationSeconds);
     }
 
     /// <summary>Keep count for prune and the size watchdog: the larger of running and configured ring.</summary>
@@ -1054,21 +1604,12 @@ public sealed class ReplayBufferService : IDisposable
         });
     }
 
-    private static void ClearBufferDir(string dir)
-    {
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(dir, "seg_*.mp4"))
-            {
-                try { File.Delete(f); } catch { }
-            }
-        }
-        catch { }
-    }
+    private static void ClearBufferDir(string dir) => BufferFolderRules.DeleteOwnFiles(dir);
 
     public void Dispose()
     {
         CancelDebounce();
+        try { _disposeCts.Cancel(); } catch { }
         _watchdogCts?.Cancel();
         _ffmpeg?.Dispose();
         _concatFfmpeg?.Dispose();

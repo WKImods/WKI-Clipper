@@ -29,6 +29,8 @@ public partial class CaptureView : UserControl
     private TextBlock? _targetText;
     private TextBlock? _audioText;
     private TextBlock? _noteText;
+    // Shown in the Automatik panel while the lookback is long: Alt-Tab leaves holes in a 5+ minute clip.
+    private TextBlock? _autoLongWarn;
     private System.Windows.Shapes.Ellipse? _bufferDot;
     private TextBlock? _bufferText;
     private System.Windows.Shapes.Ellipse? _recDot;
@@ -129,9 +131,19 @@ public partial class CaptureView : UserControl
             Style = (Style)FindResource("MutedStyle"),
             TextWrapping = TextWrapping.Wrap,
             Text = L.T(
-                "Freecam: Das Ziel folgt automatisch dem Fenster, das du anklickst (nach ~1,5 s Verweilzeit). Klickst du auf Arma, steht hier Arma — ohne manuelles Umstellen.\n\nLaufende Aufnahmen sind davon unberührt: Eine gestartete Strg+F9-Aufnahme bleibt bei ihrem Fenster, und ein F9-Clip enthält immer nur das aktuell gepinnte Fenster (nie zwei gemischt).\n\nFür ein festes Stammspiel, das NIE wechseln soll (auch nicht beim Fokuswechsel), nutze den Fenster-Modus.",
-                "Freecam: the target automatically follows the window you click (after ~1.5 s dwell). Click into Arma and it reads Arma — no manual switching.\n\nRunning captures are untouched: a started Ctrl+F9 recording stays on its window, and an F9 clip only ever contains the currently pinned window (never two mixed).\n\nFor one main game that must NEVER switch (not even on focus change), use Window mode.")
+                "Freecam: Das Ziel folgt automatisch dem Fenster, das du anklickst (nach ~1,5 s Verweilzeit). Klickst du auf Arma, steht hier Arma — ohne manuelles Umstellen.\n\nLaufende Aufnahmen sind davon unberührt: Eine gestartete Strg+F9-Aufnahme bleibt bei ihrem Fenster, und ein F9-Clip enthält nur das gepinnte Fenster; Zeit in anderen Fenstern fehlt und wird als Lücke (Kapitel + Notiz) markiert.\n\nFür ein festes Stammspiel, das NIE wechseln soll (auch nicht beim Fokuswechsel), nutze den Fenster-Modus.",
+                "Freecam: the target automatically follows the window you click (after ~1.5 s dwell). Click into Arma and it reads Arma — no manual switching.\n\nRunning captures are untouched: a started Ctrl+F9 recording stays on its window, and an F9 clip only contains the pinned window; time spent in other windows is missing and marked as a gap (chapter + note).\n\nFor one main game that must NEVER switch (not even on focus change), use Window mode.")
         });
+        _autoLongWarn = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0),
+            Visibility = Visibility.Collapsed,
+            Text = L.T("Langer Rückblick + Automatik: Alt-Tab erzeugt Lücken. Für Admin-Beweise „Ganzer Monitor“ oder „Bestimmtes Fenster“ nutzen.",
+                       "Long lookback + Automatic: Alt-Tab leaves gaps. For admin evidence use “Whole monitor” or “Specific window”.")
+        };
+        _autoPanel.Children.Add(_autoLongWarn);
 
         // Window panel: shared window picker.
         _windowPanel = new StackPanel { Margin = new Thickness(24, 6, 0, 0) };
@@ -156,8 +168,8 @@ public partial class CaptureView : UserControl
         _windowPanel.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
-            Text = L.T("Pinnt ausschließlich auf das gewählte Programm, sobald es läuft — ideal für dein Hauptspiel.",
-                       "Pins exclusively to the chosen program as soon as it runs — ideal for your main game.")
+            Text = L.T("Pinnt ausschließlich auf das gewählte Programm, sobald es läuft — ideal für dein Hauptspiel. Fenstergröße ändern (z. B. Vollbild umschalten) beendet den bisherigen Rückblick.",
+                       "Pins exclusively to the chosen program as soon as it runs — ideal for your main game. Resizing the window (e.g. toggling fullscreen) ends the previous lookback.")
         });
 
         // Monitor panel: monitor dropdown.
@@ -322,6 +334,10 @@ public partial class CaptureView : UserControl
                 : $"{prefix}{mon}";
         }
 
+        if (_autoLongWarn != null)
+            _autoLongWarn.Visibility = host.ReplayBuffer.EffectiveDurationSeconds >= DurationText.LongClipSeconds
+                ? Visibility.Visible : Visibility.Collapsed;
+
         // Both F9 and Strg+F9 use the pinned target; a divergence only exists
         // transiently (freecam dwell) or when a fresh resolve differs — be
         // honest about it then.
@@ -340,8 +356,9 @@ public partial class CaptureView : UserControl
         if (host.ReplayBuffer.IsRunning)
         {
             _bufferDot!.Fill = new SolidColorBrush(Green);
-            int avail = host.ReplayBuffer.AvailableSeconds();
-            _bufferText!.Text = L.T($"Buffer aktiv · {avail} s bereit für F9", $"Buffer active · {avail} s ready for F9");
+            string avail = DurationText.FormatActual(host.ReplayBuffer.AvailableSeconds());
+            string limited = host.ReplayBuffer.DiskLimited ? L.T(" (gekürzt: wenig Platz)", " (shortened: low space)") : "";
+            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{limited}", $"Buffer active · {avail} ready for F9{limited}");
         }
         else
         {

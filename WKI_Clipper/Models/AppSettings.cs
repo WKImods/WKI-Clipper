@@ -244,6 +244,15 @@ public sealed class ReplayBufferSettings
     public bool Enabled { get; set; } = true;
     public int DurationSeconds { get; set; } = 60;
     public int SegmentDurationSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Hidden (settings.json only). False = old behaviour: only the newest uninterrupted run is saved,
+    /// instead of stitching the runs before and after a gap (Alt-Tab, Ctrl+F9 recording) into one clip.
+    /// </summary>
+    public bool StitchAcrossGaps { get; set; } = true;
+
+    /// <summary>Hidden (settings.json only). Null = <c>KeyframePolicy.Default</c>.</summary>
+    public WKI_Clipper.Services.KeyframeMode? KeyframeModeOverride { get; set; }
 }
 
 public sealed class OutputSettings

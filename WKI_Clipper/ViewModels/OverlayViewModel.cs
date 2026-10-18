@@ -64,12 +64,13 @@ public partial class OverlayViewModel : ObservableObject
             IsBufferRunning = running;
             UpdateAudioStatus();
             BufferStatusText = running
-                ? L.T($"Buffer aktiv ({Settings.ReplayBuffer.DurationSeconds} s)", $"Buffer active ({Settings.ReplayBuffer.DurationSeconds} s)")
+                ? L.T($"Buffer aktiv ({DurationText.Format(_host.ReplayBuffer.EffectiveDurationSeconds)})",
+                      $"Buffer active ({DurationText.Format(_host.ReplayBuffer.EffectiveDurationSeconds)})")
                 : L.T("Buffer aus", "Buffer off");
         };
-        _host.ReplayBuffer.ReplaySaved += (_, p) =>
+        _host.ReplayBuffer.ReplaySaved += (_, info) =>
         {
-            LastEvent = L.T($"Clip gespeichert: {Path.GetFileName(p)}", $"Clip saved: {Path.GetFileName(p)}");
+            LastEvent = L.T($"Clip gespeichert: {Path.GetFileName(info.Path)}", $"Clip saved: {Path.GetFileName(info.Path)}");
             ReloadClips();
         };
         _host.ReplayBuffer.BufferError += (_, msg) =>

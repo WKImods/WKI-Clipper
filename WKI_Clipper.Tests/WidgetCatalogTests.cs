@@ -45,6 +45,14 @@ public sealed class WidgetCatalogTests
         Assert.EndsWith("01:23", text);
     }
 
+    [Fact]
+    public void Status_names_a_long_buffer_in_minutes()
+    {
+        var (text, _) = WidgetCatalog.Status(true, 1800, recording: false, TimeSpan.Zero);
+        Assert.Contains("30 min", text);
+        Assert.DoesNotContain("1800", text);
+    }
+
     [Theory]
     [InlineData(true, BoardStatusKind.Active)]
     [InlineData(false, BoardStatusKind.Paused)]

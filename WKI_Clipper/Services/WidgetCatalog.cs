@@ -88,8 +88,9 @@ public static class WidgetCatalog
     {
         if (recording)
             return (L.T($"Aufnahme läuft · {Clock(recordingFor)}", $"Recording · {Clock(recordingFor)}"), BoardStatusKind.Recording);
+        string length = DurationText.Format(bufferSeconds);
         return bufferRunning
-            ? (L.T($"Buffer aktiv · {bufferSeconds} s", $"Buffer active · {bufferSeconds} s"), BoardStatusKind.Active)
+            ? (L.T($"Buffer aktiv · {length}", $"Buffer active · {length}"), BoardStatusKind.Active)
             : (L.T("Buffer pausiert", "Buffer paused"), BoardStatusKind.Paused);
     }
 

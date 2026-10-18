@@ -13,6 +13,8 @@ public partial class ToastNotificationWindow : Window
 {
     public string? FilePath { get; private set; }
     public ToastKind Kind { get; private set; }
+    /// <summary>Identifies a toast that is updated in place (save progress → clip saved) instead of stacking a new one.</summary>
+    public string? Key { get; set; }
 
     private readonly DispatcherTimer _autoClose;
     public event EventHandler? Closing2;
@@ -29,6 +31,9 @@ public partial class ToastNotificationWindow : Window
         Kind = kind;
         TitleText.Text = title;
         BodyText.Text = body;
+        // A one-line body is cut with an ellipsis (long file names); a body with a second line wraps.
+        bool multiLine = body.Contains('\n');
+        BodyText.TextWrapping = multiLine ? TextWrapping.Wrap : TextWrapping.NoWrap;
         FilePath = filePath;
         HintText.Text = Services.L.T("Klicken zum Öffnen", "Click to open");
         HintText.Visibility = string.IsNullOrEmpty(filePath) ? Visibility.Collapsed : Visibility.Visible;
@@ -58,6 +63,20 @@ public partial class ToastNotificationWindow : Window
         };
         BeginAnimation(OpacityProperty, fadeIn);
 
+        _autoClose.Interval = TimeSpan.FromSeconds(durationSeconds);
+        _autoClose.Start();
+    }
+
+    /// <summary>
+    /// Replaces the content of a toast that is already on screen: restores full opacity (it may be fading out)
+    /// and restarts the auto-close timer.
+    /// </summary>
+    public void Update(ToastKind kind, string title, string body, string? filePath, double durationSeconds)
+    {
+        Configure(kind, title, body, filePath);
+        _autoClose.Stop();
+        BeginAnimation(OpacityProperty, null);
+        Opacity = 1;
         _autoClose.Interval = TimeSpan.FromSeconds(durationSeconds);
         _autoClose.Start();
     }

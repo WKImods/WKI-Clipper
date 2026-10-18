@@ -71,15 +71,46 @@ public partial class App : Application
             {
                 if (Host.ManualRecording.IsRecording) return;
                 TrayHost.UpdateState(running ? TrayState.BufferActive : TrayState.Idle,
-                    running ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
+                    running ? DurationText.Format(Host.ReplayBuffer.EffectiveDurationSeconds) : null);
             };
-            Host.ReplayBuffer.ReplaySaved += (_, path) =>
+            // "clip-save" is one toast over a clip's whole life: progress while a long clip is written, then
+            // the result in the same spot (a short clip shows only the result).
+            const string ClipToastKey = "clip-save";
+            long lastProgress = -1;
+            Host.ReplayBuffer.SaveStarted += (_, kind) =>
             {
-                ToastService.Show(Views.ToastKind.Clip,
-                    L.T($"Clip gespeichert ({Host.Settings.Current.ReplayBuffer.DurationSeconds} s)",
-                        $"Clip saved ({Host.Settings.Current.ReplayBuffer.DurationSeconds} s)"),
-                    System.IO.Path.GetFileName(path),
-                    path);
+                if (kind == SaveKind.Clip) Interlocked.Exchange(ref lastProgress, -1);
+            };
+            Host.ReplayBuffer.SaveProgress += (_, p) =>
+            {
+                if (p.Kind != SaveKind.Clip) return;
+                // Short clips are done before a progress toast would be worth the flicker.
+                if (p.ClipSeconds < DurationText.LongClipSeconds && p.Elapsed < TimeSpan.FromSeconds(3)) return;
+                int pct = (int)Math.Floor(p.Fraction * 100);
+                long step = pct * 2L + (p.Phase == SavePhase.Finalizing ? 1 : 0);   // a phase change counts as an update, too
+                if (Interlocked.Exchange(ref lastProgress, step) == step) return;
+                string len = DurationText.Format(p.ClipSeconds);
+                ToastService.ShowOrUpdate(ClipToastKey, Views.ToastKind.Clip,
+                    L.T($"Speichere {len}-Clip … {pct} %", $"Saving {len} clip … {pct} %"),
+                    p.Phase == SavePhase.Finalizing
+                        ? L.T("Finalisiere …", "Finalizing …")
+                        : L.T("F8/F9 sind bis zum Ende gesperrt.", "F8/F9 are blocked until it finishes."),
+                    durationSeconds: 20);
+            };
+            Host.ReplayBuffer.ReplaySaved += (_, info) =>
+            {
+                bool gaps = info.Gaps.Count > 0;
+                string body = System.IO.Path.GetFileName(info.Path);
+                if (gaps)
+                    body += "\n" + ClipStitcher.GapToastLine(info.Gaps);
+                else if (info.Seconds < info.RequestedSeconds - 10)
+                    body += "\n" + L.T(
+                        $"Buffer hatte erst {DurationText.FormatActual(info.Seconds)} von {DurationText.Format(info.RequestedSeconds)}",
+                        $"Buffer only had {DurationText.FormatActual(info.Seconds)} of {DurationText.Format(info.RequestedSeconds)}");
+                ToastService.ShowOrUpdate(ClipToastKey, Views.ToastKind.Clip,
+                    L.T($"Clip gespeichert ({DurationText.FormatActual(info.Seconds)})",
+                        $"Clip saved ({DurationText.FormatActual(info.Seconds)})"),
+                    body, info.Path, gaps ? 8.0 : 4.0);
             };
             Host.ReplayBuffer.GifSaved += (_, path) =>
             {
@@ -100,7 +131,13 @@ public partial class App : Application
             // Sound cues. A save plays its cue when it STARTS (a long clip takes a while to write, the
             // feedback belongs to the key press); only save refusals/failures map to the error cue.
             Host.ReplayBuffer.SaveStarted += (_, _) => Host.Sounds.Play(SoundCue.ClipSaved);
-            Host.ReplayBuffer.SaveFailed += (_, _) => Host.Sounds.Play(SoundCue.Error);
+            Host.ReplayBuffer.SaveFailed += (_, failure) =>
+            {
+                Host.Sounds.Play(SoundCue.Error);
+                // A failed long save must not leave "Speichere … 42 %" standing; the reason arrives as its own notice.
+                // A second press that was only refused (busy) does not end the running save - its toast stays.
+                if (ClipSavePolicy.ClosesProgressToast(failure)) ToastService.Close(ClipToastKey);
+            };
             Host.ManualRecording.RecordingStarted += (_, path) =>
             {
                 Host.Sounds.Play(SoundCue.RecordingStarted);
@@ -114,7 +151,7 @@ public partial class App : Application
                 HideRecIndicator();
                 // Revert the tray icon regardless of outcome.
                 TrayHost.UpdateState(Host.ReplayBuffer.IsRunning ? TrayState.BufferActive : TrayState.Idle,
-                    Host.ReplayBuffer.IsRunning ? $"{Host.Settings.Current.ReplayBuffer.DurationSeconds} s" : null);
+                    Host.ReplayBuffer.IsRunning ? DurationText.Format(Host.ReplayBuffer.EffectiveDurationSeconds) : null);
                 Host.Sounds.Play(result.Success ? SoundCue.RecordingStopped : SoundCue.Error);
                 if (result.Success)
                     ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gespeichert", "Recording saved"),

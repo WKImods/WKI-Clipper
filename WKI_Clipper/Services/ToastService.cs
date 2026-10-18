@@ -33,12 +33,65 @@ public static class ToastService
                 ShowInternal(kind, title, body, filePath, durationSeconds));
     }
 
-    private static void ShowInternal(ToastKind kind, string title, string body,
-                                     string? filePath, double durationSeconds)
+    /// <summary>
+    /// Shows a toast under <paramref name="key"/>, or - when one with that key is still on screen - updates it in
+    /// place. A long save reports its progress this way and the "saved" toast then takes over the same spot.
+    /// </summary>
+    public static void ShowOrUpdate(string key, ToastKind kind, string title, string body, string? filePath = null,
+                                    double durationSeconds = 4.0)
+    {
+        var app = System.Windows.Application.Current;
+        if (app is null) return;
+
+        if (app.Dispatcher.CheckAccess())
+            ShowOrUpdateInternal(key, kind, title, body, filePath, durationSeconds);
+        else
+            app.Dispatcher.BeginInvoke(() =>
+                ShowOrUpdateInternal(key, kind, title, body, filePath, durationSeconds));
+    }
+
+    /// <summary>Fades out the toast with that key, if it is on screen.</summary>
+    public static void Close(string key)
+    {
+        var app = System.Windows.Application.Current;
+        if (app is null) return;
+
+        void CloseInternal()
+        {
+            try { _active.Find(w => w.Key == key)?.BeginFadeOut(); }
+            catch (Exception ex) { Logger.Error("ToastService.Close failed", ex); }
+        }
+        if (app.Dispatcher.CheckAccess()) CloseInternal();
+        else app.Dispatcher.BeginInvoke(CloseInternal);
+    }
+
+    private static void ShowOrUpdateInternal(string key, ToastKind kind, string title, string body,
+                                             string? filePath, double durationSeconds)
     {
         try
         {
-            var win = new ToastNotificationWindow();
+            var existing = _active.Find(w => w.Key == key);
+            if (existing is null)
+            {
+                ShowInternal(kind, title, body, filePath, durationSeconds, key);
+                return;
+            }
+            existing.Update(kind, title, body, filePath, durationSeconds);
+            existing.UpdateLayout();   // the body may have grown a line: stack the others below the new height
+            RepositionAll();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("ToastService.ShowOrUpdate failed", ex);
+        }
+    }
+
+    private static void ShowInternal(ToastKind kind, string title, string body,
+                                     string? filePath, double durationSeconds, string? key = null)
+    {
+        try
+        {
+            var win = new ToastNotificationWindow { Key = key };
             win.Configure(kind, title, body, filePath);
             win.Closing2 += (s, _) =>
             {

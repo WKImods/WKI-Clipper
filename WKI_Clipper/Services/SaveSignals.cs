@@ -19,7 +19,9 @@ public enum SaveFailureReason
     /// <summary>ffmpeg failed, was missing, or an unexpected error interrupted the save.</summary>
     Failed,
     /// <summary>The clip exists but could not be given its final name (it is still there as .part).</summary>
-    RenameFailed
+    RenameFailed,
+    /// <summary>The clips drive has too little free space for the clip (checked before anything is written).</summary>
+    NoDiskSpace
 }
 
 /// <summary>A refused or failed save. Distinct from the free-text BufferInfo/BufferError notices.</summary>

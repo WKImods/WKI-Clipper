@@ -23,6 +23,8 @@ public partial class StatusView : UserControl
     private TextBlock? _ffmpegText;
     private TextBlock? _clipsPathText;
     private TextBlock? _diskSpaceText;
+    private TextBlock? _bufferPathText;
+    private TextBlock? _bufferSpaceText;
 
     public StatusView()
     {
@@ -57,14 +59,17 @@ public partial class StatusView : UserControl
         ActionsHeading.Text = L.T("Aktionen", "Actions");
         ToggleRecBtn.Content = L.T("Recording starten/stoppen", "Start/stop recording");
         ToggleBufBtn.Content = L.T("Buffer ein/aus", "Buffer on/off");
-        SaveReplayBtn.Content = L.T("Letzte N s speichern", "Save last N s");
+        string lookback = DurationText.Format(App.Host?.ReplayBuffer.EffectiveDurationSeconds
+                                              ?? DurationText.Clamp(App.Host?.Settings.Current.ReplayBuffer.DurationSeconds ?? 60));
+        SaveReplayBtn.Content = L.T($"Letzte {lookback} speichern", $"Save last {lookback}");
         ScreenshotBtn.Content = L.T("Screenshot", "Screenshot");
 
         // === Recording row ===
         _recordingDot = MakeDot();
         _recordingText = MakeRowText();
         InfoContainer.Children.Add(MakeCard(L.T("Aufnahme-Status", "Recording status"),
-            L.T("Zeigt ob gerade manuell aufgenommen wird (Strg+F9).", "Shows whether a manual recording is running (Ctrl+F9)."),
+            L.T("Zeigt ob gerade manuell aufgenommen wird (Strg+F9). Eine Aufnahme pausiert den Replay-Buffer.",
+                "Shows whether a manual recording is running (Ctrl+F9). A recording pauses the replay buffer."),
             MakeIconRow(_recordingDot, _recordingText)));
 
         // === Buffer row ===
@@ -90,10 +95,14 @@ public partial class StatusView : UserControl
         _ffmpegText = MakeRowText();
         _clipsPathText = MakeRowText();
         _diskSpaceText = MakeRowText();
+        _bufferPathText = MakeRowText();
+        _bufferSpaceText = MakeRowText();
         var sysStack = new StackPanel();
         sysStack.Children.Add(MakeLabeledRow("FFmpeg",          _ffmpegText));
         sysStack.Children.Add(MakeLabeledRow(L.T("Clips-Ordner", "Clips folder"), _clipsPathText));
         sysStack.Children.Add(MakeLabeledRow(L.T("Freier Speicher", "Free space"), _diskSpaceText));
+        sysStack.Children.Add(MakeLabeledRow(L.T("Buffer-Ordner", "Buffer folder"), _bufferPathText));
+        sysStack.Children.Add(MakeLabeledRow(L.T("Freier Speicher (Buffer)", "Free space (buffer)"), _bufferSpaceText));
         InfoContainer.Children.Add(MakeCard("System",
             L.T("Wo Dateien landen und wie viel Platz noch da ist.", "Where files end up and how much space is left."),
             sysStack));
@@ -128,9 +137,10 @@ public partial class StatusView : UserControl
         if (host.ReplayBuffer.IsRunning)
         {
             _bufferDot!.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0x6A, 0x2C));
-            int avail = host.ReplayBuffer.AvailableSeconds();
-            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} s bereit  ·  F9 speichert",
-                                    $"Buffer active  ·  {avail} s ready  ·  F9 saves");
+            string avail = DurationText.FormatActual(host.ReplayBuffer.AvailableSeconds());
+            string limited = host.ReplayBuffer.DiskLimited ? L.T("  ·  gekürzt: wenig Platz", "  ·  shortened: low space") : "";
+            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{limited}",
+                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{limited}");
         }
         else
         {
@@ -172,22 +182,31 @@ public partial class StatusView : UserControl
         // Clips path + disk space
         var clipsDir = SettingsService.ExpandPath(s.Output.ClipsFolder);
         _clipsPathText!.Text = clipsDir;
+        _diskSpaceText!.Text = DriveSpaceText(clipsDir);
+
+        // The buffer folder is where a 30-minute lookback lives (6-7 GB, up to ~25 GB at "very high").
+        var bufferDir = SettingsService.ExpandPath(PathRules.SafeBufferFolder(
+            s.Output.BufferFolder, s.Output.ClipsFolder, s.Output.ScreenshotsFolder, PathRules.DefaultBufferFolder,
+            PathRules.InstallDirectory));
+        _bufferPathText!.Text = bufferDir;
+        _bufferSpaceText!.Text = DriveSpaceText(bufferDir);
+    }
+
+    private static string DriveSpaceText(string folder)
+    {
         try
         {
-            var root = System.IO.Path.GetPathRoot(clipsDir);
+            var root = System.IO.Path.GetPathRoot(folder);
             if (!string.IsNullOrEmpty(root))
             {
                 var drive = new DriveInfo(root);
                 if (drive.IsReady)
-                {
-                    _diskSpaceText!.Text = FormatBytes(drive.AvailableFreeSpace)
-                        + "  /  " + FormatBytes(drive.TotalSize) + L.T(" auf ", " on ") + drive.Name;
-                    return;
-                }
+                    return DiskPlan.FormatBytes(drive.AvailableFreeSpace)
+                        + "  /  " + DiskPlan.FormatBytes(drive.TotalSize) + L.T(" auf ", " on ") + drive.Name;
             }
-            _diskSpaceText!.Text = "—";
+            return "—";
         }
-        catch { _diskSpaceText!.Text = "—"; }
+        catch { return "—"; }
     }
 
     private FrameworkElement MakeCard(string title, string description, FrameworkElement content)
@@ -260,13 +279,4 @@ public partial class StatusView : UserControl
         VerticalAlignment = VerticalAlignment.Center,
         TextWrapping = TextWrapping.Wrap
     };
-
-    private static string FormatBytes(long bytes)
-    {
-        const double GB = 1024.0 * 1024 * 1024;
-        const double TB = GB * 1024;
-        if (bytes >= TB) return $"{bytes / TB:F2} TB";
-        if (bytes >= GB) return $"{bytes / GB:F1} GB";
-        return $"{bytes / (1024.0 * 1024):F0} MB";
-    }
 }

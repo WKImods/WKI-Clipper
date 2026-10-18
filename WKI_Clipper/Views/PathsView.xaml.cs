@@ -25,8 +25,8 @@ public partial class PathsView : UserControl
             L.T("Hier landen PNG-Screenshots vom aktiven Fenster.",
                 "PNG screenshots of the active window end up here.")),
         (PathKind.Buffer,      L.T("Buffer-Ordner (temporär)", "Buffer folder (temporary)"),
-            L.T("Live-Segmente des Replay-Buffers. Wird beim App-Start geleert.",
-                "Live segments of the replay buffer. Cleared at app start.")),
+            L.T("Live-Segmente des Replay-Buffers (bei 30 min Rückblick ca. 6–7 GB, „Sehr hoch“ bis ~25 GB) — am besten auf ein Laufwerk mit viel Platz. Beim Wechsel wird der alte Ordner geleert.",
+                "Live segments of the replay buffer (about 6–7 GB for a 30 min lookback, up to ~25 GB at “Very high”) — best on a drive with plenty of space. The old folder is emptied when you switch.")),
     };
 
     // One entry per row: re-checks a row whose last edit was refused, because a change in
@@ -167,6 +167,24 @@ public partial class PathsView : UserControl
         };
         bool refused = false;
 
+        // A folder saved before the rules existed ("D:", the program folder, ...) keeps a standing note. The buffer is
+        // replaced by the default for the run; a clips or screenshots folder is NOT moved - the user is only told.
+        var standingText = new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(32, 6, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        void RefreshStandingNote()
+        {
+            var saved = GetPath(host, kind);
+            var text = FolderMessages.StandingWarning(ProblemOf(kind, saved), LeafOf(kind), saved, Expand(DefaultFor(kind)));
+            standingText.Text = text ?? "";
+            standingText.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+        }
+
         // Saves the box text — unless it would let the replay buffer write its segments into the
         // clips/screenshots folder (the gallery would list one "clip" per segment). Then the last
         // saved value stays in effect and the row says why.
@@ -180,6 +198,7 @@ public partial class PathsView : UserControl
                 SetPath(host, kind, box.Text);
                 host.Settings.Save();
                 UpdateStatusDot(statusDot, box.Text);
+                RefreshStandingNote();
                 foreach (var revalidate in _revalidators) revalidate();
                 return;
             }
@@ -192,6 +211,22 @@ public partial class PathsView : UserControl
         }
         _revalidators.Add(() => { if (refused) Apply(); });
 
+        // The buffer folder is saved on every keystroke (see Apply) but the buffer must not restart per keystroke:
+        // it restarts once, when the edit is over (focus leaves the box) or a browse/reset picked a folder.
+        string rememberedBufferFolder = GetPath(host, kind);
+        void RestartBufferIfFolderChanged()
+        {
+            if (kind != PathKind.Buffer) return;
+            var saved = GetPath(host, kind);
+            if (string.Equals(saved, rememberedBufferFolder, StringComparison.Ordinal)) return;
+            rememberedBufferFolder = saved;
+            host.ReplayBuffer.RequestRestart();
+        }
+        if (kind == PathKind.Buffer)
+        {
+            box.GotFocus += (_, _) => rememberedBufferFolder = GetPath(host, kind);
+            box.LostFocus += (_, _) => RestartBufferIfFolderChanged();
+        }
         // Browse/reset are single deliberate picks: refuse them outright instead of leaving
         // an unsaved value in the box.
         void TrySet(string value)
@@ -203,7 +238,9 @@ public partial class PathsView : UserControl
                 return;
             }
             box.Text = value;
+            RestartBufferIfFolderChanged();
         }
+
 
         // Wire events
         box.TextChanged += (_, _) => Apply();
@@ -248,6 +285,7 @@ public partial class PathsView : UserControl
         stack.Children.Add(header);
         stack.Children.Add(grid);
         stack.Children.Add(conflictText);
+        stack.Children.Add(standingText);
 
         var card = new Border
         {
@@ -259,8 +297,22 @@ public partial class PathsView : UserControl
         };
 
         UpdateStatusDot(statusDot, box.Text);
+        RefreshStandingNote();
         return card;
     }
+
+    private static string LeafOf(PathKind kind) => kind switch
+    {
+        PathKind.Clips => "Clips",
+        PathKind.Screenshots => "Screenshots",
+        _ => "buffer"
+    };
+
+    /// <summary>What is wrong with <paramref name="folder"/> as the folder for <paramref name="kind"/>, if anything.</summary>
+    private static FolderProblem ProblemOf(PathKind kind, string? folder)
+        => kind == PathKind.Buffer
+            ? PathRules.BufferFolderProblem(folder, PathRules.InstallDirectory)
+            : PathRules.OutputFolderProblem(folder, PathRules.InstallDirectory);
 
     private static System.Windows.Controls.Button MakeButton(string content, AppHost host)
     {
@@ -327,6 +379,11 @@ public partial class PathsView : UserControl
     /// </summary>
     private static string? ConflictReason(AppHost host, PathKind kind, string candidate)
     {
+        // First: is it a real, full folder at all - not "D:", not a relative path, not the program's own folder?
+        var problem = ProblemOf(kind, candidate);
+        if (problem != FolderProblem.None)
+            return FolderMessages.Refusal(problem, LeafOf(kind), candidate);
+
         if (kind == PathKind.Buffer)
         {
             foreach (var other in new[] { PathKind.Clips, PathKind.Screenshots })

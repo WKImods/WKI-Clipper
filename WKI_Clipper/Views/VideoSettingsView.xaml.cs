@@ -17,6 +17,11 @@ public partial class VideoSettingsView : UserControl
     private System.Windows.Controls.ComboBox? _resolutionBox;
     private System.Windows.Controls.ComboBox? _qualityBox;
     private TextBox? _customBitrateBox;
+    private TextBlock? _bufferHint;
+    private TextBlock? _bufferDiskWarn;
+    private TextBlock? _bufferLongNote;
+    // Re-evaluates the buffer-length hint when the bitrate changes (the byte estimate follows it).
+    private Action? _refreshBufferHint;
     // True while RefreshCodecBox rebuilds the list programmatically, so the
     // SelectionChanged handler ignores the induced selection changes (which
     // otherwise fire Save + buffer restart on every codec-detection tick).
@@ -189,28 +194,100 @@ public partial class VideoSettingsView : UserControl
         };
         BufferRows.Children.Add(bufferEnabled);
 
-        var bufferValues = new[] { 15, 30, 45, 60, 90, 120, 180 };
+        var bufferValues = DurationText.Choices;
         var bufferDur = new System.Windows.Controls.ComboBox { MinWidth = 220 };
-        foreach (var s in bufferValues) bufferDur.Items.Add(L.T($"{s} Sekunden", $"{s} seconds"));
-        var initialIdx = Array.IndexOf(bufferValues, host.Settings.Current.ReplayBuffer.DurationSeconds);
-        bufferDur.SelectedIndex = initialIdx >= 0 ? initialIdx : 3; // default 60s
+        foreach (var s in bufferValues) bufferDur.Items.Add(DurationText.Format(s));
+        bufferDur.SelectedIndex = InitialBufferIndex(bufferValues, host.Settings.Current.ReplayBuffer.DurationSeconds);
+
+        // What the chosen length costs on the buffer drive; a 30-minute lookback is 6-7 GB (up to ~25 GB at "very high").
+        _bufferHint = new TextBlock { Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap };
+        _bufferDiskWarn = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x40)),
+            Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed
+        };
+        _bufferLongNote = new TextBlock
+        {
+            Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+            Text = L.T("Lange Rückblicke: Für lückenlose Beweise das Aufnahme-Ziel „Ganzer Monitor“ oder „Bestimmtes Fenster“ wählen. In „Automatik“ fehlt die Zeit in anderen Fenstern (Alt-Tab) — sie wird im Clip als Kapitel und Notiz markiert. Strg+F9-Aufnahmen pausieren den Buffer. Fenstergröße/Vollbild, Codec oder FPS ändern beendet den bisherigen Rückblick. Ein 30-min-Clip braucht je nach Platte 20–90 s zum Speichern; F8/F9 sind solange gesperrt.",
+                       "Long lookbacks: for gap-free evidence choose the capture target “Whole monitor” or “Specific window”. In “Automatic” the time spent in other windows (Alt-Tab) is missing — it is marked in the clip as a chapter and a note. Ctrl+F9 recordings pause the buffer. Changing the window size/fullscreen, codec or FPS ends the previous lookback. A 30 min clip takes 20–90 s to save depending on the disk; F8/F9 are blocked meanwhile.")
+        };
+        void RefreshBufferHint()
+        {
+            if (_bufferHint is null || _bufferDiskWarn is null || _bufferLongNote is null) return;
+            int idx = bufferDur.SelectedIndex;
+            if (idx < 0 || idx >= bufferValues.Length) return;
+            int chosen = bufferValues[idx];
+            DiskForecast f;
+            try { f = host.ReplayBuffer.Forecast(chosen); }
+            catch (Exception ex)
+            {
+                Logger.Warn("Buffer forecast failed: " + ex.Message);
+                return;
+            }
+
+            _bufferHint.Text = f.Known
+                ? L.T($"Bestimmt, wie viel F9 speichert. Braucht ca. {DiskPlan.FormatBytes(f.RequiredBytes)} im Buffer-Ordner ({f.Drive} frei: {DiskPlan.FormatBytes(f.FreeBytes)}).",
+                      $"Determines how much F9 saves. Needs about {DiskPlan.FormatBytes(f.RequiredBytes)} in the buffer folder ({f.Drive} free: {DiskPlan.FormatBytes(f.FreeBytes)}).")
+                : L.T($"Bestimmt, wie viel F9 speichert. Braucht ca. {DiskPlan.FormatBytes(f.RequiredBytes)} im Buffer-Ordner.",
+                      $"Determines how much F9 saves. Needs about {DiskPlan.FormatBytes(f.RequiredBytes)} in the buffer folder.");
+
+            var d = f.Decision;
+            if (f.Known && d.CannotStart)
+            {
+                _bufferDiskWarn.Text = L.T($"Zu wenig Platz auf {f.Drive} — der Buffer kann so nicht starten. Buffer-Ordner unter Einstellungen → Pfade auf ein größeres Laufwerk legen.",
+                                           $"Not enough space on {f.Drive} — the buffer cannot start like this. Move the buffer folder to a bigger drive under Settings → Paths.");
+                _bufferDiskWarn.Visibility = Visibility.Visible;
+            }
+            else if (f.Known && d.Shortened)
+            {
+                _bufferDiskWarn.Text = L.T($"Zu wenig Platz — der Buffer läuft nur mit {DurationText.Format(d.EffectiveSeconds)}. Buffer-Ordner unter Einstellungen → Pfade auf ein größeres Laufwerk legen.",
+                                           $"Not enough space — the buffer only runs with {DurationText.Format(d.EffectiveSeconds)}. Move the buffer folder to a bigger drive under Settings → Paths.");
+                _bufferDiskWarn.Visibility = Visibility.Visible;
+            }
+            else _bufferDiskWarn.Visibility = Visibility.Collapsed;
+
+            _bufferLongNote.Visibility = chosen >= DurationText.LongClipSeconds ? Visibility.Visible : Visibility.Collapsed;
+        }
+        _refreshBufferHint = RefreshBufferHint;
+
         bufferDur.SelectionChanged += (_, _) =>
         {
             if (bufferDur.SelectedIndex >= 0 && bufferDur.SelectedIndex < bufferValues.Length)
             {
-                host.Settings.Current.ReplayBuffer.DurationSeconds = bufferValues[bufferDur.SelectedIndex];
-                host.Settings.Save();
-                host.ReplayBuffer.RequestRestart();
+                int chosen = bufferValues[bufferDur.SelectedIndex];
+                // The initial selection fires this too: nothing to save or restart then.
+                if (chosen != host.Settings.Current.ReplayBuffer.DurationSeconds)
+                {
+                    host.Settings.Current.ReplayBuffer.DurationSeconds = chosen;
+                    host.Settings.Save();
+                    host.ReplayBuffer.RequestRestart();
+                }
+                RefreshBufferHint();
             }
         };
-        BufferRows.Children.Add(LabeledRow(L.T("Buffer-Länge", "Buffer length"), bufferDur,
-            new TextBlock
-            {
-                Text = L.T("Bestimmt wie viele Sekunden der Replay-Hotkey speichert.",
-                           "Determines how many seconds the replay hotkey saves."),
-                Style = (Style)FindResource("MutedStyle"),
-                Margin = new Thickness(0, 4, 0, 0)
-            }));
+
+        var hintStack = new StackPanel();
+        hintStack.Children.Add(_bufferHint);
+        hintStack.Children.Add(_bufferDiskWarn);
+        hintStack.Children.Add(_bufferLongNote);
+        BufferRows.Children.Add(LabeledRow(L.T("Buffer-Länge", "Buffer length"), bufferDur, hintStack));
+        RefreshBufferHint();
+    }
+
+    /// <summary>
+    /// The list entry for the current setting: the exact length, otherwise the largest offered length below it
+    /// (a hand-edited 100 s shows 90 s), otherwise 60 s.
+    /// </summary>
+    internal static int InitialBufferIndex(int[] choices, int current)
+    {
+        int clamped = DurationText.Clamp(current);
+        int exact = Array.IndexOf(choices, clamped);
+        if (exact >= 0) return exact;
+        for (int i = choices.Length - 1; i >= 0; i--)
+            if (choices[i] <= clamped) return i;
+        return Math.Max(0, Array.IndexOf(choices, 60));
     }
 
     private void RefreshCodecBox(AppHost host)
@@ -264,6 +341,7 @@ public partial class VideoSettingsView : UserControl
             _bitrateHint.Text = L.T($"Effektive Bitrate: {bps / 1_000_000} Mbps (errechnet aus Qualität × Auflösung)",
                                     $"Effective bitrate: {bps / 1_000_000} Mbps (derived from quality × resolution)");
         }
+        _refreshBufferHint?.Invoke();
     }
 
     private FrameworkElement LabeledRow(string label, FrameworkElement control, FrameworkElement? hint = null)

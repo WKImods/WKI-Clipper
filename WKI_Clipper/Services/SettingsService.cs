@@ -330,13 +330,25 @@ public sealed class SettingsService
 
     private void EnsureOutputDirs()
     {
-        TryCreate(ExpandPath(Current.Output.ClipsFolder));
-        TryCreate(ExpandPath(Current.Output.ScreenshotsFolder));
-        TryCreate(ExpandPath(Current.Output.BufferFolder));
+        var o = Current.Output;
+        TryCreate(ExpandPath(o.ClipsFolder));
+        TryCreate(ExpandPath(o.ScreenshotsFolder));
+        // The folder the buffer will really use (a configured "D:" or relative path falls back to the default there).
+        TryCreate(ExpandPath(PathRules.SafeBufferFolder(o.BufferFolder, o.ClipsFolder, o.ScreenshotsFolder,
+            PathRules.DefaultBufferFolder, PathRules.InstallDirectory)));
     }
 
+    /// <summary>
+    /// Environment variables expanded AND resolved to a full path. Every program has its own "current directory", and
+    /// ffmpeg (started in its own folder) disagrees with the clipper about where a relative path or a bare "D:" points.
+    /// Resolving once, here, hands the same answer to both. An empty or malformed path comes back unchanged.
+    /// </summary>
     public static string ExpandPath(string path)
-        => Environment.ExpandEnvironmentVariables(path);
+    {
+        var expanded = Environment.ExpandEnvironmentVariables(path);
+        try { return Path.GetFullPath(expanded); }
+        catch (Exception) { return expanded; }
+    }
 
     private static void TryCreate(string dir)
     {

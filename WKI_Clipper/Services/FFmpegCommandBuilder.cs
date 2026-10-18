@@ -52,9 +52,14 @@ public static class FFmpegCommandBuilder
     /// instead of ddagrab. Complete input fragment incl. -f/-pixel_format/
     /// -video_size/-framerate/-i.
     /// </param>
+    /// <param name="keyframes">
+    /// Keyframe placement for the replay buffer (<paramref name="segmentOutput"/> only; manual recordings never
+    /// get keyframe arguments). The default adds nothing, so the command line stays what it always was.
+    /// </param>
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
         int segmentDurationSec = 5, int segmentWrap = 12, IReadOnlyList<string>? audioPipeArgs = null,
-        int monitorIndex = 0, string? videoInputArgs = null)
+        int monitorIndex = 0, string? videoInputArgs = null,
+        KeyframeMode keyframes = KeyframeMode.EncoderDefault)
     {
         var sb = new StringBuilder();
         sb.Append("-hide_banner -loglevel warning -nostats ");
@@ -66,6 +71,11 @@ public static class FFmpegCommandBuilder
         bool rawInput = !string.IsNullOrWhiteSpace(videoInputArgs);
         var (targetW, targetH) = GetResolution(settings.Video.Resolution);
         bool needScale = targetW > 0 && targetH > 0;
+        // Keyframe arguments only ever apply to the segmented buffer; "" for the encoder default.
+        string keyframeArgs = segmentOutput
+            ? KeyframePolicy.EncoderArgs(settings.Video.Codec, settings.Video.Framerate, segmentDurationSec, keyframes)
+            : "";
+        if (keyframeArgs.Length > 0) keyframeArgs += " ";
 
         // On AMD, AMF can capture the monitor itself and hand its own surfaces straight to
         // the encoder, so frames never leave the GPU. The ddagrab path has to copy every
@@ -85,8 +95,7 @@ public static class FFmpegCommandBuilder
         // On top of that the whole path is opt-in (Video.UseAmfCapture, default off): it is
         // driver-level, and a system-wide stutter that survived closing the app pointed at
         // it. ddagrab is the safe default; the speed-up is not worth an unexplained machine.
-        bool amfNativeCapture = AmfCaptureConfigured(settings) && !rawInput && !needScale
-                                && !MustHonorCaptureExclusion(settings);
+        bool amfNativeCapture = UsesAmfNativeCapture(settings, rawInput);
 
         if (rawInput)
         {
@@ -225,6 +234,7 @@ public static class FFmpegCommandBuilder
                 sb.Append("-preset medium ");
             }
             sb.Append("-b:v ").Append(bitrate).Append(' ');
+            sb.Append(keyframeArgs);
         }
         else
         {
@@ -237,6 +247,7 @@ public static class FFmpegCommandBuilder
             // tune zerolatency = no lookahead, no B-frames → no 670 ms encoder queue.
             sb.Append("-preset veryfast -tune zerolatency ");
             sb.Append("-b:v ").Append(bitrate).Append(' ');
+            sb.Append(keyframeArgs);
             sb.Append("-pix_fmt yuv420p ");
         }
 
@@ -247,11 +258,8 @@ public static class FFmpegCommandBuilder
 
         if (segmentOutput)
         {
-            sb.Append("-f segment ");
-            sb.Append("-segment_time ").Append(segmentDurationSec).Append(' ');
-            sb.Append("-segment_wrap ").Append(segmentWrap).Append(' ');
-            sb.Append("-reset_timestamps 1 ");
-            sb.Append("-segment_format mp4 ");
+            sb.Append(SegmentMuxerArgs(segmentDurationSec, segmentWrap,
+                KeyframePolicy.SegmentTimeDelta(settings.Video.Framerate, keyframes)));
             sb.Append('"').Append(outputPath).Append('"');
         }
         else
@@ -268,8 +276,53 @@ public static class FFmpegCommandBuilder
     // second track of a separate-mic-track recording. Harmless for single-track clips.
     // -f mp4 is explicit because the output is written as "<name>.mp4.part" (renamed on success):
     // ffmpeg would otherwise guess the container from the ".part" extension and fail.
-    public static string BuildConcat(string listFilePath, string outputPath)
-        => $"-hide_banner -loglevel warning -f concat -safe 0 -i \"{listFilePath}\" -map 0 -c copy -movflags +faststart -f mp4 \"{outputPath}\"";
+    //
+    // faststart: moves the moov atom to the front with a second full rewrite of the file. Right for small clips
+    // (Discord inline playback), wasteful for a multi-GB clip - see ClipSavePolicy.UseFaststart.
+    // chaptersFile: an ffmetadata file (ClipStitcher.ChapterMetadata) read as a second input; -map_chapters 1 takes
+    // the chapters from it. The concat demuxer has no chapter option of its own. The mp4 muxer then writes both the
+    // Nero chpl atom and a QuickTime text track, so downstream jobs must map 0:v/0:a (or -dn), never a blind -map 0.
+    public static string BuildConcat(string listFilePath, string outputPath, bool faststart = true, string? chaptersFile = null)
+    {
+        var sb = new StringBuilder("-hide_banner -loglevel warning -f concat -safe 0 -i \"");
+        sb.Append(listFilePath).Append("\" ");
+        bool chapters = !string.IsNullOrWhiteSpace(chaptersFile);
+        if (chapters) sb.Append("-f ffmetadata -i \"").Append(chaptersFile).Append("\" ");
+        sb.Append("-map 0 ");
+        if (chapters) sb.Append("-map_chapters 1 ");
+        sb.Append("-c copy ");
+        if (faststart) sb.Append("-movflags +faststart ");
+        sb.Append("-f mp4 \"").Append(outputPath).Append('"');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The segment-muxer part of the buffer command, trailing space included (the output path follows). The optional
+    /// <c>-segment_time_delta</c> lets a keyframe slightly before the boundary (half a frame) still cut the segment.
+    /// </summary>
+    internal static string SegmentMuxerArgs(int segmentSeconds, int wrap, double? timeDelta)
+    {
+        var sb = new StringBuilder("-f segment ");
+        sb.Append("-segment_time ").Append(segmentSeconds).Append(' ');
+        sb.Append("-segment_wrap ").Append(wrap).Append(' ');
+        if (timeDelta is { } d)
+            sb.Append("-segment_time_delta ").Append(d.ToString("0.######", CultureInfo.InvariantCulture)).Append(' ');
+        sb.Append("-reset_timestamps 1 ");
+        sb.Append("-segment_format mp4 ");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// True when AMD's own screen capture (vsrc_amf) would be used: opted in, AMF encoder, full-monitor capture
+    /// without downscale (a window comes through the rawvideo pipe), and nothing that must stay out of the footage.
+    /// Part of the segment identity: this path and ddagrab/WGC give the encoder different input.
+    /// </summary>
+    internal static bool UsesAmfNativeCapture(AppSettings s, bool rawInput)
+    {
+        var (w, h) = GetResolution(s.Video.Resolution);
+        bool needScale = w > 0 && h > 0;
+        return AmfCaptureConfigured(s) && !rawInput && !needScale && !MustHonorCaptureExclusion(s);
+    }
 
     /// <summary>
     /// Turns the LAST <paramref name="durationSec"/> seconds of a source video into a
@@ -302,7 +355,7 @@ public static class FFmpegCommandBuilder
     /// table; for Native it scales the WQHD base by the target monitor's actual
     /// pixel count so an ultrawide (e.g. 3440×1440) isn't under-allocated.
     /// </summary>
-    private static int EffectiveBitrate(AppSettings settings, int monitorIndex)
+    internal static int EffectiveBitrate(AppSettings settings, int monitorIndex)
     {
         if (settings.Video.Quality == QualityPreset.Custom)
             return settings.Video.Bitrate;

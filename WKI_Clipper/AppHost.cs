@@ -93,7 +93,32 @@ public sealed class AppHost : IDisposable
 
         WireCaptureExclusivity();
         WireGameFolders();
+        WireClipNotes();
         ResolveDefaultAudioDevices();
+    }
+
+    /// <summary>
+    /// A clip that had to be stitched across gaps (Alt-Tab, Ctrl+F9 recording) says so in its gallery note, so the
+    /// missing minutes are not mistaken for lost footage. Appended to a note that already exists, never replacing it.
+    /// </summary>
+    private void WireClipNotes()
+    {
+        ReplayBuffer.ReplaySaved += (_, info) =>
+        {
+            if (info.Gaps.Count == 0) return;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var key = GalleryMetaKey.For(GalleryBase.Clips,
+                        SettingsService.ExpandPath(Settings.Current.Output.ClipsFolder), info.Path);
+                    var note = ClipStitcher.GapNote(info.Gaps, t => t.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture));
+                    var old = GalleryMeta.GetNote(key);
+                    GalleryMeta.SetNote(key, old.Length == 0 ? note : old + "\n" + note);
+                }
+                catch (Exception ex) { Logger.Warn("Clip gap note failed: " + ex.Message); }
+            });
+        };
     }
 
     /// <summary>Decides which game a capture belongs to (per-game subfolders).</summary>
@@ -172,8 +197,33 @@ public sealed class AppHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Once per start: a clips or screenshots folder that sits in the program's own folder or is not a full path is
+    /// logged, never moved (the files stay where they are; the Paths page tells the user). The buffer folder falls back
+    /// to the default at its own start, which logs it.
+    /// </summary>
+    private void LogFolderWarnings()
+    {
+        try
+        {
+            var o = Settings.Current.Output;
+            foreach (var (name, folder) in new[] { ("Clips", o.ClipsFolder), ("Screenshots", o.ScreenshotsFolder) })
+            {
+                var problem = PathRules.OutputFolderProblem(folder, PathRules.InstallDirectory);
+                if (problem == FolderProblem.None) continue;
+                Logger.Warn($"{name} folder '{folder}' is not a good place ({problem}): " +
+                            (problem == FolderProblem.InstallDirectory
+                                ? "it is inside the program folder, where updates and the uninstaller work. "
+                                : "a bare drive or relative path means different folders to different programs. ") +
+                            "Nothing is moved - the Paths page recommends another folder.");
+            }
+        }
+        catch (Exception ex) { Logger.Warn("Folder check failed: " + ex.Message); }
+    }
+
     public void Initialize()
     {
+        LogFolderWarnings();
         Hotkeys.Initialize();
         // Codec detection runs async; not blocking startup.
         _ = DetectCodecsAsync();

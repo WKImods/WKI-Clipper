@@ -106,3 +106,82 @@ begin
   Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1');
 end;
 
+// The app records the buffer folder it really used (HKCU\Software\WKI_Clipper\BufferFolder). A 30 minute
+// replay buffer is gigabytes, and the folder may be anywhere the user put it - the uninstaller cleans up
+// exactly the files the buffer wrote there. Never DelTree a user-chosen folder.
+const
+  BufferKey = 'Software\WKI_Clipper';
+
+function IsOwnBufferFile(const Name: String): Boolean;
+var
+  L: String;
+  I, Us: Integer;
+begin
+  L := Lowercase(Name);
+  Result := (L = '_concat_list.txt') or (L = '_chapters.txt') or (L = '_gif_src.mp4') or (L = '_gif_list.txt');
+  if Result then exit;
+  // seg_<digits>_<digits>.mp4
+  if (Length(L) < 11) or (Copy(L, 1, 4) <> 'seg_') or (Copy(L, Length(L) - 3, 4) <> '.mp4') then exit;
+  L := Copy(L, 5, Length(L) - 8);
+  Us := Pos('_', L);
+  if (Us < 2) or (Us = Length(L)) then exit;
+  for I := 1 to Length(L) do
+    if (I <> Us) and ((L[I] < '0') or (L[I] > '9')) then exit;
+  Result := True;
+end;
+
+procedure CleanBufferFolder(const Dir: String);
+var
+  R: TFindRec;
+begin
+  if (Length(Dir) <= 3) or not DirExists(Dir) then exit;   // never a drive root
+  if FindFirst(AddBackslash(Dir) + '*', R) then
+  try
+    repeat
+      if ((R.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) and IsOwnBufferFile(R.Name) then
+        DeleteFile(AddBackslash(Dir) + R.Name);
+    until not FindNext(R);
+  finally
+    FindClose(R);
+  end;
+  RemoveDir(Dir);   // only succeeds when empty
+end;
+
+// Old buffer folders whose cleanup never finished (the app writes them to PendingCleanup, '|' between the entries -
+// '|' cannot occur in a Windows path).
+procedure CleanPendingFolders(const List: String);
+var
+  Rest: String;
+  P: Integer;
+begin
+  Rest := List;
+  while Length(Rest) > 0 do
+  begin
+    P := Pos('|', Rest);
+    if P = 0 then
+    begin
+      CleanBufferFolder(Rest);
+      Rest := '';
+    end
+    else
+    begin
+      if P > 1 then CleanBufferFolder(Copy(Rest, 1, P - 1));
+      Delete(Rest, 1, P);
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Dir, Pending: String;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    if RegQueryStringValue(HKCU, BufferKey, 'BufferFolder', Dir) then
+      CleanBufferFolder(Dir);
+    if RegQueryStringValue(HKCU, BufferKey, 'PendingCleanup', Pending) then
+      CleanPendingFolders(Pending);
+    RegDeleteKeyIncludingSubkeys(HKCU, BufferKey);
+  end;
+end;
+

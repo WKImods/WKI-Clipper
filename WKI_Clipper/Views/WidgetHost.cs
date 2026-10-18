@@ -1102,7 +1102,7 @@ public sealed class WidgetHost : IDisposable
         var rec = _host.ManualRecording;
         bool recording = rec.IsRecording;
         var recFor = recording && rec.StartedAt is { } t ? DateTime.Now - t : TimeSpan.Zero;
-        return WidgetCatalog.Status(_host.ReplayBuffer.IsRunning, _host.Settings.Current.ReplayBuffer.DurationSeconds,
+        return WidgetCatalog.Status(_host.ReplayBuffer.IsRunning, _host.ReplayBuffer.EffectiveDurationSeconds,
                                     recording, recFor);
     }
 
