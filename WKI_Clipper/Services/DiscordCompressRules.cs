@@ -99,4 +99,11 @@ public static class DiscordCompressRules
     /// <summary>A hand-edited settings file must not be able to ask for a 0-byte or negative target.</summary>
     public static long EffectiveTarget(long stored, long fallback)
         => stored <= 0 ? fallback : Math.Max(MinimumTarget, stored);
+
+    /// <summary>
+    /// The two targets of the "Discord" buttons from the settings (20 MB / 500 MB when unset or invalid) — the gallery
+    /// menu and the clip editor offer the same two.
+    /// </summary>
+    public static (long Small, long Large) Targets(Models.DiscordCompressSettings settings)
+        => (EffectiveTarget(settings.SmallTargetBytes, 20_000_000), EffectiveTarget(settings.LargeTargetBytes, 500_000_000));
 }

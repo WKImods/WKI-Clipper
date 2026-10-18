@@ -60,6 +60,9 @@ public partial class ClipsView : UserControl
         // Progress and errors of Discord compress jobs arrive from a background thread.
         host.Discord.JobChanged -= OnCompressJobChanged;
         host.Discord.JobChanged += OnCompressJobChanged;
+        // A finished cut of the clip editor is a new file next to its source.
+        host.ClipCut.Finished -= OnCutFinished;
+        host.ClipCut.Finished += OnCutFinished;
         Unloaded -= OnUnloaded;
         Unloaded += OnUnloaded;
 
@@ -68,7 +71,20 @@ public partial class ClipsView : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        if (App.Host is { } host) host.Discord.JobChanged -= OnCompressJobChanged;
+        if (App.Host is { } host)
+        {
+            host.Discord.JobChanged -= OnCompressJobChanged;
+            host.ClipCut.Finished -= OnCutFinished;
+        }
+    }
+
+    /// <summary>From a background thread: the editor saved a cut or moved an original to the Recycle Bin.</summary>
+    private void OnCutFinished(string path)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (App.Host is { } host) Reload(host);
+        }));
     }
 
     private void OnSearchChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -434,6 +450,19 @@ public partial class ClipsView : UserControl
         showInFolder.Click += (_, _) => ShowInExplorer(it.FilePath);
         menu.Items.Add(showInFolder);
 
+        // Trim: the clip editor (MP4 / MOV videos only; its index reader does not know other containers)
+        var trim = new MenuItem { Header = L.T("Schneiden…", "Trim…") };
+        ToolTipService.SetShowOnDisabled(trim, true);
+        bool trimmable = it.Kind is not (MediaKind.Gif or MediaKind.Screenshot)
+                         && Path.GetExtension(it.FilePath).ToLowerInvariant() is ".mp4" or ".mov";
+        trim.IsEnabled = trimmable;
+        trim.ToolTip = trimmable ? null : L.T("Nur MP4-Videos lassen sich schneiden.", "Only MP4 videos can be trimmed.");
+        trim.Click += (_, _) =>
+        {
+            if (App.Host is { } host) ClipEditorWindow.Open(host, it.FilePath);
+        };
+        menu.Items.Add(trim);
+
         // Discord: re-encode to fit an upload limit. The sizes come from the settings and are read when the
         // menu opens, so a changed setting shows up without rebuilding the rows.
         menu.Items.Add(new Separator());
@@ -448,9 +477,9 @@ public partial class ClipsView : UserControl
 
         void RefreshDiscordItems()
         {
-            var settings = App.Host?.Settings.Current.Discord ?? new Models.DiscordCompressSettings();
-            small.Header = "Discord " + DiscordCompressRules.TargetLabel(DiscordCompressRules.EffectiveTarget(settings.SmallTargetBytes, 20_000_000));
-            large.Header = "Discord " + DiscordCompressRules.TargetLabel(DiscordCompressRules.EffectiveTarget(settings.LargeTargetBytes, 500_000_000));
+            var (smallTarget, largeTarget) = DiscordCompressRules.Targets(App.Host?.Settings.Current.Discord ?? new Models.DiscordCompressSettings());
+            small.Header = "Discord " + DiscordCompressRules.TargetLabel(smallTarget);
+            large.Header = "Discord " + DiscordCompressRules.TargetLabel(largeTarget);
 
             bool video = it.Kind is not (MediaKind.Gif or MediaKind.Screenshot);
             bool busy = App.Host?.Discord.Snapshot(it.FilePath) is { Active: true };
@@ -471,11 +500,8 @@ public partial class ClipsView : UserControl
     {
         var host = App.Host;
         if (host is null) return;
-        var settings = host.Settings.Current.Discord;
-        long target = small
-            ? DiscordCompressRules.EffectiveTarget(settings.SmallTargetBytes, 20_000_000)
-            : DiscordCompressRules.EffectiveTarget(settings.LargeTargetBytes, 500_000_000);
-        host.Discord.Start(it.FilePath, target);   // the row follows the job through JobChanged
+        var (smallTarget, largeTarget) = DiscordCompressRules.Targets(host.Settings.Current.Discord);
+        host.Discord.Start(it.FilePath, small ? smallTarget : largeTarget);   // the row follows the job through JobChanged
     }
 
     private void OnCompressJobChanged(CompressJobSnapshot snapshot)
