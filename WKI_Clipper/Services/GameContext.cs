@@ -90,7 +90,21 @@ public sealed class GameContext
         // Settings, input hosts, frame hosts … — Windows' own UI, wherever it is in front.
         if (GameFolderNaming.IsWindowsSystemImage(exe, WindowsDir)) return GameFolderNaming.DesktopFolder;
 
-        return _byExe.GetOrAdd(exe, path =>
+        return NameForExe(exe, processName);
+    }
+
+    /// <summary>
+    /// The game's display name — the same naming the capture folders use (product name, file description,
+    /// process name), without the INFO line <see cref="ResolveFolder"/> logs per capture. Cached per exe;
+    /// for the live game detector, which asks once per game that comes to the front.
+    /// </summary>
+    public string DisplayNameFor(string? exePath, string processName)
+        => string.IsNullOrEmpty(exePath)
+            ? GameFolderNaming.FromMetadata(null, null, processName)
+            : NameForExe(exePath, processName);
+
+    private string NameForExe(string exe, string processName)
+        => _byExe.GetOrAdd(exe, path =>
         {
             try
             {
@@ -99,9 +113,8 @@ public sealed class GameContext
             }
             catch { return GameFolderNaming.FromMetadata(null, null, processName); }
         });
-    }
 
-    private static string? ImagePath(int pid)
+    internal static string? ImagePath(int pid)
     {
         var h = Kernel32.OpenProcess(Kernel32.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return null;

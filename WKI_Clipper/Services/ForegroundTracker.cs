@@ -34,6 +34,13 @@ public sealed class ForegroundTracker : IDisposable
     public event Action<string>? RetargetRequested;
 
     /// <summary>
+    /// A real app window (not ours, not already gone) came to the foreground — in EVERY capture mode,
+    /// including the start-up seed. Arg: the window handle. Raised on the hook's thread (the UI thread),
+    /// so handlers must be cheap; this is how <see cref="GameDetector"/> shares the one WinEvent hook.
+    /// </summary>
+    public event Action<IntPtr>? ForegroundWindowChanged;
+
+    /// <summary>
     /// PID of the last foreground APP that was not ours (the hook skips our own process).
     /// Lets a capture triggered while the widget board has focus still be filed under the
     /// game the user came from. Tracked in every capture mode.
@@ -66,7 +73,14 @@ public sealed class ForegroundTracker : IDisposable
 
         // The hook only reports CHANGES. Without seeding, a clipper started while the game
         // already has focus would not know it until the user switched windows once.
-        TryRecordExternal(User32.GetForegroundWindow());
+        var seed = User32.GetForegroundWindow();
+        if (TryRecordExternal(seed) != null) RaiseForegroundWindowChanged(seed);
+    }
+
+    private void RaiseForegroundWindowChanged(IntPtr hwnd)
+    {
+        try { ForegroundWindowChanged?.Invoke(hwnd); }
+        catch (Exception ex) { Logger.Warn("ForegroundTracker: ForegroundWindowChanged handler threw: " + ex.Message); }
     }
 
     /// <summary>Records <paramref name="hwnd"/>'s process if it is a real app, not ours, not shell.</summary>
@@ -96,6 +110,7 @@ public sealed class ForegroundTracker : IDisposable
             // Recorded before the mode check: game-folder sorting needs it in every mode.
             var name = TryRecordExternal(hwnd);
             if (name is null) return;   // none, ours, or already exited
+            RaiseForegroundWindowChanged(hwnd);   // also every mode: the game detector needs it
             User32.GetWindowThreadProcessId(hwnd, out uint upid);
             int pid = (int)upid;
 

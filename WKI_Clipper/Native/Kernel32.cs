@@ -64,4 +64,12 @@ internal static class Kernel32
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr hObject);
+
+    /// <summary>Exit code of a process handle opened with PROCESS_QUERY_LIMITED_INFORMATION; <see cref="STILL_ACTIVE"/> while running.</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    public const uint STILL_ACTIVE = 259;
+    public const int ERROR_ACCESS_DENIED = 5;
 }
