@@ -14,7 +14,7 @@ namespace WKI_Clipper.Views;
 
 public partial class ClipsView : UserControl
 {
-    private enum Filter { All, Clips, Recordings, Screenshots }
+    private enum Filter { All, Clips, Recordings, Screenshots, Compressed }
     private Filter _filter = Filter.All;
     private readonly Dictionary<Filter, System.Windows.Controls.Button> _filterButtons = new();
     private string _search = "";
@@ -24,6 +24,8 @@ public partial class ClipsView : UserControl
     /// <summary>Label for files saved before per-game sorting existed (they sit in the base folder).</summary>
     private static string UnsortedLabel => L.T("Ohne Spiel (älter)", "No game (older)");
     private bool _rebuildingGameFilter;
+    /// <summary>The status line of each row that can show a Discord compress (by file path), rebuilt with the rows.</summary>
+    private readonly Dictionary<string, CompressStatusLine> _compressLines = new(StringComparer.OrdinalIgnoreCase);
 
     public ClipsView()
     {
@@ -46,12 +48,27 @@ public partial class ClipsView : UserControl
             SearchBox.ToolTip = L.T("Nach Dateiname oder Notiz suchen…", "Search by file name or note…");
             FavOnly.Content = L.T("★ Favoriten", "★ Favorites");
             BuildFilterButtons();
-            RefreshBtn.Click += (_, _) => Reload(host);
+            RefreshBtn.Click += (_, _) =>
+            {
+                host.Discord.ClearFinished();   // failed compress jobs show their error until refreshed
+                Reload(host);
+            };
             OpenClipsFolderBtn.Click += (_, _) => OpenFolder(SettingsService.ExpandPath(host.Settings.Current.Output.ClipsFolder));
             OpenShotsFolderBtn.Click += (_, _) => OpenFolder(SettingsService.ExpandPath(host.Settings.Current.Output.ScreenshotsFolder));
         }
 
+        // Progress and errors of Discord compress jobs arrive from a background thread.
+        host.Discord.JobChanged -= OnCompressJobChanged;
+        host.Discord.JobChanged += OnCompressJobChanged;
+        Unloaded -= OnUnloaded;
+        Unloaded += OnUnloaded;
+
         Reload(host);
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (App.Host is { } host) host.Discord.JobChanged -= OnCompressJobChanged;
     }
 
     private void OnSearchChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -101,7 +118,7 @@ public partial class ClipsView : UserControl
 
     private void BuildFilterButtons()
     {
-        foreach (var f in new[] { Filter.All, Filter.Clips, Filter.Recordings, Filter.Screenshots })
+        foreach (var f in new[] { Filter.All, Filter.Clips, Filter.Recordings, Filter.Screenshots, Filter.Compressed })
         {
             var label = f switch
             {
@@ -109,6 +126,7 @@ public partial class ClipsView : UserControl
                 Filter.Clips       => "Clips (F9)",
                 Filter.Recordings  => "Recordings",
                 Filter.Screenshots => "Screenshots",
+                Filter.Compressed  => L.T("Komprimiert", "Compressed"),
                 _                  => f.ToString()
             };
             var btn = new System.Windows.Controls.Button
@@ -142,6 +160,7 @@ public partial class ClipsView : UserControl
     private void Reload(AppHost host)
     {
         ItemsContainer.Children.Clear();
+        _compressLines.Clear();
 
         var items = new List<MediaEntry>();
 
@@ -160,10 +179,13 @@ public partial class ClipsView : UserControl
                  f.Extension.ToLowerInvariant() is ".gif" or ".mp4" or ".mkv" or ".mov"
                  && !PathRules.IsBufferSegment(f.Name)))
         {
-            var kind = f.Extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ? MediaKind.Gif
+            // "Komprimiert 20MB" folders hold the Discord copies: a kind of their own, not a game.
+            bool compressed = GameFolderNaming.IsCompressedFolder(game);
+            var kind = compressed ? MediaKind.Compressed
+                     : f.Extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ? MediaKind.Gif
                      : f.Name.StartsWith("Rec_", StringComparison.OrdinalIgnoreCase) ? MediaKind.Recording
                      : MediaKind.Clip;
-            items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, kind, game,
+            items.Add(new MediaEntry(f.FullName, f.Name, f.LastWriteTime, f.Length, kind, compressed ? null : game,
                                      GalleryMetaKey.For(GalleryBase.Clips, clipsDir, f.FullName)));
         }
 
@@ -174,12 +196,12 @@ public partial class ClipsView : UserControl
                                      GalleryMetaKey.For(GalleryBase.Shots, shotsDir, f.FullName)));
         }
 
-        RebuildGameFilter(items.Select(i => i.Game));
+        RebuildGameFilter(items.Where(i => i.Kind != MediaKind.Compressed).Select(i => i.Game));
 
         var search = _search.Trim();
         var filtered = items
             .Where(it => _game is null
-                         || (_game.Length == 0 ? it.Game is null
+                         || (_game.Length == 0 ? it.Game is null && it.Kind != MediaKind.Compressed
                                                : string.Equals(it.Game, _game, StringComparison.OrdinalIgnoreCase)))
             .Where(it => _filter switch
             {
@@ -187,6 +209,7 @@ public partial class ClipsView : UserControl
                 Filter.Clips       => it.Kind == MediaKind.Clip,
                 Filter.Recordings  => it.Kind == MediaKind.Recording,
                 Filter.Screenshots => it.Kind == MediaKind.Screenshot,
+                Filter.Compressed  => it.Kind == MediaKind.Compressed,
                 _                  => true
             })
             .Where(it => search.Length == 0
@@ -242,6 +265,7 @@ public partial class ClipsView : UserControl
                 MediaKind.Recording  => "DangerBrush",
                 MediaKind.Screenshot => "PanelHoverBrush",
                 MediaKind.Gif        => "AccentDimBrush",
+                MediaKind.Compressed => "SuccessBrush",
                 _                    => "PanelBrush"
             }),
             VerticalAlignment = VerticalAlignment.Center,
@@ -290,6 +314,14 @@ public partial class ClipsView : UserControl
             Text = $"{(it.Game is { } g ? g + "  ·  " : "")}{it.CreatedAt:dd.MM.yyyy HH:mm:ss}  ·  {FormatSize(it.SizeBytes)}",
             Style = (Style)FindResource("MutedStyle")
         });
+
+        // Progress / error of a Discord compress of this clip (hidden unless one is running or failed)
+        var compressLine = new CompressStatusLine(this,
+            cancel: () => App.Host?.Discord.Cancel(it.FilePath),
+            dismiss: () => App.Host?.Discord.Dismiss(it.FilePath));
+        _compressLines[it.FilePath] = compressLine;
+        textStack.Children.Add(compressLine.Root);
+        compressLine.Apply(App.Host?.Discord.Snapshot(it.FilePath));
         Grid.SetColumn(textStack, 1);
         grid.Children.Add(textStack);
 
@@ -302,6 +334,7 @@ public partial class ClipsView : UserControl
                 MediaKind.Recording  => "Recording",
                 MediaKind.Screenshot => "Screenshot",
                 MediaKind.Gif        => "GIF",
+                MediaKind.Compressed => L.T("Komprimiert", "Compressed"),
                 _                    => ""
             },
             Style = (Style)FindResource("MutedStyle"),
@@ -388,7 +421,7 @@ public partial class ClipsView : UserControl
         return card;
     }
 
-    /// <summary>The per-row "…" menu. Phase 5 adds the Discord compress entries here.</summary>
+    /// <summary>The per-row "…" menu.</summary>
     private ContextMenu BuildRowMenu(MediaEntry it, RowNoteTitle title)
     {
         var menu = new ContextMenu();
@@ -401,7 +434,58 @@ public partial class ClipsView : UserControl
         showInFolder.Click += (_, _) => ShowInExplorer(it.FilePath);
         menu.Items.Add(showInFolder);
 
+        // Discord: re-encode to fit an upload limit. The sizes come from the settings and are read when the
+        // menu opens, so a changed setting shows up without rebuilding the rows.
+        menu.Items.Add(new Separator());
+        var small = new MenuItem();
+        var large = new MenuItem();
+        ToolTipService.SetShowOnDisabled(small, true);
+        ToolTipService.SetShowOnDisabled(large, true);
+        small.Click += (_, _) => StartDiscordCompress(it, small: true);
+        large.Click += (_, _) => StartDiscordCompress(it, small: false);
+        menu.Items.Add(small);
+        menu.Items.Add(large);
+
+        void RefreshDiscordItems()
+        {
+            var settings = App.Host?.Settings.Current.Discord ?? new Models.DiscordCompressSettings();
+            small.Header = "Discord " + DiscordCompressRules.TargetLabel(DiscordCompressRules.EffectiveTarget(settings.SmallTargetBytes, 20_000_000));
+            large.Header = "Discord " + DiscordCompressRules.TargetLabel(DiscordCompressRules.EffectiveTarget(settings.LargeTargetBytes, 500_000_000));
+
+            bool video = it.Kind is not (MediaKind.Gif or MediaKind.Screenshot);
+            bool busy = App.Host?.Discord.Snapshot(it.FilePath) is { Active: true };
+            small.IsEnabled = large.IsEnabled = video && !busy;
+            small.ToolTip = large.ToolTip = !video
+                ? L.T("GIFs und Screenshots lassen sich nicht komprimieren.", "GIFs and screenshots cannot be compressed.")
+                : busy ? L.T("Dieser Clip wird gerade komprimiert.", "This clip is being compressed.")
+                       : L.T("Auf dieses Limit komprimieren und in die Zwischenablage legen (Strg+V in Discord).",
+                             "Compress to this limit and copy the result to the clipboard (Ctrl+V in Discord).");
+        }
+        RefreshDiscordItems();
+        menu.Opened += (_, _) => RefreshDiscordItems();
+
         return menu;
+    }
+
+    private void StartDiscordCompress(MediaEntry it, bool small)
+    {
+        var host = App.Host;
+        if (host is null) return;
+        var settings = host.Settings.Current.Discord;
+        long target = small
+            ? DiscordCompressRules.EffectiveTarget(settings.SmallTargetBytes, 20_000_000)
+            : DiscordCompressRules.EffectiveTarget(settings.LargeTargetBytes, 500_000_000);
+        host.Discord.Start(it.FilePath, target);   // the row follows the job through JobChanged
+    }
+
+    private void OnCompressJobChanged(CompressJobSnapshot snapshot)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_compressLines.TryGetValue(snapshot.SourcePath, out var line)) line.Apply(snapshot);
+            // A finished compress is a new file in the "Komprimiert" folder.
+            if (snapshot.Outcome == CompressStatus.Succeeded && App.Host is { } host) Reload(host);
+        }));
     }
 
     /// <summary>A small icon-only button in the row's muted look.</summary>
@@ -460,7 +544,7 @@ public partial class ClipsView : UserControl
         return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 
-    private enum MediaKind { Clip, Recording, Screenshot, Gif }
+    private enum MediaKind { Clip, Recording, Screenshot, Gif, Compressed }
     /// <param name="Game">Game subfolder name, or null for files directly in the base folder.</param>
     /// <param name="Key">Identity in GalleryMetaService (base + relative path).</param>
     private sealed record MediaEntry(string FilePath, string FileName, DateTime CreatedAt, long SizeBytes, MediaKind Kind, string? Game, string Key);

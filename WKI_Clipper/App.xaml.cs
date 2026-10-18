@@ -56,6 +56,10 @@ public partial class App : Application
             Logger.Info("AppHost initialized.");
 
             Host.Hotkeys.HotkeyPressed += OnHotkeyPressed;
+            // Controller combos go through the SAME switch as the keyboard hotkeys, so F9 behaviour, sounds and
+            // refusals are identical. The service raises on its poll thread; the action runs on the UI thread.
+            Host.Gamepad.ActionTriggered += action => Dispatcher.BeginInvoke(new Action(() => OnHotkeyPressed(Host.Gamepad, action)));
+            Host.Gamepad.ApplySettings();
             Host.Hotkeys.HotkeyRegistrationFailed += (_, action) =>
             {
                 Logger.Error($"Hotkey registration failed for action: {action} (already taken by another app?)");

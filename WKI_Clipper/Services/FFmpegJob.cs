@@ -20,13 +20,20 @@ namespace WKI_Clipper.Services;
 /// A job whose encoded position does not advance for this long is terminated (a hung driver or a
 /// vanished network input would otherwise block the queue forever). Null = 60 s, zero = never.
 /// </param>
+/// <param name="DiscardOutput">
+/// The job writes no output file (a measuring pass, output <c>-f null NUL</c>). The runner then neither
+/// creates the folder of <see cref="FinalPath"/>, nor checks its disk space, nor expects, renames or
+/// deletes a ".part"; <see cref="FFmpegJobResult.OutputPath"/> is null on success. FinalPath is only a
+/// label for logging.
+/// </param>
 public sealed record FFmpegJob(
     string Arguments,
     string FinalPath,
     TimeSpan ExpectedDuration,
     long EstimatedOutputBytes,
     int? ThreadCap = null,
-    TimeSpan? StallTimeout = null)
+    TimeSpan? StallTimeout = null,
+    bool DiscardOutput = false)
 {
     public static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromSeconds(60);
 

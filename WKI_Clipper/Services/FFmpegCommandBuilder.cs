@@ -340,6 +340,77 @@ public static class FFmpegCommandBuilder
                $"-vf \"{vf}\" -f gif -loop 0 -y \"{outputPath}\"";   // -f gif: output is "<name>.gif.part"
     }
 
+    /// <summary>
+    /// Re-encodes a clip to fit a size limit (Discord). Only meant to run through
+    /// <see cref="FFmpegJobRunner"/>, which owns the overwrite policy (so there is no -y here), the
+    /// progress flags and the ".part" rename; the output must be the runner's part path, and the
+    /// muxer is named because ffmpeg cannot infer it from ".part".
+    ///
+    /// The video is mapped explicitly (<c>0:v:0</c>) and so is the audio - never <c>-map 0</c>: long
+    /// clips can carry data tracks (chapter markers) that a Discord upload must not contain.
+    /// </summary>
+    public static string BuildCompress(CompressCommand c)
+    {
+        if (c.Pass is < 0 or > 2) throw new ArgumentOutOfRangeException(nameof(c), "Pass must be 0, 1 or 2.");
+        if (c.Pass != 0 && c.Encoder != CompressEncoder.X264)
+            throw new ArgumentException("Only the software encoder has a file pass.", nameof(c));
+        if (c.Pass != 0 && string.IsNullOrWhiteSpace(c.PassLogFile))
+            throw new ArgumentException("A 2-pass encode needs a stats file.", nameof(c));
+        if (c.Width <= 0) throw new ArgumentOutOfRangeException(nameof(c), "Width must be positive.");
+        if (c.Fps <= 0) throw new ArgumentOutOfRangeException(nameof(c), "Fps must be positive.");
+        if (c.VideoBps <= 0) throw new ArgumentOutOfRangeException(nameof(c), "VideoBps must be positive.");
+
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder("-hide_banner -loglevel warning ");
+        if (c.HwDecode) sb.Append("-hwaccel d3d11va ");
+        sb.Append("-i \"").Append(c.InputPath).Append("\" -map 0:v:0 ");
+        sb.Append("-vf \"scale=").Append(c.Width.ToString(inv)).Append(":-2:flags=bicubic,fps=")
+          .Append(c.Fps.ToString(inv)).Append(",format=yuv420p\" ");
+
+        bool audio = c.Pass != 1 && c.AudioKbps > 0 && c.AudioTrackCount > 0;
+        if (audio && c.AudioTrackCount >= 2)
+            sb.Append("-filter_complex \"[0:a:0][0:a:1]amix=inputs=2:duration=longest:normalize=0[a]\" -map \"[a]\" ");
+        else if (audio)
+            sb.Append("-map 0:a:0? ");
+
+        string v = c.VideoBps.ToString(inv);
+        string buffer = (c.VideoBps * 2).ToString(inv);
+        switch (c.Encoder)
+        {
+            case CompressEncoder.Amf:
+                sb.Append("-c:v h264_amf -usage transcoding -quality quality -profile:v high -rc cbr -enforce_hrd 1 -b:v ")
+                  .Append(v).Append(' ');
+                break;
+            case CompressEncoder.Nvenc:
+                sb.Append("-c:v h264_nvenc -preset p5 -tune hq -rc cbr -b:v ").Append(v)
+                  .Append(" -maxrate ").Append(v).Append(" -bufsize ").Append(buffer).Append(' ');
+                break;
+            case CompressEncoder.Qsv:
+                sb.Append("-c:v h264_qsv -preset medium -b:v ").Append(v)
+                  .Append(" -maxrate ").Append(v).Append(" -bufsize ").Append(buffer).Append(' ');
+                break;
+            default:
+                sb.Append("-c:v libx264 -preset medium -b:v ").Append(v).Append(' ');
+                if (c.Pass != 0) sb.Append("-pass ").Append(c.Pass.ToString(inv)).Append(" -passlogfile \"").Append(c.PassLogFile).Append("\" ");
+                if (c.Threads is > 0) sb.Append("-threads ").Append(c.Threads.Value.ToString(inv)).Append(' ');
+                break;
+        }
+
+        if (c.Pass == 1)
+        {
+            // Measuring pass: the stats file is the product, the video goes nowhere.
+            sb.Append("-an -f null NUL");
+            return sb.ToString();
+        }
+
+        if (audio)
+            sb.Append("-c:a aac -b:a ").Append(c.AudioKbps.ToString(inv)).Append("k -ar 48000 -ac 2 ");
+        else
+            sb.Append("-an ");
+        sb.Append("-movflags +faststart -f mp4 \"").Append(c.OutputPath).Append('"');
+        return sb.ToString();
+    }
+
     // hwdownload,format=bgra is REQUIRED: ddagrab emits D3D11 GPU frames the PNG
     // encoder can't consume (ffmpeg exits with "Impossible to convert ... src: d3d11"),
     // same as every recording path. Without it the grab fails and falls back to a

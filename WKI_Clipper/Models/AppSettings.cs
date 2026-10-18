@@ -28,6 +28,8 @@ public sealed class AppSettings
     public WhatsAppSettings WhatsApp { get; set; } = new();
     public PerfOverlaySettings PerfOverlay { get; set; } = new();
     public SoundSettings Sounds { get; set; } = new();
+    public DiscordCompressSettings Discord { get; set; } = new();
+    public GamepadSettings Gamepad { get; set; } = new();
 
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
