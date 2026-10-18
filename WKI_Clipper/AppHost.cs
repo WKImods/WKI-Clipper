@@ -22,6 +22,42 @@ public sealed class AppHost : IDisposable
     /// <summary>Finite encodes (Discord compress, clip editor): one at a time, cancellable. Not the F9 path.</summary>
     public FFmpegJobRunner Jobs { get; }
     public PerformanceMonitorService Performance { get; }
+    /// <summary>
+    /// FPS / frame times / 1 % lows of a game via a passive ETW session (the PresentMon mechanism, no
+    /// injection). Created on first access; the session itself runs only while someone subscribes.
+    /// </summary>
+    public FrameTimeMonitor FrameTimes => LazyInitializer.EnsureInitialized(ref _frameTimes, CreateFrameTimes);
+    private FrameTimeMonitor? _frameTimes;
+
+    private FrameTimeMonitor CreateFrameTimes()
+    {
+        // Born after the game came to the front: it has to start on that game, not on "none".
+        var monitor = new FrameTimeMonitor();
+        monitor.SetTargetProcess(CurrentGame?.Pid ?? 0);
+        return monitor;
+    }
+
+    /// <summary>
+    /// Which game is in front (any capture mode), debounced. Created in <see cref="Initialize"/> because it
+    /// shares the foreground tracker's WinEvent hook, which needs the UI thread's message pump.
+    /// </summary>
+    public GameDetector? GameDetector { get; private set; }
+
+    /// <summary>The game in front, or null.</summary>
+    public GameInfo? CurrentGame => GameDetector?.Current;
+
+    /// <summary>
+    /// The game in front changed (null = none). Raised on a pool thread AFTER the FPS engine was pointed at
+    /// the new game; UI consumers marshal themselves.
+    /// </summary>
+    public event Action<GameInfo?>? GameChanged;
+
+    private void OnGameChanged(GameInfo? game)
+    {
+        _frameTimes?.SetTargetProcess(game?.Pid ?? 0);
+        try { GameChanged?.Invoke(game); }
+        catch (Exception ex) { Logger.Warn("GameChanged handler threw: " + ex.Message); }
+    }
     public GalleryMetaService GalleryMeta { get; }
     public ObsWebSocketService Obs { get; }
     public TwitchChatService Chat { get; }
@@ -245,6 +281,8 @@ public sealed class AppHost : IDisposable
         _ = DetectCodecsAsync();
         // A crash mid-encode leaves "*.mp4.part" behind; sweep those off the UI thread.
         _ = Task.Run(() => Jobs.CleanupStaleParts());
+        // A crashed clipper leaves its FPS session running (providers stay enabled until reboot).
+        _ = Task.Run(FrameTimeMonitor.StopOrphanedSession);
         StartGameWatcherIfNeeded();
 
         // Event-based foreground tracking for the Auto mode (re-pins the buffer
@@ -269,6 +307,16 @@ public sealed class AppHost : IDisposable
             Logger.Info($"Freecam-Retarget → {name}");
             ReplayBuffer.RequestRetarget();
         };
+
+        // "Is a game in front" in every capture mode. Shares the hook above; the Window-mode target comes
+        // from the live settings, and a settings save re-checks the window that is in front.
+        GameDetector = new GameDetector(
+            windowModeTarget: () => Settings.Current.Capture.Mode == CaptureMode.Window
+                ? Settings.Current.Capture.TargetProcessName : null,
+            displayName: f => Games.DisplayNameFor(f.ExePath, f.ProcessName));
+        GameDetector.GameChanged += OnGameChanged;
+        Foreground.ForegroundWindowChanged += GameDetector.OnForegroundChanged;
+        Settings.SettingsChanged += (_, _) => GameDetector?.Reevaluate();
         Foreground.Start();
     }
 
@@ -393,8 +441,10 @@ public sealed class AppHost : IDisposable
         // Last chance for notes that could not be saved earlier (locked file).
         try { GalleryMeta.Flush(); } catch (Exception ex) { Logger.Warn("GalleryMeta flush on exit failed: " + ex.Message); }
         Foreground?.Dispose();
+        GameDetector?.Dispose();
         GameWatcher?.Dispose();
         Performance.Dispose();
+        _frameTimes?.Dispose();
         Crosshairs.Dispose();
         Obs.Dispose();
         Chat.Dispose();

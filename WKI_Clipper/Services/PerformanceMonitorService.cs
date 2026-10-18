@@ -16,7 +16,10 @@ public readonly record struct PerfSample(
     ulong VramUsedBytes,
     ulong VramTotalBytes = 0,   // dedicated VRAM of the discrete GPU; 0 = unknown
     double? GpuTempC = null,
-    uint? GpuFanRpm = null)
+    uint? GpuFanRpm = null,
+    double? GpuClockMhz = null,   // 3D node clock; null = not reported
+    uint? GpuVoltageMv = null,    // 3D node voltage; null = not reported
+    double? VramClockMhz = null)  // memory clock; null = not reported
 {
     public double RamPercent => RamTotalBytes > 0 ? (double)RamUsedBytes / RamTotalBytes * 100 : 0;
     public double? VramPercent => VramTotalBytes > 0 ? Math.Min(100, (double)VramUsedBytes / VramTotalBytes * 100) : null;
@@ -24,10 +27,10 @@ public readonly record struct PerfSample(
 
 /// <summary>
 /// Polls CPU / GPU / RAM / VRAM at 1 Hz using Windows performance counters, plus GPU
-/// temperature, fan and VRAM size via <see cref="GpuSensors"/> (no admin, no driver, no
-/// external dependency — keeps the per-user, lightweight DNA). Reference-counted: the
-/// timer only runs while the widget or the on-screen overlay is visible, so neither
-/// costs anything while closed. FPS is intentionally out of scope.
+/// temperature, fan, VRAM size, core clock / voltage and VRAM clock via <see cref="GpuSensors"/>
+/// (no admin, no driver, no external dependency — keeps the per-user, lightweight DNA).
+/// Reference-counted: the timer only runs while the widget or the on-screen overlay is visible,
+/// so neither costs anything while closed. FPS is not measured here — see <see cref="FrameTimeMonitor"/>.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class PerformanceMonitorService : IDisposable
@@ -144,7 +147,8 @@ public sealed class PerformanceMonitorService : IDisposable
             var sensors = _gpuSensors.Read();
 
             var sample = new PerfSample(cpu, gpu, ramUsed, ramTotal, vram,
-                sensors.DedicatedVramBytes ?? 0, sensors.TemperatureC, sensors.FanRpm);
+                sensors.DedicatedVramBytes ?? 0, sensors.TemperatureC, sensors.FanRpm,
+                sensors.CoreClockMhz, sensors.CoreVoltageMv, sensors.MemoryClockMhz);
             Last = sample;
             lock (_history)
             {

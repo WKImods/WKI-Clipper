@@ -58,6 +58,7 @@ public sealed class WidgetHost : IDisposable
         L.LanguageChanged += OnLanguageChanged;
         _host.CrosshairRefresh = ApplyCrosshair;
         _host.PerfOverlayRefresh = ApplyPerfOverlay;
+        _host.GameChanged += OnGameChangedForOverlay;
         _displaySignature = DisplaySignature();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -143,10 +144,14 @@ public sealed class WidgetHost : IDisposable
 
     private PerfOverlayWindow? _perfOverlay;
     private bool _perfOverlayViewing;
+    /// <summary>The FPS measurement (a passive ETW session) — held only while an FPS value is ticked and the overlay is up.</summary>
+    private IDisposable? _perfFpsLease;
 
     /// <summary>
     /// Shows, updates or hides the corner performance readout from current settings. Like
-    /// the crosshair it lives outside the board and stays up while playing.
+    /// the crosshair it lives outside the board and stays up while playing. With "only when a
+    /// game is detected" it appears and disappears with the game in front — and while it is
+    /// hidden, neither the counters nor the FPS measurement run.
     /// </summary>
     public void ApplyPerfOverlay()
     {
@@ -158,15 +163,10 @@ public sealed class WidgetHost : IDisposable
 
         var s = _host.Settings.Current.PerfOverlay;
         ReconcileCapturePath();   // a capture-hidden overlay rules AMF's own capture out
-        if (!s.Enabled)
+        if (!PerfOverlayLayout.ShouldShow(s, _host.CurrentGame is not null))
         {
             _perfOverlay?.Hide();
-            if (_perfOverlayViewing)
-            {
-                _host.Performance.Sampled -= OnPerfSampleForOverlay;
-                _host.Performance.RemoveViewer();
-                _perfOverlayViewing = false;
-            }
+            StopPerfOverlayFeeds();
             return;
         }
 
@@ -178,19 +178,66 @@ public sealed class WidgetHost : IDisposable
             _host.Performance.AddViewer();
             _perfOverlayViewing = true;
         }
+        UpdatePerfFpsLease(s);
         RenderPerfOverlay();
     }
 
+    /// <summary>Takes or gives back the FPS measurement: only for a ticked FPS value on a visible overlay.</summary>
+    private void UpdatePerfFpsLease(PerfOverlaySettings s)
+    {
+        bool want = PerfOverlayLayout.ShouldMeasureFps(s, overlayShown: true, widgetShown: false);
+        if (want && _perfFpsLease is null)
+        {
+            try { _perfFpsLease = _host.FrameTimes.Subscribe(); }
+            catch (ObjectDisposedException) { /* shutting down */ }
+        }
+        else if (!want && _perfFpsLease is not null)
+        {
+            _perfFpsLease.Dispose();
+            _perfFpsLease = null;
+        }
+    }
+
+    /// <summary>The overlay is not on screen: release the 1 Hz counters and the FPS session.</summary>
+    private void StopPerfOverlayFeeds()
+    {
+        if (_perfOverlayViewing)
+        {
+            _host.Performance.Sampled -= OnPerfSampleForOverlay;
+            _host.Performance.RemoveViewer();
+            _perfOverlayViewing = false;
+        }
+        _perfFpsLease?.Dispose();
+        _perfFpsLease = null;
+    }
+
+    private void OnGameChangedForOverlay(GameInfo? _)
+    {
+        // The overlay may appear or vanish with the game ("only when a game is detected"), and the
+        // FPS lease depends on the overlay being up. ApplyPerfOverlay marshals to the UI thread itself.
+        try { ApplyPerfOverlay(); }
+        catch (Exception ex) { Logger.Warn("Overlay refresh after a game change failed: " + ex.Message); }
+    }
+
     private void OnPerfSampleForOverlay(PerfSample _)
-        => Application.Current?.Dispatcher.BeginInvoke(new Action(RenderPerfOverlay));
+    {
+        // Cheap 1 Hz housekeeping: drop a game that exited while one of our windows had the focus.
+        _host.GameDetector?.Verify();
+        Application.Current?.Dispatcher.BeginInvoke(new Action(RenderPerfOverlay));
+    }
 
     private void RenderPerfOverlay()
     {
         if (_perfOverlay is null || !_perfOverlayViewing) return;
         var s = _host.Settings.Current.PerfOverlay;
-        var lines = PerfOverlayLayout.Lines(s, _host.Performance.Last, _host.Performance.History(), DateTime.Now);
-        double scale = PerfOverlayLayout.ClampScale(s.Scale);
-        _perfOverlay.Render(lines, scale);
+        var lines = PerfOverlayLayout.Lines(s, _host.Performance.Last, _host.Performance.History(), DateTime.Now,
+            PerfOverlayLayout.AnyFpsValue(s) ? _host.FrameTimes.Current : null);
+        if (lines.Count == 0)
+        {
+            _perfOverlay.Hide();   // nothing ticked: no empty panel on the screen
+            return;
+        }
+        _perfOverlay.Render(lines, s);
         bool justShown = !_perfOverlay.IsVisible;
         if (justShown) _perfOverlay.Show();
         _perfOverlay.UpdateLayout();
@@ -1203,11 +1250,14 @@ public sealed class WidgetHost : IDisposable
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _displayTimer?.Stop();
         _host.PerfOverlayRefresh = null;
+        _host.GameChanged -= OnGameChangedForOverlay;
         if (_perfOverlayViewing)
         {
             _host.Performance.Sampled -= OnPerfSampleForOverlay;
             _perfOverlayViewing = false;
         }
+        try { _perfFpsLease?.Dispose(); } catch { }
+        _perfFpsLease = null;
         try { _perfOverlay?.Close(); } catch { }
         _host.CrosshairRefresh = null;
         foreach (var w in _windows.Values)

@@ -366,10 +366,19 @@ public sealed class SpotifySettings
 
 public enum ScreenCorner { TopLeft, TopRight, BottomLeft, BottomRight }
 
+/// <summary>Panel behind the overlay numbers (Aus / Schwarz / Violett).</summary>
+public enum OverlayBackground { Off, Black, Violet }
+
+/// <summary>Colour presets for the overlay's metric names and values.</summary>
+public enum OverlayColor { White, Gray, Orange, Green, Cyan, Yellow, Red }
+
 /// <summary>
 /// On-screen performance overlay: bare numbers (optionally with small history graphs) in
 /// a corner of the primary monitor, always click-through. Hidden from stream and clips by
 /// default — it is a personal readout like the crosshair.
+///
+/// Every field has an initializer, so a settings file written before a field existed simply
+/// loads the default — no schema migration needed.
 /// </summary>
 public sealed class PerfOverlaySettings
 {
@@ -388,6 +397,33 @@ public sealed class PerfOverlaySettings
     public bool ShowRam { get; set; } = true;
     public bool ShowVram { get; set; } = true;
     public bool ShowClock { get; set; }
+
+    // ---- Phase 8b: Adrenalin-style overlay ----
+
+    /// <summary>true = the overlay appears only while a game is in front (<see cref="Services.GameDetector"/>).</summary>
+    public bool OnlyWhenGame { get; set; }
+    /// <summary>Width and height of the history graphs, 0.5 … 2.0.</summary>
+    public double GraphScale { get; set; } = 1.0;
+    /// <summary>1 … 3; the values flow column-wise.</summary>
+    public int Columns { get; set; } = 1;
+    public OverlayBackground Background { get; set; } = OverlayBackground.Off;
+    /// <summary>0 (opaque) … 100 (invisible) — like Adrenalin's "Transparenz". Only matters with a background.</summary>
+    public int BackgroundTransparency { get; set; } = 35;
+    /// <summary>The former accent colour (WKI orange).</summary>
+    public OverlayColor NameColor { get; set; } = OverlayColor.Orange;
+    public OverlayColor ValueColor { get; set; } = OverlayColor.White;
+
+    // FPS values: opt-in, each one starts the passive FPS measurement while ticked and visible.
+    public bool ShowFps { get; set; }
+    public bool ShowFrameTime { get; set; }
+    public bool ShowLow1 { get; set; }
+    public bool ShowLow01 { get; set; }
+    public bool ShowStutter { get; set; }
+
+    // From the GPU driver's node / adapter perf data; shown only when the driver reports a value.
+    public bool ShowGpuClock { get; set; }
+    public bool ShowGpuVoltage { get; set; }
+    public bool ShowVramClock { get; set; }
 }
 
 /// <summary>

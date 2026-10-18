@@ -67,6 +67,9 @@ internal static class User32
     public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
     public const int GWL_EXSTYLE = -20;
+    public const int GWL_STYLE = -16;
+    /// <summary>WS_BORDER | WS_DLGFRAME: a full title bar. Borderless / fullscreen game windows do not have it.</summary>
+    public const int WS_CAPTION = 0x00C00000;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
 
@@ -113,6 +116,11 @@ internal static class User32
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(IntPtr hWnd);
+
+    /// <summary>True when the window is maximized.</summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsZoomed(IntPtr hWnd);
 
     // --- Event-based foreground tracking (no polling) ---
 
