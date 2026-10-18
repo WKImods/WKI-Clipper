@@ -6,6 +6,8 @@
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
             <CheckBox x:Name="EnabledBox" Content="Crosshair anzeigen" FontWeight="SemiBold" />
             <TextBlock x:Name="HotkeyHint" Style="{StaticResource MutedStyle}" Margin="0,4,0,0" TextWrapping="Wrap" />
+            <!-- "Gilt für": all games or one game's profile (built in code: CrosshairTargetBar) -->
+            <ContentControl x:Name="TargetHost" Margin="0,10,0,0" IsTabStop="False" />
         </StackPanel>
 
         <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">

@@ -217,6 +217,8 @@ public sealed class DiscordCompressRulesTests
 
     // ---- where a foreground window counts as a game ----
 
+    // The compress wait no longer has its own pixel rule: it asks the shared GameDetector (see
+    // GameForegroundDetectorTests, which also covers the borderless/minimized cases through that one rule).
     [Theory]
     [InlineData(0, 0, 3440, 1440, true)]     // borderless fullscreen
     [InlineData(-1, -1, 3441, 1441, true)]   // some drivers overshoot by a pixel
@@ -224,5 +226,5 @@ public sealed class DiscordCompressRulesTests
     [InlineData(100, 100, 1500, 900, false)] // ordinary window
     [InlineData(-32000, -32000, -31840, -31972, false)] // minimized
     public void A_window_covering_its_whole_monitor_is_taken_for_a_game(int l, int t, int r, int b, bool expected)
-        => Assert.Equal(expected, GameForegroundDetector.CoversMonitor(l, t, r, b, new System.Drawing.Rectangle(0, 0, 3440, 1440)));
+        => Assert.Equal(expected, GameDetector.CoversMonitor(new LayoutRect(l, t, r - l, b - t), new LayoutRect(0, 0, 3440, 1440)));
 }

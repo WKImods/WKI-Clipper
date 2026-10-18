@@ -21,11 +21,39 @@ public partial class CrosshairView : UserControl
 
     private bool _watching;
 
+    /// <summary>What the sliders and the image choice edit: all games or one game's profile ("Gilt für").</summary>
+    private CrosshairProfileEditor? _editor;
+    private CrosshairTargetBar? _targetBar;
+
     public CrosshairView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        IsVisibleChanged += (_, _) => PublishEditTarget();
+    }
+
+    /// <summary>
+    /// Tells the host which game this widget is editing, so a drag of the crosshair on screen can create that
+    /// game's profile. Only while the widget is actually on screen - a hidden widget must not capture drags.
+    /// </summary>
+    private void PublishEditTarget()
+    {
+        var host = App.Host;
+        if (host is null) return;
+        var next = IsLoaded && IsVisible && _editor is { } e ? new CrosshairEditTarget(e.TargetKey, e.TargetName) : null;
+        if (Equals(host.CrosshairEditing, next)) return;
+        host.CrosshairEditing = next;
+        host.RefreshCrosshair();   // the overlay previews the look being edited (or goes back to the game's)
+    }
+
+    /// <summary>A game came to the front or a profile appeared (the host calls this): list, hint and sliders follow.</summary>
+    public void RefreshTargets()
+    {
+        if (_targetBar is null) return;
+        _targetBar.Refresh();
+        _shownOverrides = _editor?.HasOverrides ?? false;
+        PublishEditTarget();
     }
 
     /// <summary>Folder changed on disk (files dropped in via Explorer) → refresh the list.</summary>
@@ -57,8 +85,10 @@ public partial class CrosshairView : UserControl
             host.Crosshairs.LibraryChanged -= OnLibraryChanged;
             _watching = false;
         }
+        PublishEditTarget();
     }
 
+    /// <summary>The STANDARD crosshair settings (enable switch, snapping, grid and the all-games look).</summary>
     private CrosshairSettings? S => App.Host?.Settings.Current.Crosshair;
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -74,7 +104,13 @@ public partial class CrosshairView : UserControl
         // Catch anything dropped in while this view wasn't alive.
         host.Crosshairs.ScanFolder();
 
-        if (SlidersPanel.Children.Count > 0) { RefreshLibrary(); return; }
+        if (SlidersPanel.Children.Count > 0)
+        {
+            _targetBar?.Refresh();
+            PublishEditTarget();
+            RefreshLibrary();
+            return;
+        }
 
         EnabledBox.Content = L.T("Crosshair anzeigen", "Show crosshair");
         HotkeyHint.Text = L.T("Ein-/Ausschalten mit Strg+Alt+C. Bei geöffnetem Overlay lässt sich das Crosshair mit der Maus verschieben — beim Spielen sind Klicks durchlässig.",
@@ -99,8 +135,30 @@ public partial class CrosshairView : UserControl
             catch (Exception ex) { Logger.Warn("Open crosshair folder failed: " + ex.Message); }
         };
 
+        _editor = new CrosshairProfileEditor(host.Settings.Current);
+        _targetBar = new CrosshairTargetBar(host.Settings.Current, _editor, () => host.CurrentGame);
+        _targetBar.TargetChanged += OnTargetChanged;
+        _targetBar.ProfileReset += () => { SaveAndRefresh(); RebuildSliders(); RefreshLibrary(); RefreshTargets(); };
+        TargetHost.Content = _targetBar;
+
         BuildSliders();
         RefreshLibrary();
+        PublishEditTarget();
+    }
+
+    /// <summary>Another "Gilt für" entry was picked: sliders and the active image show that target's values.</summary>
+    private void OnTargetChanged()
+    {
+        _shownOverrides = _editor?.HasOverrides ?? false;
+        RebuildSliders();
+        RefreshLibrary();
+        PublishEditTarget();
+    }
+
+    private void RebuildSliders()
+    {
+        SlidersPanel.Children.Clear();
+        BuildSliders();
     }
 
     // ---- library ----
@@ -121,7 +179,7 @@ public partial class CrosshairView : UserControl
     private FrameworkElement BuildEntryRow(CrosshairEntry entry)
     {
         var host = App.Host!;
-        bool isActive = S!.ActiveId == entry.Id;
+        bool isActive = _editor!.ActiveId == entry.Id;
 
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
@@ -214,9 +272,14 @@ public partial class CrosshairView : UserControl
 
         if (last != null)
         {
-            // First import becomes the active crosshair right away.
-            if (string.IsNullOrEmpty(S!.ActiveId)) SelectEntry(last);
-            else RefreshLibrary();
+            // First import becomes the active (standard) crosshair right away - whatever "Gilt für" shows.
+            if (string.IsNullOrEmpty(S!.ActiveId))
+            {
+                S.ActiveId = last.Id;
+                host.Settings.Save();
+                host.RefreshCrosshair();
+            }
+            RefreshLibrary();
         }
         if (failed > 0)
             ToastService.Show(ToastKind.Warning, L.T("Import", "Import"),
@@ -227,10 +290,11 @@ public partial class CrosshairView : UserControl
     private void SelectEntry(CrosshairEntry entry)
     {
         var host = App.Host; if (host is null) return;
-        S!.ActiveId = entry.Id;
+        _editor!.SetActiveId(entry.Id);   // all games or the selected game's profile
         host.Settings.Save();
         RefreshLibrary();
         host.RefreshCrosshair();
+        RefreshTargets();
     }
 
     private void DeleteEntry(CrosshairEntry entry)
@@ -248,6 +312,8 @@ public partial class CrosshairView : UserControl
             // Fall back to whatever is left, else nothing.
             S.ActiveId = host.Crosshairs.Entries.Count > 0 ? host.Crosshairs.Entries[0].Id : null;
         }
+        // A game profile must not keep pointing at the deleted image (it would fall back to the standard anyway).
+        GameProfiles.ForgetCrosshairId(host.Settings.Current, entry.Id);
         host.Settings.Save();
         RefreshLibrary();
         host.RefreshCrosshair();
@@ -282,27 +348,34 @@ public partial class CrosshairView : UserControl
         };
         centerBtn.Click += (_, _) =>
         {
-            S.CenterX = null; S.CenterY = null;   // null = dead center of the primary screen
+            // All games: null = dead center of the primary screen. A game: pinned to the centre of ITS monitor.
+            _editor!.CenterExactly();
             SaveAndRefresh();
         };
         SlidersPanel.Children.Add(centerBtn);
 
-        SlidersPanel.Children.Add(MakeSlider(L.T("Größe", "Size"), 0.1, 5.0, S!.Scale, v => S.Scale = v, "0.00×"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Deckkraft", "Opacity"), 0.05, 1.0, S.Opacity, v => S.Opacity = v, "0%"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Helligkeit", "Brightness"), -1.0, 1.0, S.Brightness, v => S.Brightness = v, "+0.00;-0.00;0.00"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Kontrast", "Contrast"), 0.2, 3.0, S.Contrast, v => S.Contrast = v, "0.00"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Sättigung", "Saturation"), 0.0, 2.0, S.Saturation, v => S.Saturation = v, "0.00"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Rot", "Red"), 0.0, 2.0, S.RedGain, v => S.RedGain = v, "0.00"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Grün", "Green"), 0.0, 2.0, S.GreenGain, v => S.GreenGain = v, "0.00"));
-        SlidersPanel.Children.Add(MakeSlider(L.T("Blau", "Blue"), 0.0, 2.0, S.BlueGain, v => S.BlueGain = v, "0.00"));
+        // All values below belong to the "Gilt für" target: the standard or one game's profile.
+        var e = _editor!;
+        SlidersPanel.Children.Add(MakeSlider(L.T("Größe", "Size"), 0.1, 5.0, e.Get(CrosshairField.Scale), v => e.Set(CrosshairField.Scale, v), "0.00×"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Deckkraft", "Opacity"), 0.05, 1.0, e.Get(CrosshairField.Opacity), v => e.Set(CrosshairField.Opacity, v), "0%"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Helligkeit", "Brightness"), -1.0, 1.0, e.Get(CrosshairField.Brightness), v => e.Set(CrosshairField.Brightness, v), "+0.00;-0.00;0.00"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Kontrast", "Contrast"), 0.2, 3.0, e.Get(CrosshairField.Contrast), v => e.Set(CrosshairField.Contrast, v), "0.00"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Sättigung", "Saturation"), 0.0, 2.0, e.Get(CrosshairField.Saturation), v => e.Set(CrosshairField.Saturation, v), "0.00"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Rot", "Red"), 0.0, 2.0, e.Get(CrosshairField.GainR), v => e.Set(CrosshairField.GainR, v), "0.00"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Grün", "Green"), 0.0, 2.0, e.Get(CrosshairField.GainG), v => e.Set(CrosshairField.GainG, v), "0.00"));
+        SlidersPanel.Children.Add(MakeSlider(L.T("Blau", "Blue"), 0.0, 2.0, e.Get(CrosshairField.GainB), v => e.Set(CrosshairField.GainB, v), "0.00"));
 
-        var reset = new Button
+        // A game's profile has its own "Wie Standard" in the selector bar; this button is for the standard look.
+        if (!e.IsProfile)
         {
-            Content = L.T("Bildwerte zurücksetzen", "Reset image values"),
-            Margin = new Thickness(0, 8, 0, 0)
-        };
-        reset.Click += (_, _) => ResetImageValues();
-        SlidersPanel.Children.Add(reset);
+            var reset = new Button
+            {
+                Content = L.T("Bildwerte zurücksetzen", "Reset image values"),
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            reset.Click += (_, _) => ResetImageValues();
+            SlidersPanel.Children.Add(reset);
+        }
         _building = false;
     }
 
@@ -349,10 +422,7 @@ public partial class CrosshairView : UserControl
             val.Text = Fmt(e.NewValue, format);
             if (_building) return;
             apply(e.NewValue);
-            var host = App.Host;
-            if (host is null) return;
-            host.Settings.Save();
-            host.RefreshCrosshair();
+            SaveAndRefresh();
         };
         return grid;
     }
@@ -368,12 +438,17 @@ public partial class CrosshairView : UserControl
         var host = App.Host; if (host is null) return;
         host.Settings.Save();
         host.RefreshCrosshair();
+        // The first change of a game's profile (or its last reset) flips "has own values": hint and button follow.
+        if (_editor is { IsProfile: true } e && e.HasOverrides != _shownOverrides) RefreshTargets();
     }
+
+    /// <summary>What the target bar last showed for "this game has own crosshair values".</summary>
+    private bool _shownOverrides;
 
     private void ResetImageValues()
     {
         var host = App.Host; if (host is null) return;
-        var s = S!;
+        var s = S!;   // only reachable for the standard look; a game's profile has "Wie Standard" in the bar
         // Image values only — position, snapping and grid stay as the user set them.
         s.Brightness = 0; s.Contrast = 1; s.Saturation = 1;
         s.RedGain = 1; s.GreenGain = 1; s.BlueGain = 1; s.Opacity = 1; s.Scale = 1;
@@ -381,8 +456,7 @@ public partial class CrosshairView : UserControl
         host.RefreshCrosshair();
 
         // Rebuild the slider row so the thumbs jump back to their defaults.
-        SlidersPanel.Children.Clear();
-        BuildSliders();
+        RebuildSliders();
     }
 
     private void SetEnabled(bool on)

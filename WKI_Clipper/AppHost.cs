@@ -55,9 +55,37 @@ public sealed class AppHost : IDisposable
     private void OnGameChanged(GameInfo? game)
     {
         _frameTimes?.SetTargetProcess(game?.Pid ?? 0);
+        LogProfileChange(game);
         try { GameChanged?.Invoke(game); }
         catch (Exception ex) { Logger.Warn("GameChanged handler threw: " + ex.Message); }
     }
+
+    /// <summary>Key of the game profile whose values apply right now (null = the standard settings); what the log last said.</summary>
+    private string? _activeProfileKey;
+
+    /// <summary>
+    /// One Info line whenever the active profile changes - a game with a profile came to the front, it left, or the
+    /// user created one for the game in front. The F9 length and the crosshair then follow it.
+    /// </summary>
+    private void LogProfileChange(GameInfo? game)
+    {
+        try
+        {
+            var settings = Settings.Current;
+            string? key = GameProfiles.ActiveKey(settings, game?.ExeName);
+            if (string.Equals(System.Threading.Interlocked.Exchange(ref _activeProfileKey, key), key, StringComparison.Ordinal)) return;
+            Logger.Info(key is null
+                ? "Game profile: none active - the standard settings apply."
+                : $"Game profile: '{game!.DisplayName}' ({key}) is active - {GameProfiles.Describe(settings, key)}.");
+        }
+        catch (Exception ex) { Logger.Warn("Profile log failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// What the crosshair widget is editing while it is on screen (null = not on screen). The overlay previews that
+    /// look while the board is open, and a drag of the crosshair belongs to that target. Set by the widget.
+    /// </summary>
+    public CrosshairEditTarget? CrosshairEditing { get; set; }
     public GalleryMetaService GalleryMeta { get; }
     public ObsWebSocketService Obs { get; }
     public TwitchChatService Chat { get; }
@@ -134,10 +162,8 @@ public sealed class AppHost : IDisposable
         {
             // Detection runs after startup; until it is done this is empty and the compress uses libx264.
             AvailableEncoders = () => AvailableCodecs.Select(c => c.FFmpegName),
-            // Lazy on purpose: the foreground tracker is created later in startup.
-            GameInForeground = () => GameForegroundDetector.IsGameInForeground(
-                () => Foreground?.LastExternalForegroundPid,
-                Settings.Current.Capture.Mode == CaptureMode.Window ? Settings.Current.Capture.TargetProcessName : null)
+            // Lazy on purpose: the game detector is created later in startup (see Initialize).
+            GameInForeground = () => GameForegroundDetector.IsGameInForeground(GameDetector)
         };
 
         // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
@@ -316,7 +342,8 @@ public sealed class AppHost : IDisposable
             displayName: f => Games.DisplayNameFor(f.ExePath, f.ProcessName));
         GameDetector.GameChanged += OnGameChanged;
         Foreground.ForegroundWindowChanged += GameDetector.OnForegroundChanged;
-        Settings.SettingsChanged += (_, _) => GameDetector?.Reevaluate();
+        // A save may also create or delete the profile of the game in front (crosshair widget, F9 length list).
+        Settings.SettingsChanged += (_, _) => { GameDetector?.Reevaluate(); LogProfileChange(CurrentGame); };
         Foreground.Start();
     }
 

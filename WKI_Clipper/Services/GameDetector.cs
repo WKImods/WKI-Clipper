@@ -15,6 +15,12 @@ namespace WKI_Clipper.Services;
 /// </summary>
 public sealed record GameInfo(int Pid, string ExeName, string DisplayName)
 {
+    /// <summary>
+    /// The monitor (physical pixels) the game's window was on when it came to the front; null when unknown.
+    /// Crosshair profiles are placed relative to its centre. Not part of the identity.
+    /// </summary>
+    public LayoutRect? Monitor { get; init; }
+
     public bool Equals(GameInfo? other)
         => other is not null && Pid == other.Pid && string.Equals(ExeName, other.ExeName, StringComparison.OrdinalIgnoreCase);
 
@@ -236,7 +242,7 @@ public sealed class GameDetector : IDisposable
 
             // Only games cost a name lookup (disk read on the first sight of an exe).
             GameInfo? candidate = IsGame(f, _windowModeTarget(), _selfPid)
-                ? new GameInfo(f.Pid, f.ExeName, _displayName(f))
+                ? new GameInfo(f.Pid, f.ExeName, _displayName(f)) { Monitor = f.Monitor }
                 : null;
             lock (_gate)
             {

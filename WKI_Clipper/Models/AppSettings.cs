@@ -31,6 +31,12 @@ public sealed class AppSettings
     public DiscordCompressSettings Discord { get; set; } = new();
     public GamepadSettings Gamepad { get; set; } = new();
 
+    /// <summary>
+    /// Per-game overrides (F9 length, crosshair look), keyed by the lower-case exe file name. Keys are cleaned up
+    /// on load (<see cref="Services.GameProfiles.Normalize"/>); a game without an entry uses the standard settings.
+    /// </summary>
+    public Dictionary<string, GameProfile> GameProfiles { get; set; } = new();
+
     private static Dictionary<string, HotkeyBinding> HotkeyDefaults() => new()
     {
         // Spotify control is opt-in: Key = 0 means "not bound" (bind in the hotkey tab).

@@ -80,8 +80,8 @@ public sealed class WidgetHost : IDisposable
             return;
         }
 
-        var s = _host.Settings.Current.Crosshair;
-        var entry = _host.Crosshairs.GetById(s.ActiveId);
+        var settings = _host.Settings.Current;
+        var s = settings.Crosshair;   // the standard: Enabled lives here and nowhere else
 
         // Keep the config widget's checkbox in sync (hotkey toggles bypass the UI).
         if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
@@ -89,13 +89,20 @@ public sealed class WidgetHost : IDisposable
 
         ReconcileCapturePath();
 
+        // Which look: the game in front (its profile over the standard) - or, while the board is open and the
+        // crosshair widget is being edited, exactly the look being edited (what you edit is what you see).
+        var game = _host.CurrentGame;
+        var editing = _boardOpen ? _host.CrosshairEditing : null;
+        var look = EffectiveSettings.CrosshairLookFor(settings, CrosshairPlacement.LookExe(game?.ExeName, editing));
+        var entry = _host.Crosshairs.GetById(look.ActiveId) ?? _host.Crosshairs.GetById(s.ActiveId);
+
         if (!s.Enabled || entry is null)
         {
             _crosshair?.Hide();
             return;
         }
 
-        var image = CrosshairImage.Render(_host.Crosshairs.FullPath(entry), s);
+        var image = CrosshairImage.Render(_host.Crosshairs.FullPath(entry), look);
         if (image is null)
         {
             _crosshair?.Hide();
@@ -103,23 +110,65 @@ public sealed class WidgetHost : IDisposable
             return;
         }
 
+        // A profile places the crosshair relative to the centre of the monitor the game is on.
+        if (EffectiveSettings.CrosshairOffsetFor(settings, CrosshairPlacement.LookExe(game?.ExeName, editing)) is { } offset)
+        {
+            var (monitor, scale) = GameMonitor(game);
+            (look.CenterX, look.CenterY) = CrosshairPlacement.Center(monitor, scale, offset.X, offset.Y);
+        }
+
         if (_crosshair is null)
         {
             _crosshair = new CrosshairOverlayWindow();
-            _crosshair.Moved += (cx, cy) =>
-            {
-                var cs = _host.Settings.Current.Crosshair;
-                cs.CenterX = cx; cs.CenterY = cy;
-                _host.Settings.Save();
-            };
+            _crosshair.Moved += OnCrosshairMoved;
         }
 
-        _crosshair.Apply(image, s);
+        _crosshair.Apply(image, look);
         _crosshair.SetInteractive(_boardOpen);   // draggable only while the board is up
         if (!_crosshair.IsVisible) _crosshair.Show();
         // Re-center once the window has actually measured itself (SizeToContent).
-        _crosshair.CenterOn(s);
+        _crosshair.CenterOn(look);
         BumpTopmost(_crosshair);
+    }
+
+    /// <summary>The monitor (physical pixels) and its Windows scale that a profile's crosshair offset is measured from.</summary>
+    private static (LayoutRect Bounds, double Scale) GameMonitor(GameInfo? game)
+    {
+        if (game?.Monitor is { } m && m.W > 0 && m.H > 0)
+            return (m, DisplayGeometry.ScaleAt(m.X + m.W / 2, m.Y + m.H / 2));
+        var screen = PrimaryScreen();
+        return (DisplayGeometry.Bounds(screen), DisplayGeometry.ScaleOf(screen));
+    }
+
+    /// <summary>
+    /// The user dragged the crosshair (physical centre). It belongs to a game profile - stored as an offset from the
+    /// game monitor's centre - or, as before, to the standard position (see <see cref="CrosshairPlacement.DragProfileKey"/>).
+    /// </summary>
+    private void OnCrosshairMoved(double cx, double cy)
+    {
+        var settings = _host.Settings.Current;
+        var game = _host.CurrentGame;
+        var editing = _boardOpen ? _host.CrosshairEditing : null;
+
+        if (CrosshairPlacement.DragProfileKey(settings, game?.ExeName, editing) is { } key)
+        {
+            var (monitor, scale) = GameMonitor(game);
+            var (ox, oy) = CrosshairPlacement.OffsetFrom(monitor, scale, cx, cy);
+            string? name = editing?.Key is not null && EffectiveSettings.ProfileKey(editing.Key) == key ? editing.DisplayName
+                : EffectiveSettings.ProfileKey(game?.ExeName) == key ? game!.DisplayName : null;
+            GameProfiles.SetCrosshairOffset(settings, key, name, ox, oy);
+            Logger.Info($"Crosshair of profile '{key}' moved to offset {ox:0.##}/{oy:0.##}.");
+        }
+        else
+        {
+            settings.Crosshair.CenterX = cx;
+            settings.Crosshair.CenterY = cy;
+        }
+        _host.Settings.Save();
+
+        // A first drag may have created the profile: the selector lists it from now on.
+        if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
+            cv.RefreshTargets();
     }
 
     /// <summary>
@@ -217,6 +266,18 @@ public sealed class WidgetHost : IDisposable
         // FPS lease depends on the overlay being up. ApplyPerfOverlay marshals to the UI thread itself.
         try { ApplyPerfOverlay(); }
         catch (Exception ex) { Logger.Warn("Overlay refresh after a game change failed: " + ex.Message); }
+
+        // The crosshair follows the game's profile (image, size, colours, position); the widget's selector
+        // learns about the new game. Marshalled: the detector raises this on a pool thread.
+        try { Application.Current?.Dispatcher.BeginInvoke(new Action(RefreshCrosshairForGame)); }
+        catch (Exception ex) { Logger.Warn("Crosshair refresh after a game change failed: " + ex.Message); }
+    }
+
+    private void RefreshCrosshairForGame()
+    {
+        ApplyCrosshair();
+        if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
+            cv.RefreshTargets();
     }
 
     private void OnPerfSampleForOverlay(PerfSample _)
@@ -392,6 +453,8 @@ public sealed class WidgetHost : IDisposable
 
         // Crosshair becomes draggable while the board is open.
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
+        // An open crosshair widget previews the look it edits, not the game's (see ApplyCrosshair).
+        if (_host.CrosshairEditing is not null) ApplyCrosshair();
         // The duration is the whole point of the prewarm work — keep it measurable.
         Logger.Info($"Widget board opened in {sw.ElapsedMilliseconds} ms.");
     }
@@ -468,6 +531,8 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
         _boardOpen = false;
         _boardScreen = null;
+        // Back from the previewed look to the game's own.
+        if (_host.CrosshairEditing is not null) ApplyCrosshair();
         ReturnFocus();
         Logger.Info("Widget board closed.");
     }
