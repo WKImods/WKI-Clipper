@@ -17,7 +17,16 @@ AppVerName={#AppName} {#AppVersion}
 ; Per-user install — no admin needed.
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
-DisableProgramGroupPage=no
+; No Start-menu folder page: its Browse dialog only lists Start-menu folders and was mistaken for the
+; install-location picker. The Start-menu group is still created, named by DefaultGroupName.
+DisableProgramGroupPage=yes
+; The destination page is always shown (Inno's default "auto" hides it on updates), pre-filled with the
+; current location (UsePreviousAppDir), so the install can be moved to any drive by running Setup again.
+; Inno's Browse button opens the classic Browse-For-Folder tree (no setting switches it to the modern
+; picker). It is the shell folder tree, where drives can be picked: the Inno docs' own AppendDefaultDirName
+; example is "Z:\" becoming "Z:\{#AppName}". Typing a path into the box works for any drive too. The
+; Start-menu page's Browse only offers Start-menu folders - which is why that page is switched off above.
+DisableDirPage=no
 OutputDir=installer_output
 OutputBaseFilename=WKI_Clipper_Setup_{#AppVersion}
 SetupIconFile=Resources\Icons\app_icon.ico
@@ -44,6 +53,20 @@ english.AutostartTask=Start with Windows
 german.AutostartTask=Mit Windows starten
 english.OptionsGroup=Options:
 german.OptionsGroup=Optionen:
+; Hint on the destination page (placed by InitializeWizard).
+english.DirHint=You can install to any drive: type the full path (for example D:\Programs\WKI Clipper) or click "Browse". Your clips and settings are stored separately and are kept.
+german.DirHint=Du kannst jedes Laufwerk wählen: Pfad eintippen (z. B. D:\Programme\WKI Clipper) oder „Durchsuchen“ klicken. Clips und Einstellungen liegen getrennt und bleiben erhalten.
+english.DirWarning=Do not choose a folder that already contains other files (such as your clips) - pick a new or empty folder.
+german.DirWarning=Wähle keinen Ordner, in dem schon andere Dateien (z. B. deine Clips) liegen – am besten einen neuen oder leeren Ordner.
+; Moving an existing installation by choosing a different folder.
+english.DirNested=The new folder and the current installation folder must not be inside one another.%n%nCurrent: %1%nNew: %2%n%nPlease choose a different folder.
+german.DirNested=Der neue Ordner darf nicht innerhalb des bisherigen Installationsordners liegen – und umgekehrt.%n%nBisher: %1%nNeu: %2%n%nBitte wähle einen anderen Ordner.
+english.DirIsDriveRoot=Please choose a folder, not the drive itself (for example D:\Programs\WKI Clipper).
+german.DirIsDriveRoot=Bitte wähle einen Ordner und nicht das Laufwerk selbst (z. B. D:\Programme\WKI Clipper).
+english.MoveNote=Move: the existing installation in %1 is removed first. Your clips and settings are kept.
+german.MoveNote=Verschieben: Die bestehende Installation in %1 wird zuerst entfernt. Clips und Einstellungen bleiben erhalten.
+english.OldCopyLeft=The previous installation in %1 could not be removed completely. You can delete that folder yourself; your clips and settings are untouched.
+german.OldCopyLeft=Die bisherige Installation in %1 konnte nicht vollständig entfernt werden. Du kannst den Ordner selbst löschen; Clips und Einstellungen sind unberührt.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
@@ -95,15 +118,226 @@ Type: filesandordirs; Name: "{localappdata}\WKI_Clipper\buffer"
 Type: files;          Name: "{localappdata}\WKI_Clipper\tray.ico"
 
 [Code]
+const
+  // Per-user install: the uninstall entry lives in HKCU.
+  UninstKey      = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1';
+  RunKey         = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run';
+  ApprovedKey    = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run';
+  AutostartName  = 'WKI_Clipper';
+  AppExe         = '{#AppExeName}';
+
+var
+  WasInstalled: Boolean;       // an uninstall entry exists
+  PrevDir: String;             // folder of that installation, no trailing backslash ('' on a first install)
+  MovingInstall: Boolean;      // set at the start of the install: the new folder differs from PrevDir
+  PrevInstallHandled: Boolean; // the old installation has been uninstalled (once per run)
+  HadRunValue: Boolean;        // autostart state of the old installation, saved before its uninstaller wipes it
+  RunData: String;
+  HadApprovedValue: Boolean;
+  ApprovedData: AnsiString;
+
 function InitializeSetup(): Boolean;
+var
+  S: String;
 begin
   Result := True;
+  WasInstalled := RegKeyExists(HKCU, UninstKey);
+  PrevDir := '';
+  if WasInstalled then
+  begin
+    S := '';
+    if not RegQueryStringValue(HKCU, UninstKey, 'InstallLocation', S) then S := '';
+    if Trim(S) = '' then
+      if not RegQueryStringValue(HKCU, UninstKey, 'Inno Setup: App Path', S) then S := '';
+    S := Trim(S);
+    if S <> '' then PrevDir := RemoveBackslashUnlessRoot(S);
+  end;
 end;
 
-// Already installed (per-user install: the uninstall entry lives in HKCU).
+// Already installed. Evaluated once at startup: the move below removes the uninstall entry during the install.
 function IsUpdate(): Boolean;
 begin
-  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1');
+  Result := WasInstalled;
+end;
+
+function SamePath(const A, B: String): Boolean;
+begin
+  Result := CompareText(AddBackslash(A), AddBackslash(B)) = 0;
+end;
+
+// True when Inner is Outer or lies below it.
+function PathInside(const Inner, Outer: String): Boolean;
+var
+  O: String;
+begin
+  O := AddBackslash(Outer);
+  Result := CompareText(Copy(AddBackslash(Inner), 1, Length(O)), O) = 0;
+end;
+
+// '' = the folder is fine, otherwise the message to show. Nested old/new folders would make the move
+// delete files that belong to the new location (or leave the old tree inside it), so they are refused.
+function CheckTargetDir(const Dir: String): String;
+var
+  N: String;
+begin
+  Result := '';
+  if Trim(Dir) = '' then exit;
+  N := RemoveBackslashUnlessRoot(ExpandFileName(Dir));
+  if Length(N) <= 3 then
+    Result := CustomMessage('DirIsDriveRoot')
+  else if (PrevDir <> '') and not SamePath(N, PrevDir) and (PathInside(N, PrevDir) or PathInside(PrevDir, N)) then
+    Result := FmtMessage(CustomMessage('DirNested'), [PrevDir, N]);
+end;
+
+function IsMove(): Boolean;
+begin
+  Result := (PrevDir <> '') and not SamePath(PrevDir, ExpandConstant('{app}'));
+end;
+
+// The Restart Manager check also has to see the app running from the OLD folder: the old uninstaller
+// cannot delete a running exe, and a move does not touch that exe through [Files].
+procedure RegisterExtraCloseApplicationsResources();
+begin
+  if PrevDir <> '' then
+    RegisterExtraCloseApplicationsResource(False, AddBackslash(PrevDir) + AppExe);
+end;
+
+procedure InitializeWizard();
+var
+  Hint: TNewStaticText;
+begin
+  // Destination page: say that every drive is allowed. Placed below the path box and its Browse button.
+  Hint := TNewStaticText.Create(WizardForm);
+  Hint.Parent := WizardForm.SelectDirPage;
+  Hint.AutoSize := False;
+  Hint.WordWrap := True;
+  Hint.Left := WizardForm.SelectDirBrowseLabel.Left;
+  Hint.Width := WizardForm.SelectDirBrowseLabel.Width;
+  Hint.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + ScaleY(16);
+  Hint.Height := WizardForm.DiskSpaceLabel.Top - Hint.Top - ScaleY(6);
+  Hint.Caption := CustomMessage('DirHint') + #13#10#13#10 + CustomMessage('DirWarning');
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Err: String;
+begin
+  Result := True;
+  if CurPageID = wpSelectDir then
+  begin
+    Err := CheckTargetDir(WizardDirValue);
+    if Err <> '' then
+    begin
+      Log('Destination refused: ' + WizardDirValue);
+      SuppressibleMsgBox(Err, mbError, MB_OK, IDOK);
+      Result := False;   // on a silent install this ends Setup
+    end;
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := CheckTargetDir(ExpandConstant('{app}'));   // same check once more, for /DIR= and edits made after the page
+end;
+
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo;
+  if IsMove() then
+    Result := Result + NewLine + NewLine + FmtMessage(CustomMessage('MoveNote'), [PrevDir]);
+  if MemoGroupInfo <> '' then Result := Result + NewLine + NewLine + MemoGroupInfo;
+  if MemoTasksInfo <> '' then Result := Result + NewLine + NewLine + MemoTasksInfo;
+end;
+
+// Moving: the old installation goes through its own uninstaller (silently), so shortcuts, registry entries and
+// files it recorded disappear together. User data is not in that folder and the uninstaller keeps it
+// (clips, settings); it only removes the buffer files it recorded. The autostart entry is wiped with it and
+// is written again after the install, pointing at the new exe.
+procedure RemovePreviousInstall();
+var
+  Uninst, S: String;
+  Code, Waited: Integer;
+begin
+  Uninst := '';
+  if RegQueryStringValue(HKCU, UninstKey, 'UninstallString', S) then Uninst := RemoveQuotes(Trim(S));
+  if Uninst = '' then Uninst := AddBackslash(PrevDir) + 'unins000.exe';
+  // Only ever run the uninstaller that sits inside the recorded old install folder.
+  if not FileExists(Uninst) or (CompareText(ExtractFilePath(Uninst), AddBackslash(PrevDir)) <> 0) then
+  begin
+    Log('Previous uninstaller not found in ' + PrevDir + ' - nothing to remove: ' + Uninst);
+    exit;
+  end;
+
+  Log('Move: running the previous uninstaller ' + Uninst);
+  if Exec(Uninst, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('Previous uninstaller exit code ' + IntToStr(Code))
+  else
+    Log('Previous uninstaller did not start: ' + SysErrorMessage(Code));
+
+  // The uninstaller hands over to a temporary copy of itself; make sure it is really finished.
+  Waited := 0;
+  while (Waited < 20000) and (FileExists(Uninst) or RegKeyExists(HKCU, UninstKey)) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+
+  if FileExists(AddBackslash(PrevDir) + AppExe) then
+  begin
+    Log('Previous install not removed completely: ' + PrevDir);
+    SuppressibleMsgBox(FmtMessage(CustomMessage('OldCopyLeft'), [PrevDir]), mbInformation, MB_OK, IDOK);
+  end;
+end;
+
+procedure RememberAutostart();
+begin
+  RunData := '';
+  ApprovedData := '';
+  HadRunValue := RegQueryStringValue(HKCU, RunKey, AutostartName, RunData);
+  HadApprovedValue := RegQueryBinaryValue(HKCU, ApprovedKey, AutostartName, ApprovedData);
+  Log('Move: autostart entry present=' + IntToStr(Ord(HadRunValue)) + ', startup switch present=' + IntToStr(Ord(HadApprovedValue)));
+end;
+
+procedure RestoreAutostart();
+var
+  Data: String;
+begin
+  if HadRunValue then
+  begin
+    // Our own entry follows the exe; anything else the user pointed it at stays as it was.
+    if CompareText(RemoveQuotes(Trim(RunData)), AddBackslash(PrevDir) + AppExe) = 0 then
+      Data := '"' + AddBackslash(ExpandConstant('{app}')) + AppExe + '"'
+    else
+      Data := RunData;
+    RegWriteStringValue(HKCU, RunKey, AutostartName, Data);
+    Log('Move: autostart entry restored: ' + Data);
+  end;
+  // Windows' own on/off switch for that entry (Settings -> Apps -> Autostart) survives the move too.
+  if HadApprovedValue then
+    RegWriteBinaryValue(HKCU, ApprovedKey, AutostartName, ApprovedData);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    MovingInstall := IsMove()
+  else if (CurStep = ssPostInstall) and MovingInstall then
+    RestoreAutostart();
+end;
+
+// The very first progress callback: Setup has already shut down the running app (Restart Manager does that
+// AFTER ssInstall - an uninstaller started at ssInstall would find the old exe locked and leave it behind),
+// it has not written a single file, shortcut or registry entry of the new installation yet. The old uninstaller
+// must be finished before that: it deletes the shared uninstall entry, the Start-menu shortcuts and the
+// autostart value by name.
+procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
+begin
+  if MovingInstall and not PrevInstallHandled then
+  begin
+    PrevInstallHandled := True;
+    RememberAutostart();
+    RemovePreviousInstall();
+  end;
 end;
 
 // The app records the buffer folder it really used (HKCU\Software\WKI_Clipper\BufferFolder). A 30 minute
