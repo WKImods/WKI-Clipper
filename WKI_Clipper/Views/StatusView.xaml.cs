@@ -115,6 +115,11 @@ public partial class StatusView : UserControl
         if (host is null) return;
         var s = host.Settings.Current;
 
+        // The button saves what F9 would save right now: the game in front's own length, else the standard one.
+        int pressSeconds = PressClipLength.Resolve(host.ReplayBuffer.EffectiveDurationSeconds, s, host.CurrentGame?.ExeName).Seconds;
+        string pressLen = DurationText.Format(pressSeconds);
+        SaveReplayBtn.Content = L.T($"Letzte {pressLen} speichern", $"Save last {pressLen}");
+
         // Recording state
         if (host.ManualRecording.IsRecording)
         {
@@ -141,8 +146,10 @@ public partial class StatusView : UserControl
             string limited = host.ReplayBuffer.DiskLimited ? L.T("  ·  gekürzt: wenig Platz", "  ·  shortened: low space")
                            : host.ReplayBuffer.MemoryLimited ? L.T("  ·  gekürzt: wenig Arbeitsspeicher", "  ·  shortened: low RAM") : "";
             string storage = host.ReplayBuffer.StorageLine is { } line ? "\n" + line : "";
-            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{limited}{storage}",
-                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{limited}{storage}");
+            // The ring is what the buffer holds; F9 may save less (a game's own length) - say so.
+            string f9 = host.F9StatusNote() is { } note ? "  ·  " + note : "";
+            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{f9}{limited}{storage}",
+                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{f9}{limited}{storage}");
         }
         else
         {

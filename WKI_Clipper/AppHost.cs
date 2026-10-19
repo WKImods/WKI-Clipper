@@ -47,6 +47,17 @@ public sealed class AppHost : IDisposable
     public GameInfo? CurrentGame => GameDetector?.Current;
 
     /// <summary>
+    /// "F9 in &lt;Spiel&gt;: &lt;Länge&gt;" for the status lines when a press would save less than the ring holds (a game's
+    /// own length, or the standard length while a profile elsewhere made the ring longer); null = F9 saves the whole ring.
+    /// </summary>
+    public string? F9StatusNote()
+    {
+        var game = CurrentGame;
+        return PressClipLength.StatusNote(Settings.Current, game?.ExeName, game?.DisplayName, ReplayBuffer.EffectiveDurationSeconds)
+            is { } note ? PressClipLength.StatusText(note) : null;
+    }
+
+    /// <summary>
     /// The game in front changed (null = none). Raised on a pool thread AFTER the FPS engine was pointed at
     /// the new game; UI consumers marshal themselves.
     /// </summary>
@@ -215,6 +226,12 @@ public sealed class AppHost : IDisposable
         ReplayBuffer.GameFolderFor = Games.ResolveFolder;
         ManualRecording.GameFolderFor = Games.ResolveFolder;
         Screenshots.GameFolderFor = Games.ResolveFolder;
+
+        // F9 length per game: the game in front at the key press (the detector keeps the last game while the clipper's own
+        // window is in front) decides which profile length the clip gets; nothing recognised = the standard length. The
+        // ring is NOT resized by this - it always holds the longest length (EffectiveSettings.LongestClipSeconds).
+        ReplayBuffer.GameExeAtPress = () => GameDetector?.Current?.ExeName;
+        ReplayBuffer.ClipSecondsAtPress = () => EffectiveSettings.ClipSecondsFor(Settings.Current, GameDetector?.Current?.ExeName);
     }
 
     // True while the buffer was taken down for a manual recording, so it only comes back

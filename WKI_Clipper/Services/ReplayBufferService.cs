@@ -181,16 +181,26 @@ public sealed class ReplayBufferService : IDisposable
 
     /// <summary>
     /// The length the RING is sized for: every sizing and keying site (ring plan, disk plan, RAM decision, age limit,
-    /// forecasts) uses this, never a per-clip length. Today it is the configured length; per-game F9 lengths will make it
-    /// the longest of them, while each press saves its own (<see cref="ClipSecondsAtPress"/>).
+    /// forecasts) uses this, never a per-clip length. It is the LONGEST of the standard F9 length and every game's own
+    /// length (<see cref="EffectiveSettings.LongestClipSeconds(WKI_Clipper.Models.AppSettings)"/>), so the ring never
+    /// resizes - and never restarts the capture - when another game comes to the front; each press saves its own length
+    /// (<see cref="ResolvePressClip"/>).
     /// </summary>
-    public int RingLookbackSeconds => DurationText.Clamp(_settings.Current.ReplayBuffer.DurationSeconds);
+    public int RingLookbackSeconds => EffectiveSettings.LongestClipSeconds(_settings.Current);
 
     /// <summary>
-    /// Per-press clip length (seconds), read on the calling thread when F9 is pressed; null or a non-positive answer =
-    /// the whole lookback. Never more than <see cref="EffectiveDurationSeconds"/>: the ring holds nothing older.
+    /// Per-press clip length override (seconds), read on the calling thread when F9 is pressed; null or a non-positive
+    /// answer = the length of <see cref="GameExeAtPress"/>'s game (its profile, else the standard length). Never more
+    /// than <see cref="EffectiveDurationSeconds"/>: the ring holds nothing older.
     /// </summary>
     public Func<int>? ClipSecondsAtPress { get; set; }
+
+    /// <summary>
+    /// The exe of the game in front at the key press (null = none or not recognised), read on the calling thread at the
+    /// same moment as <see cref="ResolveGameAtPress"/>. Decides which profile's F9 length the press uses and what the
+    /// log says about it; without it every press uses the standard length.
+    /// </summary>
+    public Func<string?>? GameExeAtPress { get; set; }
 
     /// <summary>
     /// The lookback the buffer actually holds: <see cref="RingLookbackSeconds"/> or, when the buffer drive or the RAM is
@@ -1262,8 +1272,10 @@ public sealed class ReplayBufferService : IDisposable
 
             // Sized from the RUNNING ring: a duration raised a moment ago (restart still pending)
             // must not make this save reach into the overwrite reserve of the old, smaller ring.
-            // A per-press length (per-game F9 lengths) is read here, on the pressing thread, and capped by the ring.
-            int requested = RequestedSecondsAtPress();
+            // The game's own F9 length (or the standard one) is read here, on the pressing thread, and capped by the ring.
+            var pressClip = ResolvePressClip();
+            int requested = pressClip.Seconds;
+            Logger.Info("SaveLast: " + PressClipLength.Describe(pressClip));
             var bufferDir = epoch.BufferDir;
             var nowUtc = DateTime.UtcNow;
             // What is on screen NOW decides the game folder - not what is on screen when the scan is done.
@@ -1433,24 +1445,36 @@ public sealed class ReplayBufferService : IDisposable
     private void PruneAfterSave() => _ = Task.Run(PruneOldSegments);
 
     /// <summary>
-    /// The length this press saves: <see cref="ClipSecondsAtPress"/> when set and positive, never more than the lookback
-    /// the ring actually holds (<see cref="EffectiveDurationSeconds"/>).
+    /// The clip length of this press and where it came from: the game's own length (profile of
+    /// <see cref="GameExeAtPress"/>) or the standard length when no game is recognised, overridden by a positive
+    /// <see cref="ClipSecondsAtPress"/>, and never more than the lookback the ring actually holds
+    /// (<see cref="EffectiveDurationSeconds"/>). The ring itself is sized for <see cref="RingLookbackSeconds"/>.
     /// </summary>
-    internal int RequestedSecondsAtPress()
+    internal PressClip ResolvePressClip()
     {
         int ring = EffectiveDurationSeconds;
-        int wanted = ring;
+        string? exe = null;
+        if (GameExeAtPress is { } getExe)
+        {
+            try { exe = getExe(); }
+            catch (Exception ex) { Logger.Warn("Game at press failed: " + ex.Message); }
+        }
+
+        var clip = PressClipLength.Resolve(ring, _settings.Current, exe);
         if (ClipSecondsAtPress is { } hook)
         {
             try
             {
                 int v = hook();
-                if (v > 0) wanted = v;
+                if (v > 0) clip = PressClipLength.WithRequested(clip, ring, v);
             }
             catch (Exception ex) { Logger.Warn("Clip length at press failed: " + ex.Message); }
         }
-        return Math.Min(wanted, ring);
+        return clip;
     }
+
+    /// <summary>The length this press saves (see <see cref="ResolvePressClip"/>).</summary>
+    internal int RequestedSecondsAtPress() => ResolvePressClip().Seconds;
 
     /// <summary>
     /// A concat list / chapter file. Next to a RAM save's output it is hidden; any earlier file of that name goes first

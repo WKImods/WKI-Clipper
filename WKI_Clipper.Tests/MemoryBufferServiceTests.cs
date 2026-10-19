@@ -109,6 +109,107 @@ public sealed class MemoryBufferServiceTests : IDisposable
         Assert.Equal(DurationText.MaxSeconds, _buffer.RingLookbackSeconds);
     }
 
+    [Fact]
+    public void The_ring_is_sized_for_the_longest_length_while_a_press_saves_its_own()
+    {
+        var s = _settings.Current;
+        s.ReplayBuffer.DurationSeconds = 60;
+        GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
+        GameProfiles.SetClipSeconds(s, "cs2.exe", "CS2", 30);
+
+        // Every sizing site reads RingLookbackSeconds: effective lookback, ring plan, press cap.
+        Assert.Equal(1800, _buffer.RingLookbackSeconds);
+        Assert.Equal(1800, _buffer.EffectiveDurationSeconds);
+        Assert.Equal(RingPlan.Create(1800, 5), CurrentRingPlan());
+
+        // Nothing detected / unknown / desktop: the global length is the backup, not the ring.
+        Assert.Equal(60, _buffer.RequestedSecondsAtPress());
+        string? exe = null;
+        _buffer.GameExeAtPress = () => exe;
+        foreach (var (game, expected) in new (string?, int)[] { (null, 60), ("Desktop", 60), ("unknown.exe", 60), ("cs2.exe", 30), ("ARMA.EXE", 1800) })
+        {
+            exe = game;
+            Assert.Equal(expected, _buffer.RequestedSecondsAtPress());
+        }
+
+        // A lookup that throws never breaks F9: the global length applies.
+        _buffer.GameExeAtPress = () => throw new InvalidOperationException("detector broke");
+        Assert.Equal(60, _buffer.RequestedSecondsAtPress());
+    }
+
+    [Fact]
+    public void The_press_length_wired_like_the_app_does_follows_the_game_and_is_capped_by_the_running_ring()
+    {
+        var s = _settings.Current;
+        s.ReplayBuffer.DurationSeconds = 60;
+        GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
+        string? exe = "arma.exe";
+        _buffer.GameExeAtPress = () => exe;
+        _buffer.ClipSecondsAtPress = () => EffectiveSettings.ClipSecondsFor(_settings.Current, exe);
+
+        Assert.Equal(1800, _buffer.RequestedSecondsAtPress());
+        var clip = _buffer.ResolvePressClip();
+        Assert.Equal(ClipLengthSource.Profile, clip.Source);
+        Assert.Equal("arma.exe", clip.ProfileKey);
+
+        exe = null;                                                    // the game is not recognised: the backup
+        Assert.Equal(60, _buffer.RequestedSecondsAtPress());
+        Assert.Equal(ClipLengthSource.Global, _buffer.ResolvePressClip().Source);
+
+        exe = "arma.exe";
+        Field("_memoryCapSeconds").SetValue(_buffer, 300);             // the low-RAM guard cut the running ring
+        Assert.Equal(300, _buffer.RequestedSecondsAtPress());
+        Assert.True(_buffer.ResolvePressClip().CappedByRing);
+    }
+
+    [Fact]
+    public void A_profile_length_changes_the_storage_key_so_the_storage_is_decided_anew_for_the_longer_ring()
+    {
+        var s = _settings.Current;
+        s.ReplayBuffer.StorageMode = BufferStorageMode.Disk;   // deterministic on every machine
+        s.ReplayBuffer.DurationSeconds = 60;
+
+        var before = DecideStorage(coldStart: true);
+        Assert.Equal(60, before.LookbackSeconds);
+        Assert.Same(before, DecideStorage(coldStart: false));   // unchanged settings: a warm restart keeps it
+
+        GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
+        var after = DecideStorage(coldStart: false);
+        Assert.NotSame(before, after);
+        Assert.Equal(1800, after.LookbackSeconds);              // keyed AND decided for the longest length
+        Assert.True(after.EstimatedBytes > before.EstimatedBytes * 10);
+
+        GameProfiles.SetClipSeconds(s, "arma.exe", null, null);
+        Assert.Equal(60, DecideStorage(coldStart: false).LookbackSeconds);
+    }
+
+    [Fact]
+    public void A_profile_that_makes_the_ring_longer_can_flip_auto_from_ram_to_disk()
+    {
+        // The planner is fed the RING length: 60 s fits a 2 GB RAM budget, 30 min does not.
+        var s = new WKI_Clipper.Models.AppSettings();
+        s.ReplayBuffer.DurationSeconds = 60;
+        long budget = 2L << 30;
+        StorageDecision Decide(int ring) => BufferStoragePlanner.Decide(BufferStorageMode.Auto, true, ring, 5, 25_000_000, 1, budget, null);
+
+        Assert.Equal(BufferStorageKind.Memory, Decide(ProfileLengths.RingSeconds(s, 60)).Kind);
+        GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
+        var flipped = Decide(ProfileLengths.RingSeconds(s, 60));
+        Assert.Equal(BufferStorageKind.Disk, flipped.Kind);
+        Assert.Equal(StorageReason.OverBudget, flipped.Reason);
+    }
+
+    [Fact]
+    public void The_disk_forecast_for_the_ring_length_counts_the_longest_profile()
+    {
+        var s = _settings.Current;
+        s.ReplayBuffer.DurationSeconds = 60;
+        long globalOnly = _buffer.Forecast(_buffer.RingLookbackSeconds).RequiredBytes;
+        GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
+        long withProfile = _buffer.Forecast(_buffer.RingLookbackSeconds).RequiredBytes;
+        Assert.True(withProfile > globalOnly * 10);
+    }
+
     private sealed class BrokenPipe : Stream
     {
         public override int Read(byte[] buffer, int offset, int count) => throw new IOException("pipe broke");

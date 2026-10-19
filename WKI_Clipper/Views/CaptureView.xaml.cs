@@ -360,7 +360,9 @@ public partial class CaptureView : UserControl
             string limited = host.ReplayBuffer.DiskLimited ? L.T(" (gekürzt: wenig Platz)", " (shortened: low space)")
                            : host.ReplayBuffer.MemoryLimited ? L.T(" (gekürzt: wenig Arbeitsspeicher)", " (shortened: low RAM)") : "";
             string storage = host.ReplayBuffer.StorageLine is { } line ? " · " + line : "";
-            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{limited}{storage}", $"Buffer active · {avail} ready for F9{limited}{storage}");
+            // The ring is what the buffer holds; F9 may save less (a game's own length) - say so.
+            string f9 = host.F9StatusNote() is { } note ? " · " + note : "";
+            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{f9}{limited}{storage}", $"Buffer active · {avail} ready for F9{f9}{limited}{storage}");
         }
         else
         {

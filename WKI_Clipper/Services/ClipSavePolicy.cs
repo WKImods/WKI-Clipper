@@ -9,7 +9,7 @@ namespace WKI_Clipper.Services;
 /// </summary>
 /// <param name="Path">Final clip path.</param>
 /// <param name="Seconds">Actual footage: the sum of the segment durations.</param>
-/// <param name="RequestedSeconds">The effective lookback at press time.</param>
+/// <param name="RequestedSeconds">The clip length of this press (the game's own or the standard length, capped by the ring).</param>
 /// <param name="Game">Folder/display name resolved at press time, null when unset.</param>
 /// <param name="Gaps">Empty = gap-free.</param>
 public sealed record ReplaySavedInfo(string Path, double Seconds, int RequestedSeconds, string? Game,
