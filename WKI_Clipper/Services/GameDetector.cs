@@ -15,6 +15,20 @@ namespace WKI_Clipper.Services;
 /// </summary>
 public sealed record GameInfo(int Pid, string ExeName, string DisplayName)
 {
+    /// <summary>
+    /// The monitor (physical pixels) the game's window was on when it came to the front; null when unknown.
+    /// Only a snapshot: it goes stale when the resolution changes or the game is moved, so consumers that need
+    /// the CURRENT monitor look it up from <see cref="Window"/> first. Not part of the identity.
+    /// </summary>
+    public LayoutRect? Monitor { get; init; }
+
+    /// <summary>
+    /// The window handle the game was first seen with (<see cref="IntPtr.Zero"/> = unknown), for resolving the
+    /// monitor it is on right now. Can go stale (window recreated); callers check it is still a window.
+    /// Not part of the identity.
+    /// </summary>
+    public IntPtr Window { get; init; }
+
     public bool Equals(GameInfo? other)
         => other is not null && Pid == other.Pid && string.Equals(ExeName, other.ExeName, StringComparison.OrdinalIgnoreCase);
 
@@ -56,6 +70,7 @@ public sealed class GameDebounce
     private GameInfo? _pending;
     private bool _hasPending;
     private long _pendingSince;
+    private bool _pendingShellOnly;
 
     /// <summary>The settled state: the game in front, or null.</summary>
     public GameInfo? Current { get; private set; }
@@ -65,19 +80,43 @@ public sealed class GameDebounce
     /// <summary>When the pending candidate matures; null = nothing pending.</summary>
     public long? DueAtMs => _hasPending ? _pendingSince + DelayMs : null;
 
-    /// <summary>The newest observation of what is in front (null = no game).</summary>
-    public void Observe(GameInfo? candidate, long nowMs)
+    /// <summary>
+    /// The pending change is "no game", and every observation behind it was a shell window (taskbar, start menu,
+    /// search) - a transient that usually just precedes the clipper's own window (tray click). See
+    /// <see cref="GameDetector"/>: such a pending is dropped instead of committed while our window is in front.
+    /// </summary>
+    public bool PendingIsShellTransient => _hasPending && _pending is null && _pendingShellOnly;
+
+    /// <summary>
+    /// The newest observation of what is in front (null = no game).
+    /// <paramref name="shellWindow"/>: the observed window is a shell window (only meaningful for a null candidate).
+    /// </summary>
+    public void Observe(GameInfo? candidate, long nowMs, bool shellWindow = false)
     {
         if (Equals(candidate, Current))
         {
-            _hasPending = false;
-            _pending = null;
+            // Same game: take over its newest window/monitor so consumers do not keep a stale handle.
+            if (candidate is not null) Current = candidate;
+            CancelPending();
             return;
         }
-        if (_hasPending && Equals(candidate, _pending)) return;   // same candidate: keep its original start
+        if (_hasPending && Equals(candidate, _pending))   // same candidate: keep its original start
+        {
+            _pendingShellOnly &= shellWindow;             // ... but one non-shell sighting makes it a real "left the game"
+            return;
+        }
         _hasPending = true;
         _pending = candidate;
         _pendingSince = nowMs;
+        _pendingShellOnly = shellWindow;
+    }
+
+    /// <summary>Forgets the pending change; <see cref="Current"/> stays.</summary>
+    public void CancelPending()
+    {
+        _hasPending = false;
+        _pending = null;
+        _pendingShellOnly = false;
     }
 
     /// <summary>Commits the pending candidate once it matured. True = <see cref="Current"/> changed.</summary>
@@ -85,8 +124,7 @@ public sealed class GameDebounce
     {
         if (!_hasPending || nowMs - _pendingSince < DelayMs) return false;
         Current = _pending;
-        _hasPending = false;
-        _pending = null;
+        CancelPending();
         return true;
     }
 }
@@ -234,19 +272,64 @@ public sealed class GameDetector : IDisposable
             if (facts is not { } f) return;              // gone / unreadable: keep what we know
             if (f.Pid == _selfPid) return;               // our own windows never change the game
 
+            // Shell windows (taskbar, start menu, search) are transients: a tray click puts the taskbar in front
+            // for a moment, then our own window follows. The same rule the foreground tracker uses.
+            bool shell = !CaptureTargetResolver.IsCouplableApp(f.ProcessName);
+
             // Only games cost a name lookup (disk read on the first sight of an exe).
             GameInfo? candidate = IsGame(f, _windowModeTarget(), _selfPid)
-                ? new GameInfo(f.Pid, f.ExeName, _displayName(f))
+                ? new GameInfo(f.Pid, f.ExeName, _displayName(f)) { Monitor = f.Monitor, Window = hwnd }
                 : null;
             lock (_gate)
             {
-                _debounce.Observe(candidate, _clock());
+                if (!shell) _lastExternalWindow = hwnd.ToInt64();
+                _debounce.Observe(candidate, _clock(), shellWindow: candidate is null && shell);
+                if (candidate is not null && Equals(candidate, _current)) _current = _debounce.Current;   // refreshed window/monitor
                 ArmLocked();
             }
         }
         catch (Exception ex)
         {
             Logger.Warn("GameDetector: foreground check failed: " + ex.Message);
+        }
+    }
+
+    /// <summary>The last foreground window that was neither ours nor a shell window (an IntPtr kept as long); guarded by the gate.</summary>
+    private long _lastExternalWindow;
+
+    /// <summary>
+    /// The answer for a caller that needs it NOW (the compress wait asks every few seconds), not after the debounce.
+    /// The window in front is probed again with the same rules (<see cref="IsGame"/>) - so a game that became
+    /// borderless after it got the focus counts, and one that went back to a window stops counting. While one of
+    /// our windows is in front, the last non-shell external window is judged instead (opening the gallery over a
+    /// game must not look like "no game"). The re-probed window is also fed to the debounce so
+    /// <see cref="Current"/> catches up. A window that cannot be read keeps the settled state.
+    /// </summary>
+    public bool IsGameInFrontNow()
+    {
+        if (_disposed) return false;
+        try
+        {
+            Verify();
+            var hwnd = _foreground();
+            var facts = _probe(hwnd);
+            if (facts is { } own && own.Pid == _selfPid)
+            {
+                long last;
+                lock (_gate) last = _lastExternalWindow;
+                hwnd = new IntPtr(last);
+                facts = last == 0 ? null : _probe(hwnd);
+            }
+            if (facts is not { } f) return _current is not null;
+
+            bool live = IsGame(f, _windowModeTarget(), _selfPid);
+            OnForegroundChanged(hwnd);
+            return live;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("GameDetector: live check failed: " + ex.Message);
+            return _current is not null;
         }
     }
 
@@ -270,6 +353,9 @@ public sealed class GameDetector : IDisposable
         lock (_gate)
         {
             if (_debounce.HasPending) return;   // something newer is already on its way
+            // The liveness check ran outside the lock: if another game was committed meanwhile, the one we
+            // checked is no longer the settled state and must not take it down with it.
+            if (!Equals(_debounce.Current, current)) return;
             _debounce.Observe(null, _clock());
             ArmLocked();
         }
@@ -283,6 +369,10 @@ public sealed class GameDetector : IDisposable
         lock (_gate)
         {
             if (_disposed) return;
+            // A "no game" that only came from shell windows (tray click -> taskbar, then our own window) is not a
+            // game that was left: with our window in front the game is still the one underneath.
+            if (_debounce.PendingIsShellTransient && _debounce.DueAtMs <= _clock() && OwnWindowInFront())
+                _debounce.CancelPending();
             changed = _debounce.Poll(_clock());
             now = _debounce.Current;
             if (changed) _current = now;
@@ -301,6 +391,12 @@ public sealed class GameDetector : IDisposable
             try { h(now); }
             catch (Exception ex) { Logger.Warn("GameDetector: GameChanged handler threw: " + ex.Message); }
         }
+    }
+
+    private bool OwnWindowInFront()
+    {
+        try { return _probe(_foreground()) is { } f && f.Pid == _selfPid; }
+        catch { return false; }
     }
 
     private void ArmLocked()

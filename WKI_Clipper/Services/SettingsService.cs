@@ -112,6 +112,8 @@ public sealed class SettingsService
         s.Discord ??= new DiscordCompressSettings();
         s.Gamepad ??= new GamepadSettings();
         s.Gamepad.Bindings ??= new();
+        // Per-game profiles: keys of a hand-edited file may differ in case/path form from the ones the lookup uses.
+        s.GameProfiles = GameProfiles.Normalize(s.GameProfiles);
     }
 
     /// <summary>Parsed settings, or null when the file is missing, empty or not valid settings JSON.</summary>
