@@ -181,6 +181,8 @@ Download `WKI_Clipper_Setup_X.X.X.exe` from the
 [latest release](https://github.com/WKImods/WKI-Clipper/releases/latest) and run it: a
 per-user install (no admin) with a self-contained .NET 8 runtime and FFmpeg with all
 hardware encoders. The uninstaller keeps your clips and settings.
+The install folder can be on any drive (type the path or use *Browse*); to move an existing
+install, run the setup again and pick the new folder — the old copy is removed.
 
 - **Windows 10 (2004) or 11, 64-bit.** WhatsApp and Spotify's full view need the Microsoft
   Edge WebView2 Runtime, which ships with current Windows 10/11.
