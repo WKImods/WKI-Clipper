@@ -45,6 +45,26 @@ public static class PressClipLength
                              wanted);
     }
 
+    /// <summary>
+    /// The exe a press is attributed to: the first source that answers wins, later ones are not even asked (so a pinned
+    /// window never costs a foreground probe). A source that throws or answers blank is skipped. The order the app uses:
+    /// the window a WGC capture pins (it IS the footage), what is really in front now (the folder follows it), and only
+    /// last the detector's debounced state. No answer = the standard length.
+    /// </summary>
+    public static string? ResolveExe(params Func<string?>[] sources)
+    {
+        foreach (var source in sources)
+        {
+            try
+            {
+                var exe = source();
+                if (!string.IsNullOrWhiteSpace(exe)) return exe;
+            }
+            catch (Exception ex) { Logger.Warn("Game at press: a source failed: " + ex.Message); }
+        }
+        return null;
+    }
+
     /// <summary>A length asked for by an override (the per-press hook): capped by the ring, the source stays that of the game.</summary>
     public static PressClip WithRequested(PressClip clip, int ringSeconds, int requested)
         => clip with { Seconds = Math.Min(requested, ringSeconds), WantedSeconds = requested };

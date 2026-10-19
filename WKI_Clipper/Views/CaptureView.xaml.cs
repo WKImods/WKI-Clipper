@@ -360,9 +360,10 @@ public partial class CaptureView : UserControl
             string limited = host.ReplayBuffer.DiskLimited ? L.T(" (gekürzt: wenig Platz)", " (shortened: low space)")
                            : host.ReplayBuffer.MemoryLimited ? L.T(" (gekürzt: wenig Arbeitsspeicher)", " (shortened: low RAM)") : "";
             string storage = host.ReplayBuffer.StorageLine is { } line ? " · " + line : "";
-            // The ring is what the buffer holds; F9 may save less (a game's own length) - say so.
+            // The "shortened" hint belongs to the ring value ({avail}), so it sits right behind it; F9 may save less
+            // (a game's own length) - the note comes after.
             string f9 = host.F9StatusNote() is { } note ? " · " + note : "";
-            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{f9}{limited}{storage}", $"Buffer active · {avail} ready for F9{f9}{limited}{storage}");
+            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{limited}{f9}{storage}", $"Buffer active · {avail} ready for F9{limited}{f9}{storage}");
         }
         else
         {

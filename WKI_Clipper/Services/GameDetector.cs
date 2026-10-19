@@ -311,15 +311,7 @@ public sealed class GameDetector : IDisposable
         try
         {
             Verify();
-            var hwnd = _foreground();
-            var facts = _probe(hwnd);
-            if (facts is { } own && own.Pid == _selfPid)
-            {
-                long last;
-                lock (_gate) last = _lastExternalWindow;
-                hwnd = new IntPtr(last);
-                facts = last == 0 ? null : _probe(hwnd);
-            }
+            var (facts, hwnd) = LiveWindow();
             if (facts is not { } f) return _current is not null;
 
             bool live = IsGame(f, _windowModeTarget(), _selfPid);
@@ -330,6 +322,45 @@ public sealed class GameDetector : IDisposable
         {
             Logger.Warn("GameDetector: live check failed: " + ex.Message);
             return _current is not null;
+        }
+    }
+
+    /// <summary>
+    /// The window the question "which game is in front" is about right now: the foreground window, or - while one of our
+    /// windows is in front - the last non-shell external one.
+    /// </summary>
+    private (ForegroundFacts? Facts, IntPtr Hwnd) LiveWindow()
+    {
+        var hwnd = _foreground();
+        var facts = _probe(hwnd);
+        if (facts is { } own && own.Pid == _selfPid)
+        {
+            long last;
+            lock (_gate) last = _lastExternalWindow;
+            hwnd = new IntPtr(last);
+            facts = last == 0 ? null : _probe(hwnd);
+        }
+        return (facts, hwnd);
+    }
+
+    /// <summary>
+    /// The exe file name of the game in front right now (same live window and same <see cref="IsGame"/> rules as
+    /// <see cref="IsGameInFrontNow"/>), or null when none is. A plain question: nothing is fed to the debounce, no state
+    /// changes. For the F9 press: a game that came to the front within the debounce (Alt-Tab, then F9 at once) still
+    /// names its length, while <see cref="Current"/> has not caught up yet.
+    /// </summary>
+    public string? GameExeInFrontNow()
+    {
+        if (_disposed) return null;
+        try
+        {
+            var (facts, _) = LiveWindow();
+            return facts is { } f && IsGame(f, _windowModeTarget(), _selfPid) ? f.ExeName : null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("GameDetector: live game lookup failed: " + ex.Message);
+            return null;
         }
     }
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using WKI_Clipper.Native;
 
@@ -49,6 +50,18 @@ public sealed class GameContext
             Logger.Warn("Game folder resolution failed: " + ex.Message);
             return GameFolderNaming.UnknownFolder;
         }
+    }
+
+    /// <summary>
+    /// The exe file name of the window a window capture (WGC) pins, or null: the footage of that clip IS this window, so it
+    /// is the game of the clip whatever is in front. The same first step as <see cref="ResolveFolder"/>; null for a
+    /// monitor capture, nothing pinned or a process that cannot be read (exe path with query-only rights, never more).
+    /// </summary>
+    public string? PinnedExe(CaptureTargetResolver.CapturePlan? plan)
+    {
+        if (PidOfPinnedWindow(plan) is not { } pid) return null;
+        var path = ImagePath(pid);
+        return path is null ? null : Path.GetFileName(path);
     }
 
     private static int? PidOfPinnedWindow(CaptureTargetResolver.CapturePlan? plan)

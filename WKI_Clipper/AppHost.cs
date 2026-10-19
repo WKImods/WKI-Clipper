@@ -50,11 +50,35 @@ public sealed class AppHost : IDisposable
     /// "F9 in &lt;Spiel&gt;: &lt;Länge&gt;" for the status lines when a press would save less than the ring holds (a game's
     /// own length, or the standard length while a profile elsewhere made the ring longer); null = F9 saves the whole ring.
     /// </summary>
-    public string? F9StatusNote()
+    public string? F9StatusNote() => PressStatusNow().Note;
+
+    /// <summary>
+    /// The exe an F9 press attributes the clip to - ONE answer for the length, the log and the status lines, from the same
+    /// evidence the clip's folder uses: the window a WGC capture pins (that is the footage), else the game really in front
+    /// now (or, with our own window in front, the last external one), and only last the detector's debounced state (which
+    /// lags a game that just came to the front by 1.5 s and is empty while a blocked window such as Discord has the focus).
+    /// No game = null = the standard length.
+    /// </summary>
+    public string? ResolvePressExe() => PressClipLength.ResolveExe(
+        () => Games?.PinnedExe(ReplayBuffer.CurrentPlan),
+        () => GameDetector?.GameExeInFrontNow(),
+        () => GameDetector?.Current?.ExeName);
+
+    /// <summary>
+    /// What a press would save right now (seconds) and the status note for it ("F9 in Arma Reforger: 2 min"; null when F9
+    /// saves the whole ring). One exe resolution per call, shared by the label and the note, so the shown length is the one
+    /// the key press saves. Cheap enough for a 1 Hz status tick: a few window queries, no process enumeration.
+    /// </summary>
+    public (int Seconds, string? Note) PressStatusNow()
     {
+        var settings = Settings.Current;
+        int ring = ReplayBuffer.EffectiveDurationSeconds;
+        string? exe = ResolvePressExe();
         var game = CurrentGame;
-        return PressClipLength.StatusNote(Settings.Current, game?.ExeName, game?.DisplayName, ReplayBuffer.EffectiveDurationSeconds)
-            is { } note ? PressClipLength.StatusText(note) : null;
+        string? name = game is not null && EffectiveSettings.ProfileKey(game.ExeName) == EffectiveSettings.ProfileKey(exe)
+            ? game.DisplayName : null;
+        string? note = PressClipLength.StatusNote(settings, exe, name, ring) is { } n ? PressClipLength.StatusText(n) : null;
+        return (PressClipLength.Resolve(ring, settings, exe).Seconds, note);
     }
 
     /// <summary>
@@ -227,11 +251,11 @@ public sealed class AppHost : IDisposable
         ManualRecording.GameFolderFor = Games.ResolveFolder;
         Screenshots.GameFolderFor = Games.ResolveFolder;
 
-        // F9 length per game: the game in front at the key press (the detector keeps the last game while the clipper's own
-        // window is in front) decides which profile length the clip gets; nothing recognised = the standard length. The
-        // ring is NOT resized by this - it always holds the longest length (EffectiveSettings.LongestClipSeconds).
-        ReplayBuffer.GameExeAtPress = () => GameDetector?.Current?.ExeName;
-        ReplayBuffer.ClipSecondsAtPress = () => EffectiveSettings.ClipSecondsFor(Settings.Current, GameDetector?.Current?.ExeName);
+        // F9 length per game: ONE read at the key press names the game the clip belongs to (pinned window, else the game
+        // really in front, else the detector's state - see ResolvePressExe); the buffer derives the length AND the log line
+        // from that single exe, so they cannot disagree. Nothing recognised = the standard length. The ring is NOT resized
+        // by this - it always holds the longest length (EffectiveSettings.LongestClipSeconds).
+        ReplayBuffer.GameExeAtPress = ResolvePressExe;
     }
 
     // True while the buffer was taken down for a manual recording, so it only comes back

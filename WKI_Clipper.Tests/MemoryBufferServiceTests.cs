@@ -144,11 +144,13 @@ public sealed class MemoryBufferServiceTests : IDisposable
         s.ReplayBuffer.DurationSeconds = 60;
         GameProfiles.SetClipSeconds(s, "arma.exe", "Arma", 1800);
         string? exe = "arma.exe";
-        _buffer.GameExeAtPress = () => exe;
-        _buffer.ClipSecondsAtPress = () => EffectiveSettings.ClipSecondsFor(_settings.Current, exe);
+        int reads = 0;
+        _buffer.GameExeAtPress = () => { reads++; return exe; };   // the app wires ONLY this: one read per press
 
         Assert.Equal(1800, _buffer.RequestedSecondsAtPress());
+        Assert.Equal(1, reads);                                    // length and log attribution come from the same read
         var clip = _buffer.ResolvePressClip();
+        Assert.Equal(2, reads);
         Assert.Equal(ClipLengthSource.Profile, clip.Source);
         Assert.Equal("arma.exe", clip.ProfileKey);
 

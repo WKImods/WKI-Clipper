@@ -115,9 +115,10 @@ public partial class StatusView : UserControl
         if (host is null) return;
         var s = host.Settings.Current;
 
-        // The button saves what F9 would save right now: the game in front's own length, else the standard one.
-        int pressSeconds = PressClipLength.Resolve(host.ReplayBuffer.EffectiveDurationSeconds, s, host.CurrentGame?.ExeName).Seconds;
-        string pressLen = DurationText.Format(pressSeconds);
+        // The button saves what F9 would save right now: the length of the game the clip would belong to (same resolver as
+        // the key press), else the standard one. One resolution per tick, shared with the buffer line below.
+        var press = host.PressStatusNow();
+        string pressLen = DurationText.Format(press.Seconds);
         SaveReplayBtn.Content = L.T($"Letzte {pressLen} speichern", $"Save last {pressLen}");
 
         // Recording state
@@ -146,10 +147,11 @@ public partial class StatusView : UserControl
             string limited = host.ReplayBuffer.DiskLimited ? L.T("  ·  gekürzt: wenig Platz", "  ·  shortened: low space")
                            : host.ReplayBuffer.MemoryLimited ? L.T("  ·  gekürzt: wenig Arbeitsspeicher", "  ·  shortened: low RAM") : "";
             string storage = host.ReplayBuffer.StorageLine is { } line ? "\n" + line : "";
-            // The ring is what the buffer holds; F9 may save less (a game's own length) - say so.
-            string f9 = host.F9StatusNote() is { } note ? "  ·  " + note : "";
-            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{f9}{limited}{storage}",
-                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{f9}{limited}{storage}");
+            // "bereit" is the ring (the "shortened" hint belongs to it); F9 may save less (a game's own length), then the
+            // note replaces the plain "F9 speichert".
+            string f9 = press.Note ?? L.T("F9 speichert", "F9 saves");
+            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit{limited}  ·  {f9}{storage}",
+                                    $"Buffer active  ·  {avail} ready{limited}  ·  {f9}{storage}");
         }
         else
         {

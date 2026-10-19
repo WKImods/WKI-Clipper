@@ -315,6 +315,79 @@ public sealed class GameForegroundDetectorTests
         _ = rig.Wait();
     }
 
+    // ---- which game is in front RIGHT NOW (the F9 length follows the footage, not the debounced state) ----
+
+    [Fact]
+    public void The_game_in_front_is_named_at_once_without_touching_the_settled_state()
+    {
+        var rig = new Rig();
+        rig.Alive.Add(777);
+        rig.Focus(rig.Window(1, "Arma.exe", 777));
+
+        Assert.Null(rig.Detector.Current);                          // inside the 1.5 s debounce
+        Assert.Equal("Arma.exe", rig.Detector.GameExeInFrontNow());
+        Assert.Null(rig.Detector.Current);                          // a plain question: nothing was fed to the debounce
+    }
+
+    [Fact]
+    public void With_our_window_in_front_the_last_external_game_is_named_even_before_it_was_settled()
+    {
+        var rig = new Rig();
+        rig.Alive.Add(777);
+        rig.Focus(rig.Window(1, "Arma.exe", 777));
+        rig.Focus(rig.Own());                                       // Alt-Tab into the clipper within the debounce
+
+        Assert.Null(rig.Detector.Current);
+        Assert.Equal("Arma.exe", rig.Detector.GameExeInFrontNow());
+    }
+
+    [Fact]
+    public void A_tray_click_in_between_does_not_hide_the_game()
+    {
+        var rig = new Rig();
+        rig.Alive.Add(777);
+        rig.Focus(rig.Window(1, "Arma.exe", 777));
+        rig.Focus(rig.Window(3, "explorer.exe", 5));
+        rig.Focus(rig.Own());
+
+        Assert.Equal("Arma.exe", rig.Detector.GameExeInFrontNow());
+    }
+
+    [Fact]
+    public void A_browser_chat_or_small_window_in_front_names_no_game_even_while_the_settled_game_is_another()
+    {
+        var rig = new Rig();
+        rig.Alive.Add(777);
+        rig.Focus(rig.Window(1, "Arma.exe", 777));
+        rig.Advance(1500);
+        Assert.NotNull(rig.Detector.Current);
+
+        rig.Focus(rig.Window(2, "Discord.exe", 6));
+        Assert.Null(rig.Detector.GameExeInFrontNow());
+        Assert.NotNull(rig.Detector.Current);                       // still inside the debounce
+
+        rig.Focus(rig.Window(4, "notes.exe", 8, window: Small));
+        Assert.Null(rig.Detector.GameExeInFrontNow());
+
+        rig.Focus(rig.Window(5, "chrome.exe", 9));
+        rig.Focus(rig.Own());
+        Assert.Null(rig.Detector.GameExeInFrontNow());              // the window before ours was the browser
+    }
+
+    [Fact]
+    public void An_unreadable_window_or_a_disposed_detector_names_no_game()
+    {
+        var rig = new Rig();
+        rig.Alive.Add(777);
+        rig.Focus(rig.Window(1, "Arma.exe", 777));
+        rig.Foreground = new IntPtr(555);                           // a window the probe cannot read
+        Assert.Null(rig.Detector.GameExeInFrontNow());
+
+        rig.Foreground = new IntPtr(1);
+        rig.Detector.Dispose();
+        Assert.Null(rig.Detector.GameExeInFrontNow());
+    }
+
     // ---- Verify must not take down a game that was committed while it was checking ----
 
     [Fact]
