@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -116,6 +117,8 @@ public static class ClipCutRules
         RecycleOutcome.Recycled => L.T("Original liegt im Papierkorb.", "The original is in the Recycle Bin."),
         RecycleOutcome.InUse => L.T("Original ist in Verwendung und wurde behalten.", "The original is in use and was kept."),
         RecycleOutcome.Declined => L.T("Original wurde behalten.", "The original was kept."),
+        RecycleOutcome.DeletedPermanently => L.T("Original wurde gelöscht, liegt aber nicht im Papierkorb.",
+                                                 "The original was deleted but is not in the Recycle Bin."),
         _ => L.T("Original konnte nicht in den Papierkorb verschoben werden und wurde behalten.",
                  "The original could not be moved to the Recycle Bin and was kept.")
     };
@@ -154,16 +157,35 @@ public static class ClipCutRules
 
     /// <summary>
     /// How long a re-encode takes, for the display only: 4.5x real time at 1080p60 (measured 4.4-5.5x with the AMD
-    /// encoder), scaled by the pixel rate, between 0.5x and 20x.
+    /// encoder), scaled by the pixel rate, between 0.5x and 20x. The software encoder (libx264 veryfast on half the
+    /// cores) is rated 3x at 1080p60 - measured 5.6x on a Ryzen 7 9700X with test footage, real footage and weaker CPUs
+    /// are slower - and may fall to 0.1x on a very large picture.
     /// </summary>
-    public static double EstimateExactSeconds(double rangeSeconds, int width, int height, double fps)
+    public static double EstimateExactSeconds(double rangeSeconds, int width, int height, double fps, bool software = false)
     {
-        double factor = 4.5;
+        double reference = software ? 3.0 : 4.5;
+        double factor = reference;
         if (width > 0 && height > 0 && fps > 0)
-            factor = 4.5 * (1920.0 * 1080 * 60) / ((double)width * height * fps);
-        factor = Math.Clamp(factor, 0.5, 20);
+            factor = reference * (1920.0 * 1080 * 60) / ((double)width * height * fps);
+        factor = Math.Clamp(factor, software ? 0.1 : 0.5, 20);
         return Math.Max(0, rangeSeconds) / factor;
     }
+
+    // ================================================================ encoder choice
+
+    /// <summary>Hardware H.264 encoders (AMD VCN, NVENC, Quick Sync) cannot open a picture wider or taller than this.</summary>
+    public const int HardwareH264MaxSide = 4096;
+
+    /// <summary>
+    /// The H.264 encoder of an exact cut: the one <see cref="DiscordCompressRules.PickEncoder"/> picks - except that a
+    /// picture beyond <see cref="HardwareH264MaxSide"/> px (32:9 monitors at 5120x1440, dual 4K) goes to libx264, since
+    /// the hardware encoders refuse to start there and the cut would fail every time. (The ffmpeg encoder test only
+    /// encodes 640x480, so "detected" says nothing about the picture size.) Unknown size (0) keeps the normal choice.
+    /// </summary>
+    public static CompressEncoder PickExactEncoder(IEnumerable<string> detected, int width, int height)
+        => width > HardwareH264MaxSide || height > HardwareH264MaxSide
+            ? CompressEncoder.X264
+            : DiscordCompressRules.PickEncoder(detected);
 
     // ================================================================ ffmpeg arguments
 

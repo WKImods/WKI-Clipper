@@ -132,7 +132,7 @@ public sealed class ClipCutService : IDisposable
         }
         else
         {
-            var encoder = DiscordCompressRules.PickEncoder(AvailableEncoders());
+            var encoder = ClipCutRules.PickExactEncoder(AvailableEncoders(), request.Index.Width, request.Index.Height);
             long bps = ClipCutRules.ExactVideoBitrate(request.Index.VideoBytes, totalSeconds, request.Index.Codec);
             estimated = ClipCutRules.EstimateExactBytes(bps, request.Index.AudioTrackCount, rangeSeconds);
             args = ClipCutRules.BuildExactArgs(source, part, startFile, endExclusive, encoder, bps,
@@ -193,14 +193,44 @@ public sealed class ClipCutService : IDisposable
     // ================================================================ the original
 
     /// <summary>
-    /// Moves the original into the Recycle Bin (only a local file; never File.Delete) and, if that worked, raises
-    /// <see cref="Finished"/> with its path so the gallery reloads. The caller closes the preview first.
+    /// Moves the original into the Recycle Bin (only a local file; never File.Delete) and, if the file is gone
+    /// afterwards, raises <see cref="Finished"/> with its path so the gallery reloads. The caller closes the preview first.
     /// </summary>
     public RecycleOutcome RecycleOriginal(string sourcePath)
     {
         if (!RecycleBin.IsSupportedPath(sourcePath)) return RecycleOutcome.NotSupported;
         var outcome = Recycle(sourcePath);
-        if (outcome == RecycleOutcome.Recycled) RaiseFinished(sourcePath);
+        if (outcome is RecycleOutcome.Recycled or RecycleOutcome.DeletedPermanently) RaiseFinished(sourcePath);
+        return outcome;
+    }
+
+    /// <summary>
+    /// Waits between the tries of <see cref="RecycleOriginalAsync"/>. A preview (MediaElement) or a still-frame grab
+    /// (ffmpeg) lets go of the file a moment after it was told to, so the first try can find it in use.
+    /// </summary>
+    internal static readonly TimeSpan[] RecycleRetryDelays =
+    {
+        TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(400),
+        TimeSpan.FromMilliseconds(800), TimeSpan.FromMilliseconds(1500)
+    };
+
+    /// <summary>Test seam: the wait between two tries.</summary>
+    internal Func<TimeSpan, Task> Delay { get; init; } = Task.Delay;
+
+    /// <summary>
+    /// <see cref="RecycleOriginal"/>, tried again with a short back-off while the file is still in use (at most about
+    /// 3 s in all, without blocking the caller). Any other outcome is final: asking "delete permanently?" a second
+    /// time, say, would be nagging. Continues on the caller's context — the shell wants the UI thread.
+    /// </summary>
+    public async Task<RecycleOutcome> RecycleOriginalAsync(string sourcePath)
+    {
+        var outcome = RecycleOriginal(sourcePath);
+        foreach (var wait in RecycleRetryDelays)
+        {
+            if (outcome != RecycleOutcome.InUse) break;
+            await Delay(wait);
+            outcome = RecycleOriginal(sourcePath);
+        }
         return outcome;
     }
 

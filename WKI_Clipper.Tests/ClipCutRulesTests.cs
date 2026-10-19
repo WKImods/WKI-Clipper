@@ -191,6 +191,62 @@ public sealed class ClipCutRulesTests
         Assert.Equal(60 / 4.5, ClipCutRules.EstimateExactSeconds(60, 0, 0, 0), 6);                  // unknown picture
     }
 
+    [Fact]
+    public void The_software_encoder_is_estimated_slower_than_a_hardware_one()
+    {
+        double hardware = ClipCutRules.EstimateExactSeconds(60, 5120, 1440, 60);
+        double software = ClipCutRules.EstimateExactSeconds(60, 5120, 1440, 60, software: true);
+
+        Assert.True(software > hardware);
+        Assert.Equal(60 / (3.0 * 1920 * 1080 / (5120.0 * 1440)), software, 6);
+        Assert.Equal(60 / 3.0, ClipCutRules.EstimateExactSeconds(60, 1920, 1080, 60, software: true), 6);
+        Assert.Equal(60 / 0.1, ClipCutRules.EstimateExactSeconds(60, 7680, 4320, 240, software: true), 6);   // never slower than 0.1x
+        Assert.Equal(60 / 20.0, ClipCutRules.EstimateExactSeconds(60, 320, 180, 30, software: true), 6);
+    }
+
+    // ---- 4b: which encoder an exact cut uses ----
+
+    [Fact]
+    public void A_picture_up_to_4096_px_uses_the_best_hardware_h264_encoder()
+    {
+        var detected = new[] { "libx264", "h264_nvenc", "h264_amf" };
+
+        Assert.Equal(CompressEncoder.Amf, ClipCutRules.PickExactEncoder(detected, 1920, 1080));
+        Assert.Equal(CompressEncoder.Amf, ClipCutRules.PickExactEncoder(detected, 3840, 2160));
+        Assert.Equal(CompressEncoder.Amf, ClipCutRules.PickExactEncoder(detected, 4096, 4096));      // the limit itself still fits
+        Assert.Equal(CompressEncoder.Nvenc, ClipCutRules.PickExactEncoder(new[] { "h264_nvenc", "h264_qsv" }, 2560, 1440));
+        Assert.Equal(CompressEncoder.Qsv, ClipCutRules.PickExactEncoder(new[] { "h264_qsv" }, 2560, 1440));
+    }
+
+    [Theory]
+    [InlineData(5120, 1440)]    // 32:9 monitor (Odyssey G9)
+    [InlineData(4097, 1080)]
+    [InlineData(7680, 2160)]    // dual 4K
+    [InlineData(1440, 5120)]    // rotated
+    [InlineData(1920, 4097)]
+    public void A_picture_beyond_4096_px_falls_back_to_libx264_because_hardware_h264_cannot_open(int width, int height)
+    {
+        var detected = new[] { "h264_amf", "h264_nvenc", "h264_qsv", "libx264" };
+
+        Assert.Equal(CompressEncoder.X264, ClipCutRules.PickExactEncoder(detected, width, height));
+    }
+
+    [Fact]
+    public void An_unknown_picture_size_keeps_the_normal_choice_and_nothing_detected_means_software()
+    {
+        Assert.Equal(CompressEncoder.Amf, ClipCutRules.PickExactEncoder(new[] { "h264_amf" }, 0, 0));
+        Assert.Equal(CompressEncoder.X264, ClipCutRules.PickExactEncoder(Array.Empty<string>(), 1920, 1080));
+        Assert.Equal(CompressEncoder.X264, ClipCutRules.PickExactEncoder(Array.Empty<string>(), 5120, 1440));
+    }
+
+    [Fact]
+    public void The_exact_encoder_choice_matches_the_discord_choice_where_the_limit_does_not_apply()
+    {
+        var detected = new[] { "H264_AMF", "libx264" };
+
+        Assert.Equal(DiscordCompressRules.PickEncoder(detected), ClipCutRules.PickExactEncoder(detected, 2560, 1440));
+    }
+
     // ---- 5: fast arguments ----
 
     private const string Src = @"C:\Clips\a b.mp4";
@@ -326,6 +382,23 @@ public sealed class ClipCutRulesTests
         Assert.Equal(fast, FFmpegJobRules.StripOverwriteFlags(fast));
         Assert.Equal(exact, FFmpegJobRules.StripOverwriteFlags(exact));
     }
+
+    // ---- 9: what happened to the original ----
+
+    [Fact]
+    public void Only_a_verified_move_says_the_original_is_in_the_recycle_bin()
+    {
+        foreach (var outcome in Enum.GetValues<RecycleOutcome>())
+        {
+            var text = ClipCutRules.RecycleMessage(outcome);
+            Assert.Equal(outcome == RecycleOutcome.Recycled, text.Contains("liegt im Papierkorb"));
+        }
+    }
+
+    [Fact]
+    public void A_permanent_delete_is_reported_as_gone_and_not_in_the_recycle_bin()
+        => Assert.Equal("Original wurde gelöscht, liegt aber nicht im Papierkorb.",
+                        ClipCutRules.RecycleMessage(RecycleOutcome.DeletedPermanently));
 }
 
 /// <summary>The texts that follow the app language.</summary>
@@ -341,6 +414,16 @@ public sealed class ClipCutRulesEnglishTests
 
         Assert.Equal($"Proof (excerpt 03:12{Dash}05:40)", ClipCutRules.NoteForCut("Proof", 192.4, 339.2));
         Assert.Equal($"Excerpt 03:12{Dash}05:40", ClipCutRules.NoteForCut(null, 192.4, 339.2));
+    }
+
+    [Fact]
+    public void The_english_message_of_a_permanent_delete_does_not_claim_the_recycle_bin()
+    {
+        using var _ = TestLanguage.English();
+
+        Assert.Equal("The original was deleted but is not in the Recycle Bin.",
+                     ClipCutRules.RecycleMessage(RecycleOutcome.DeletedPermanently));
+        Assert.Equal("The original is in the Recycle Bin.", ClipCutRules.RecycleMessage(RecycleOutcome.Recycled));
     }
 
     [Fact]

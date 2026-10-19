@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using WKI_Clipper.Services;
 using Xunit;
 
@@ -10,17 +11,211 @@ public sealed class RecycleBinTests
     // ---- the result table ----
 
     [Theory]
-    [InlineData(0, false, false, RecycleOutcome.Recycled)]
-    [InlineData(0, true, false, RecycleOutcome.Declined)]    // the user declined "delete permanently?"
-    [InlineData(0, true, true, RecycleOutcome.Declined)]
-    [InlineData(0, false, true, RecycleOutcome.Failed)]      // "success" but the file is still there
-    [InlineData(32, false, true, RecycleOutcome.InUse)]
-    [InlineData(32, true, true, RecycleOutcome.InUse)]
-    [InlineData(1, false, true, RecycleOutcome.Failed)]
-    [InlineData(0x71, false, true, RecycleOutcome.Failed)]
-    [InlineData(-1, false, false, RecycleOutcome.Failed)]
-    public void The_return_code_the_abort_flag_and_the_file_decide_the_outcome(int rc, bool aborted, bool existsAfter, RecycleOutcome expected)
-        => Assert.Equal(expected, RecycleBin.Interpret(rc, aborted, existsAfter));
+    [InlineData(0, false, false, true, RecycleOutcome.Recycled)]
+    [InlineData(0, true, false, true, RecycleOutcome.Declined)]    // the user declined "delete permanently?"
+    [InlineData(0, true, true, true, RecycleOutcome.Declined)]
+    [InlineData(0, false, true, true, RecycleOutcome.Failed)]      // "success" but the file is still there
+    [InlineData(32, false, true, true, RecycleOutcome.InUse)]
+    [InlineData(32, true, true, true, RecycleOutcome.InUse)]
+    [InlineData(1, false, true, true, RecycleOutcome.Failed)]
+    [InlineData(0x71, false, true, true, RecycleOutcome.Failed)]
+    [InlineData(-1, false, false, true, RecycleOutcome.Failed)]
+    // the file is gone but the bin did not grow: the user confirmed "delete permanently?" - never "in the bin"
+    [InlineData(0, false, false, false, RecycleOutcome.DeletedPermanently)]
+    // the bin could not be counted afterwards: gone, but not provably in the bin
+    [InlineData(0, false, false, null, RecycleOutcome.DeletedPermanently)]
+    // the bin count only matters for a file that is gone
+    [InlineData(0, false, true, false, RecycleOutcome.Failed)]
+    [InlineData(0, true, true, false, RecycleOutcome.Declined)]
+    [InlineData(32, false, true, false, RecycleOutcome.InUse)]
+    public void The_return_code_the_abort_flag_the_file_and_the_bin_decide_the_outcome(int rc, bool aborted, bool existsAfter, bool? binGrew, RecycleOutcome expected)
+        => Assert.Equal(expected, RecycleBin.Interpret(rc, aborted, existsAfter, binGrew));
+
+    // ---- which drives have a Recycle Bin ----
+
+    [Theory]
+    [InlineData(DriveType.Fixed, true)]
+    [InlineData(DriveType.Removable, false)]      // USB stick: Windows would ask "delete permanently?"
+    [InlineData(DriveType.CDRom, false)]
+    [InlineData(DriveType.Ram, false)]
+    [InlineData(DriveType.Network, false)]
+    [InlineData(DriveType.NoRootDirectory, false)]
+    [InlineData(DriveType.Unknown, false)]
+    public void Only_a_fixed_drive_has_a_recycle_bin(DriveType type, bool expected)
+        => Assert.Equal(expected, RecycleBin.DriveHasRecycleBin(type));
+
+    // ---- the bin's own settings: refuse what Windows would delete for good ----
+
+    [Theory]
+    [InlineData(1_000_000L, 100_000L, false, true)]               // 1 MB into a 100 000 MB bin
+    [InlineData(5_000_000_000L, 100_000L, false, true)]
+    [InlineData(5_000_000_000L, 4_000L, false, false)]            // 4.77 GB into a 4 000 MB bin: too big
+    [InlineData(4_000L * 1024 * 1024, 4_000L, false, true)]       // exactly the capacity still fits
+    [InlineData(4_000L * 1024 * 1024 + 1, 4_000L, false, false)]
+    [InlineData(1_000_000L, 100_000L, true, false)]               // "Don't move files to the Recycle Bin"
+    [InlineData(1_000_000L, null, true, false)]
+    [InlineData(5_000_000_000L, null, false, true)]               // no limit known: leave it to the outcome check
+    [InlineData(5_000_000_000L, 0L, false, true)]                 // 0 = not a real limit
+    public void A_file_is_only_recycled_when_the_bin_is_on_and_big_enough(long fileBytes, long? maxMegabytes, bool nukeOnDelete, bool expected)
+        => Assert.Equal(expected, RecycleBin.FitsInBin(fileBytes, maxMegabytes, nukeOnDelete));
+
+    [Fact]
+    public void The_volume_guid_is_read_from_the_mount_point_name()
+    {
+        Assert.Equal("{8fd34892-c82b-4acf-b629-f53bc4893109}",
+                     RecycleBin.VolumeGuidOf(@"\\?\Volume{8fd34892-c82b-4acf-b629-f53bc4893109}\"));
+        Assert.Null(RecycleBin.VolumeGuidOf(@"C:\"));
+        Assert.Null(RecycleBin.VolumeGuidOf(""));
+        Assert.Null(RecycleBin.VolumeGuidOf(null));
+    }
+
+    [Fact]
+    public void The_bin_of_the_system_drive_can_be_counted_and_a_missing_drive_cannot()
+    {
+        // guards the SHQUERYRBINFO layout: with a wrong cbSize the shell answers E_INVALIDARG, which reads as "no bin"
+        Assert.NotNull(RecycleBin.BinItemCount(Path.GetPathRoot(Environment.SystemDirectory)!));
+
+        var used = DriveInfo.GetDrives().Select(d => char.ToUpperInvariant(d.Name[0])).ToHashSet();
+        char free = "ZYXWVUTSRQPONMLKJIHGFED".First(c => !used.Contains(c));
+        Assert.Null(RecycleBin.BinItemCount(free + @":\"));
+    }
+
+    [Fact]
+    public void The_settings_of_the_system_drive_can_be_read_without_throwing()
+    {
+        var root = Path.GetPathRoot(Environment.SystemDirectory)!;
+
+        var ex = Record.Exception(() => RecycleBin.ReadVolumeSettings(root));
+
+        Assert.Null(ex);
+    }
+
+    // ---- Send: the order of the steps, with the shell replaced ----
+
+    private sealed class TempFile : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wki_recycle_send_" + Guid.NewGuid().ToString("N") + ".tmp");
+        public TempFile() => File.WriteAllText(Path, "x");
+        public void Dispose() { try { File.Delete(Path); } catch { } }
+    }
+
+    private sealed class FakeShell
+    {
+        public long Items = 10;
+        public int Deletes;
+        public bool CountFails, CountFailsAfter;
+        public int ReturnCode;
+        public bool Aborted, Recycles = true;
+
+        public long? Count(string root)
+        {
+            if (CountFails || (CountFailsAfter && Deletes > 0)) return null;
+            return Items;
+        }
+
+        public RecycleBin.ShellDeleteResult Delete(string path)
+        {
+            Deletes++;
+            if (ReturnCode == 0 && !Aborted)
+            {
+                File.Delete(path);
+                if (Recycles) Items++;
+            }
+            return new RecycleBin.ShellDeleteResult(ReturnCode, Aborted);
+        }
+    }
+
+    private static RecycleOutcome Send(TempFile file, FakeShell shell, RecycleBin.VolumeSettings? settings = null)
+        => RecycleBin.Send(file.Path, shell.Count, shell.Delete, _ => settings ?? new RecycleBin.VolumeSettings(null, false));
+
+    [Fact]
+    public void A_file_that_lands_in_the_bin_is_recycled()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell();
+
+        Assert.Equal(RecycleOutcome.Recycled, Send(file, shell));
+        Assert.False(File.Exists(file.Path));
+        Assert.Equal(1, shell.Deletes);
+    }
+
+    [Fact]
+    public void A_file_that_vanishes_without_the_bin_growing_was_deleted_for_good()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell { Recycles = false };      // the user answered "Yes" to "delete permanently?"
+
+        Assert.Equal(RecycleOutcome.DeletedPermanently, Send(file, shell));
+        Assert.False(File.Exists(file.Path));
+    }
+
+    [Fact]
+    public void If_the_bin_cannot_be_counted_afterwards_the_file_is_not_claimed_to_be_in_it()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell { CountFailsAfter = true };
+
+        Assert.Equal(RecycleOutcome.DeletedPermanently, Send(file, shell));
+    }
+
+    [Fact]
+    public void If_the_bin_cannot_be_counted_beforehand_the_file_is_not_touched()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell { CountFails = true };
+
+        Assert.Equal(RecycleOutcome.NotSupported, Send(file, shell));
+        Assert.True(File.Exists(file.Path));
+        Assert.Equal(0, shell.Deletes);
+    }
+
+    [Theory]
+    [InlineData(true, null)]        // the bin is switched off for that drive
+    [InlineData(false, 1L)]         // the bin holds 1 MB at most and the file is 2 MB
+    public void A_bin_that_would_delete_for_good_is_refused_before_the_shell_is_asked(bool nukeOnDelete, long? maxMegabytes)
+    {
+        using var file = new TempFile();
+        File.WriteAllBytes(file.Path, new byte[2 * 1024 * 1024]);   // 2 MB
+        var shell = new FakeShell();
+
+        var outcome = Send(file, shell, new RecycleBin.VolumeSettings(maxMegabytes, nukeOnDelete));
+
+        Assert.Equal(RecycleOutcome.NotSupported, outcome);
+        Assert.True(File.Exists(file.Path));
+        Assert.Equal(0, shell.Deletes);
+    }
+
+    [Fact]
+    public void A_user_who_declines_the_permanent_delete_keeps_the_file()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell { Aborted = true };
+
+        Assert.Equal(RecycleOutcome.Declined, Send(file, shell));
+        Assert.True(File.Exists(file.Path));
+    }
+
+    [Fact]
+    public void A_sharing_violation_is_in_use_and_the_file_stays()
+    {
+        using var file = new TempFile();
+        var shell = new FakeShell { ReturnCode = 32 };
+
+        Assert.Equal(RecycleOutcome.InUse, Send(file, shell));
+        Assert.True(File.Exists(file.Path));
+    }
+
+    [Fact]
+    public void A_shell_that_throws_is_a_failed_outcome_not_an_exception()
+    {
+        using var file = new TempFile();
+
+        var outcome = RecycleBin.Send(file.Path, _ => 5L, _ => throw new InvalidOperationException("boom"),
+                                      _ => new RecycleBin.VolumeSettings(null, false));
+
+        Assert.Equal(RecycleOutcome.Failed, outcome);
+        Assert.True(File.Exists(file.Path));
+    }
 
     // ---- which paths can be recycled ----
 

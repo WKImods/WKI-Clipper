@@ -49,7 +49,7 @@ public sealed class ClipEditorWindow : Window
 
     // state
     private EditorState _state = EditorState.Loading;
-    private bool _fallback, _previewOpened, _previewClosed, _playing, _originalGone, _closeAfterCut, _closed;
+    private bool _fallback, _previewOpened, _previewClosed, _playing, _originalGone, _closeAfterCut, _closed, _recycling;
     private long _lastSeek;
     private string? _resultPath;
     private CancellationTokenSource? _cutCts;
@@ -343,7 +343,9 @@ public sealed class ClipEditorWindow : Window
         _folderBtn.Content = L.T("Im Ordner zeigen", "Show in folder");
         _again.Content = L.T("Weiter schneiden", "Keep trimming");
 
-        _recycleBox.ToolTip = RecycleBin.IsSupportedPath(_path) ? null : L.T("Für Netzlaufwerke nicht verfügbar.", "Not available for network drives.");
+        _recycleBox.ToolTip = RecycleBin.IsSupportedPath(_path) ? null
+            : L.T("Nicht verfügbar für Netzlaufwerke und Laufwerke ohne Papierkorb (z. B. USB-Sticks).",
+                  "Not available for network drives and drives without a Recycle Bin (such as USB sticks).");
         _recycleBox.IsEnabled = RecycleBin.IsSupportedPath(_path) && !_originalGone;
 
         if (_state == EditorState.Loading) _overlay.Text = L.T("Clip wird geladen…", "Loading clip…");
@@ -573,7 +575,7 @@ public sealed class ClipEditorWindow : Window
 
     private async Task ShowStillAsync(int frame)
     {
-        if (_tl is null || _grabs is null) return;
+        if (_tl is null || _grabs is null || _previewClosed) return;   // a closed preview must not reopen the file
         _grabCts?.Cancel();
         var cts = _grabCts = new CancellationTokenSource();
         var bytes = await _grabs.GrabAsync(_path, _tl.FileStartOf(frame), 960, cts.Token).ConfigureAwait(true);
@@ -741,9 +743,11 @@ public sealed class ClipEditorWindow : Window
         }
         else
         {
-            var encoder = DiscordCompressRules.PickEncoder(_svc.Encoders());
+            // the same choice the cut makes (a picture wider than 4096 px cannot use a hardware H.264 encoder)
+            var encoder = ClipCutRules.PickExactEncoder(_svc.Encoders(), _index.Width, _index.Height);
             double fps = _tl.MedianFrameDuration > 0 ? 1.0 / _tl.MedianFrameDuration : 0;
-            double estimate = ClipCutRules.EstimateExactSeconds(SecondsBetween(range), _index.Width, _index.Height, fps);
+            double estimate = ClipCutRules.EstimateExactSeconds(SecondsBetween(range), _index.Width, _index.Height, fps,
+                                                                software: encoder == CompressEncoder.X264);
             _modeText.Text = L.T("Auf den Frame genau. Kodiert neu mit {0} — dauert ca. {1}.",
                                  "Frame-accurate. Re-encodes with {0} — takes about {1}.")
                 .Replace("{0}", EncoderName(encoder)).Replace("{1}", ApproxDuration(estimate));
@@ -852,7 +856,7 @@ public sealed class ClipEditorWindow : Window
                 SetState(EditorState.Editing);
                 break;
             default:
-                ShowDone(result, recycleAfter);
+                await ShowDoneAsync(result, recycleAfter);
                 break;
         }
     }
@@ -882,7 +886,7 @@ public sealed class ClipEditorWindow : Window
         }
     }
 
-    private void ShowDone(CutResult result, bool recycleAfter)
+    private async Task ShowDoneAsync(CutResult result, bool recycleAfter)
     {
         _lastResult = result;
         _resultPath = result.OutputPath;
@@ -894,10 +898,19 @@ public sealed class ClipEditorWindow : Window
         {
             _progressText.Text = L.T("Verschiebe Original in den Papierkorb…", "Moving the original to the Recycle Bin…");
             ClosePreview();
-            var outcome = _svc.ClipCut.RecycleOriginal(_path);
+
+            // The media pipeline and a still-frame grab release the file a moment after Close() returns, so the first try
+            // can find it in use: RecycleOriginalAsync tries again for ~3 s without blocking this thread.
+            RecycleOutcome outcome;
+            _recycling = true;
+            try { outcome = await _svc.ClipCut.RecycleOriginalAsync(_path); }
+            finally { _recycling = false; }
+            if (_closed) return;   // closed meanwhile: the move was still done, there is nothing left to show
+
             _lastRecycleText = ClipCutRules.RecycleMessage(outcome);
             _lastRecycleOk = outcome == RecycleOutcome.Recycled;
-            if (_lastRecycleOk) _originalGone = true;
+            // gone is gone, in the bin or not: no more trimming of a file that does not exist
+            if (outcome is RecycleOutcome.Recycled or RecycleOutcome.DeletedPermanently) _originalGone = true;
         }
 
         SetState(EditorState.Done);
@@ -966,12 +979,18 @@ public sealed class ClipEditorWindow : Window
 
     // ================================================================ closing
 
-    /// <summary>Stops and releases the preview so the file is free (it is opened without delete protection, but be tidy).</summary>
+    /// <summary>
+    /// Stops and releases the preview so the file is free: the media element and, in the still-frame fallback, a pending
+    /// or running ffmpeg grab (ffmpeg opens the file without delete sharing). Both let go a moment after this returns;
+    /// <see cref="ClipCutService.RecycleOriginalAsync"/> allows for that.
+    /// </summary>
     private void ClosePreview()
     {
         PausePlayback();
         _scrubTimer.Stop();
         _openTimer.Stop();
+        _grabTimer.Stop();
+        _grabCts?.Cancel();   // FramePreviewService kills the running ffmpeg on the token
         try { _media.Stop(); _media.Close(); _media.Source = null; } catch { }
         _previewOpened = false;
         _previewClosed = true;
@@ -981,7 +1000,8 @@ public sealed class ClipEditorWindow : Window
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (_state != EditorState.Running || _closeAfterCut) return;
+        // the cut is over while the original is being moved: nothing to cancel, so no question
+        if (_state != EditorState.Running || _closeAfterCut || _recycling) return;
 
         e.Cancel = true;
         var answer = MessageBox.Show(this, L.T("Schneiden läuft — abbrechen und schließen?", "Trimming is running — cancel and close?"),

@@ -185,10 +185,13 @@ sit in the `…` menu of each row (also on right-click).
   banner warns until everything is saved.
 - **Trim…** opens the clip editor: preview with scrubbing and frame stepping, start and end
   marks (`I` / `O`) and two modes — *Fast (lossless)* copies the stream, so the start snaps
-  back to the previous keyframe; *Exact (re-encode)* cuts to the frame and takes longer.
+  back to the previous keyframe; *Exact (re-encode)* cuts to the frame and takes longer
+  (H.264 on the GPU; a picture wider than 4096 px, e.g. 32:9 monitors, is encoded on the
+  CPU because hardware H.264 cannot open it).
   The result lands next to the original as `<name>_cut.mp4` with its note and star. The
   original stays unless you tick *Move the original to the Recycle Bin afterwards* (the
-  Recycle Bin, never a permanent delete). MP4 videos only.
+  Recycle Bin, never a permanent delete: on a drive without one — USB sticks, network
+  drives — or when the file would not fit in it, the original is kept). MP4 videos only.
 - **Discord 20 MB / Discord 500 MB:** re-encodes the clip to fit an upload limit (H.264,
   on the GPU when possible), saves it into `Komprimiert 20MB` or `Komprimiert 500MB` inside
   the clips folder (filter *Compressed*) and puts it on the clipboard, so `Ctrl+V` in
@@ -303,8 +306,9 @@ per-user install (no admin) with a self-contained .NET 8 runtime and FFmpeg with
 hardware encoders. The uninstaller keeps your clips and settings.
 The install folder can be on any drive: type the full path or use *Browse*. Pick a new or
 empty folder — the drive itself (`D:\`) is refused. To move an existing install, run the
-setup again and pick the new folder: the old copy is removed through its own uninstaller,
-and your clips, settings and autostart choice are kept.
+setup again and pick the new folder: the old copy is removed once the new one is installed
+(cancelling the setup leaves the old install as it was), and your clips, settings and
+autostart choice are kept.
 
 - **Windows 10 (2004) or 11, 64-bit.** WhatsApp and Spotify's full view need the Microsoft
   Edge WebView2 Runtime, which ships with current Windows 10/11.

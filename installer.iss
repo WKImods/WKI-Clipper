@@ -63,8 +63,8 @@ english.DirNested=The new folder and the current installation folder must not be
 german.DirNested=Der neue Ordner darf nicht innerhalb des bisherigen Installationsordners liegen – und umgekehrt.%n%nBisher: %1%nNeu: %2%n%nBitte wähle einen anderen Ordner.
 english.DirIsDriveRoot=Please choose a folder, not the drive itself (for example D:\Programs\WKI Clipper).
 german.DirIsDriveRoot=Bitte wähle einen Ordner und nicht das Laufwerk selbst (z. B. D:\Programme\WKI Clipper).
-english.MoveNote=Move: the existing installation in %1 is removed first. Your clips and settings are kept.
-german.MoveNote=Verschieben: Die bestehende Installation in %1 wird zuerst entfernt. Clips und Einstellungen bleiben erhalten.
+english.MoveNote=Move: the existing installation in %1 is removed once the new one is installed. Your clips and settings are kept.
+german.MoveNote=Verschieben: Die bestehende Installation in %1 wird entfernt, sobald die neue installiert ist. Clips und Einstellungen bleiben erhalten.
 english.OldCopyLeft=The previous installation in %1 could not be removed completely. You can delete that folder yourself; your clips and settings are untouched.
 german.OldCopyLeft=Die bisherige Installation in %1 konnte nicht vollständig entfernt werden. Du kannst den Ordner selbst löschen; Clips und Einstellungen sind unberührt.
 
@@ -122,7 +122,6 @@ const
   // Per-user install: the uninstall entry lives in HKCU.
   UninstKey      = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1';
   RunKey         = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run';
-  ApprovedKey    = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run';
   AutostartName  = 'WKI_Clipper';
   AppExe         = '{#AppExeName}';
 
@@ -130,11 +129,6 @@ var
   WasInstalled: Boolean;       // an uninstall entry exists
   PrevDir: String;             // folder of that installation, no trailing backslash ('' on a first install)
   MovingInstall: Boolean;      // set at the start of the install: the new folder differs from PrevDir
-  PrevInstallHandled: Boolean; // the old installation has been uninstalled (once per run)
-  HadRunValue: Boolean;        // autostart state of the old installation, saved before its uninstaller wipes it
-  RunData: String;
-  HadApprovedValue: Boolean;
-  ApprovedData: AnsiString;
 
 function InitializeSetup(): Boolean;
 var
@@ -154,7 +148,8 @@ begin
   end;
 end;
 
-// Already installed. Evaluated once at startup: the move below removes the uninstall entry during the install.
+// Already installed. Evaluated once at startup: the install itself writes the uninstall entry, which must not turn a
+// first install into an update halfway through (the autostart task is checked against this).
 function IsUpdate(): Boolean;
 begin
   Result := WasInstalled;
@@ -194,8 +189,8 @@ begin
   Result := (PrevDir <> '') and not SamePath(PrevDir, ExpandConstant('{app}'));
 end;
 
-// The Restart Manager check also has to see the app running from the OLD folder: the old uninstaller
-// cannot delete a running exe, and a move does not touch that exe through [Files].
+// The Restart Manager check also has to see the app running from the OLD folder: its exe cannot be deleted
+// while it runs, and a move does not touch that exe through [Files].
 procedure RegisterExtraCloseApplicationsResources();
 begin
   if PrevDir <> '' then
@@ -249,72 +244,99 @@ begin
   if MemoTasksInfo <> '' then Result := Result + NewLine + NewLine + MemoTasksInfo;
 end;
 
-// Moving: the old installation goes through its own uninstaller (silently), so shortcuts, registry entries and
-// files it recorded disappear together. User data is not in that folder and the uninstaller keeps it
-// (clips, settings); it only removes the buffer files it recorded. The autostart entry is wiped with it and
-// is written again after the install, pointing at the new exe.
-procedure RemovePreviousInstall();
+// Moving is transactional: the new copy is installed FIRST and the old one is only taken away at ssPostInstall,
+// once everything has worked. A cancel or a failure before that leaves the old installation untouched (Setup's own
+// rollback undoes just what the new one wrote), with its shortcuts, uninstall entry and autostart still in place.
+//
+// The old uninstaller is deliberately NOT run. It deletes by name what the new installation shares with it: the
+// uninstall entry ({AppId}_is1 - Setup has just rewritten it to point at the new folder), the Start-menu shortcuts
+// and the autostart values. So the old program files are deleted directly - only the ones Setup itself put there.
+// Whatever else sits in that folder stays, which is why there is no DelTree: RemoveDir only removes empty folders.
+
+// The autostart entry follows the exe, but only our own: a value the user pointed somewhere else stays as it is.
+// Windows' own on/off switch (StartupApproved) was never touched, so it keeps its state.
+procedure RepointAutostart();
 var
-  Uninst, S: String;
-  Code, Waited: Integer;
+  Data: String;
 begin
-  Uninst := '';
-  if RegQueryStringValue(HKCU, UninstKey, 'UninstallString', S) then Uninst := RemoveQuotes(Trim(S));
-  if Uninst = '' then Uninst := AddBackslash(PrevDir) + 'unins000.exe';
-  // Only ever run the uninstaller that sits inside the recorded old install folder.
-  if not FileExists(Uninst) or (CompareText(ExtractFilePath(Uninst), AddBackslash(PrevDir)) <> 0) then
+  if RegQueryStringValue(HKCU, RunKey, AutostartName, Data) and
+     (CompareText(RemoveQuotes(Trim(Data)), AddBackslash(PrevDir) + AppExe) = 0) then
   begin
-    Log('Previous uninstaller not found in ' + PrevDir + ' - nothing to remove: ' + Uninst);
+    Data := '"' + AddBackslash(ExpandConstant('{app}')) + AppExe + '"';
+    RegWriteStringValue(HKCU, RunKey, AutostartName, Data);
+    Log('Move: autostart entry now points at ' + Data);
+  end;
+end;
+
+// The old desktop shortcut keeps its name. With the task ticked [Icons] has just rewritten it; with the task off it
+// would be left pointing at the exe that is about to go, so it is removed - but only if it points at that exe.
+procedure RemoveStaleDesktopShortcut();
+var
+  Lnk, Target: String;
+  Shell, Link: Variant;
+begin
+  if WizardIsTaskSelected('desktopicon') then exit;
+  Lnk := ExpandConstant('{userdesktop}\{#AppName}.lnk');
+  if not FileExists(Lnk) then exit;
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Lnk);
+    Target := Link.TargetPath;
+  except
+    Log('Move: could not read the desktop shortcut: ' + GetExceptionMessage);
     exit;
   end;
-
-  Log('Move: running the previous uninstaller ' + Uninst);
-  if Exec(Uninst, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code) then
-    Log('Previous uninstaller exit code ' + IntToStr(Code))
-  else
-    Log('Previous uninstaller did not start: ' + SysErrorMessage(Code));
-
-  // The uninstaller hands over to a temporary copy of itself; make sure it is really finished.
-  Waited := 0;
-  while (Waited < 20000) and (FileExists(Uninst) or RegKeyExists(HKCU, UninstKey)) do
+  if CompareText(Target, AddBackslash(PrevDir) + AppExe) = 0 then
   begin
-    Sleep(250);
-    Waited := Waited + 250;
+    DeleteFile(Lnk);
+    Log('Move: removed the desktop shortcut of the previous installation');
   end;
+end;
 
-  if FileExists(AddBackslash(PrevDir) + AppExe) then
+// Deletes the files of one extension in Dir. The extension is compared exactly: a mask like '*.dll' also
+// matches longer extensions through the old 8.3 names.
+procedure DeleteOldFiles(const Dir, Mask, Ext: String);
+var
+  R: TFindRec;
+begin
+  if FindFirst(AddBackslash(Dir) + Mask, R) then
+  try
+    repeat
+      if ((R.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) and (CompareText(ExtractFileExt(R.Name), Ext) = 0) then
+        if not DeleteFile(AddBackslash(Dir) + R.Name) then
+          Log('Move: could not delete ' + AddBackslash(Dir) + R.Name);
+    until not FindNext(R);
+  finally
+    FindClose(R);
+  end;
+end;
+
+// The program files of the old installation: exactly what [Files] and the uninstaller put there.
+procedure RemoveOldProgramFiles();
+var
+  D: String;
+begin
+  D := AddBackslash(PrevDir);
+  Log('Move: removing the previous installation in ' + PrevDir);
+  DeleteFile(D + AppExe);
+  DeleteFile(D + 'app_icon.ico');
+  DeleteFile(D + 'unins000.exe');
+  DeleteFile(D + 'unins000.dat');
+  DeleteFile(D + 'unins000.msg');
+  DeleteOldFiles(D, '*.dll', '.dll');
+  DeleteFile(D + 'Assets\ffmpeg\ffmpeg.exe');
+  DeleteOldFiles(D + 'Assets\DefaultCrosshairs', '*.png', '.png');
+  // Empty folders only (RemoveDir fails on anything with files in it): the user's own files keep their folders.
+  RemoveDir(D + 'Assets\DefaultCrosshairs');
+  RemoveDir(D + 'Assets\ffmpeg');
+  RemoveDir(D + 'Assets');
+  RemoveDir(PrevDir);
+
+  if FileExists(D + AppExe) then
   begin
     Log('Previous install not removed completely: ' + PrevDir);
     SuppressibleMsgBox(FmtMessage(CustomMessage('OldCopyLeft'), [PrevDir]), mbInformation, MB_OK, IDOK);
   end;
-end;
-
-procedure RememberAutostart();
-begin
-  RunData := '';
-  ApprovedData := '';
-  HadRunValue := RegQueryStringValue(HKCU, RunKey, AutostartName, RunData);
-  HadApprovedValue := RegQueryBinaryValue(HKCU, ApprovedKey, AutostartName, ApprovedData);
-  Log('Move: autostart entry present=' + IntToStr(Ord(HadRunValue)) + ', startup switch present=' + IntToStr(Ord(HadApprovedValue)));
-end;
-
-procedure RestoreAutostart();
-var
-  Data: String;
-begin
-  if HadRunValue then
-  begin
-    // Our own entry follows the exe; anything else the user pointed it at stays as it was.
-    if CompareText(RemoveQuotes(Trim(RunData)), AddBackslash(PrevDir) + AppExe) = 0 then
-      Data := '"' + AddBackslash(ExpandConstant('{app}')) + AppExe + '"'
-    else
-      Data := RunData;
-    RegWriteStringValue(HKCU, RunKey, AutostartName, Data);
-    Log('Move: autostart entry restored: ' + Data);
-  end;
-  // Windows' own on/off switch for that entry (Settings -> Apps -> Autostart) survives the move too.
-  if HadApprovedValue then
-    RegWriteBinaryValue(HKCU, ApprovedKey, AutostartName, ApprovedData);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -322,21 +344,11 @@ begin
   if CurStep = ssInstall then
     MovingInstall := IsMove()
   else if (CurStep = ssPostInstall) and MovingInstall then
-    RestoreAutostart();
-end;
-
-// The very first progress callback: Setup has already shut down the running app (Restart Manager does that
-// AFTER ssInstall - an uninstaller started at ssInstall would find the old exe locked and leave it behind),
-// it has not written a single file, shortcut or registry entry of the new installation yet. The old uninstaller
-// must be finished before that: it deletes the shared uninstall entry, the Start-menu shortcuts and the
-// autostart value by name.
-procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
-begin
-  if MovingInstall and not PrevInstallHandled then
   begin
-    PrevInstallHandled := True;
-    RememberAutostart();
-    RemovePreviousInstall();
+    // Setup shut the old app down (Restart Manager) before it copied anything, so its exe can go now.
+    RepointAutostart();
+    RemoveStaleDesktopShortcut();
+    RemoveOldProgramFiles();
   end;
 end;
 

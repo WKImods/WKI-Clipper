@@ -72,4 +72,12 @@ internal static class Kernel32
 
     public const uint STILL_ACTIVE = 259;
     public const int ERROR_ACCESS_DENIED = 5;
+
+    // --- Volume GUID of a drive (Recycle Bin settings are stored per volume) ---
+
+    /// <summary>"C:\" to "\\?\Volume{guid}\". The mount point needs its trailing backslash.</summary>
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetVolumeNameForVolumeMountPointW(string lpszVolumeMountPoint,
+        System.Text.StringBuilder lpszVolumeName, uint cchBufferLength);
 }

@@ -78,7 +78,8 @@ public sealed class ClipCutServiceTests : ClipCutFixture
         bool toasts = true,
         GalleryMetaService? meta = null,
         Func<FFmpegJob, IProgress<FFmpegProgress>?, CancellationToken, Task<FFmpegJobResult>>? job = null,
-        bool useRunner = false)
+        bool useRunner = false,
+        Func<TimeSpan, Task>? delay = null)
     {
         var h = new Harness { Runner = new FFmpegJobRunner(SomeExistingFile, null, PartsFile) };
         var settings = Settings(toasts);
@@ -88,7 +89,8 @@ public sealed class ClipCutServiceTests : ClipCutFixture
             ReadIndex = read ?? (_ => null),
             Recycle = recycle ?? (p => { h.Recycled.Add(p); return RecycleOutcome.Recycled; }),
             Notify = (kind, title, body, path) => Toasts.Add((kind, title, body, path)),
-            RunJob = useRunner ? null : job ?? ((j, p, ct) => Succeed(h, j, p))
+            RunJob = useRunner ? null : job ?? ((j, p, ct) => Succeed(h, j, p)),
+            Delay = delay ?? (_ => Task.CompletedTask)
         };
         h.Service.Finished += h.Finished.Add;
         return h;
@@ -289,6 +291,56 @@ public sealed class ClipCutServiceTests : ClipCutFixture
         await h.Service.CutAsync(Request(source, 95, 250, CutMode.Exact), null, CancellationToken.None);
 
         Assert.Contains("-c:v libx264", Assert.Single(h.Jobs).Arguments);
+    }
+
+    [Fact]
+    public async Task An_exact_cut_of_a_source_wider_than_4096_px_uses_libx264_because_hardware_h264_cannot_open_it()
+    {
+        // 32:9 monitor: h264_amf / h264_nvenc / h264_qsv refuse 5120x1440, so the hardware encoders are skipped
+        using var h = Build(read: ResultHasFrames(156), encoders: new[] { "h264_amf", "h264_nvenc", "h264_qsv", "libx264" });
+        var source = Source();
+        var wide = SourceIndex() with { Width = 5120, Height = 1440 };
+        var range = new ClipTimeline(wide).Resolve(95, 250, CutMode.Exact);
+
+        var result = await h.Service.CutAsync(new CutRequest(source, wide, range, CutMode.Exact, false), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Message);
+        var job = Assert.Single(h.Jobs);
+        Assert.Contains("-c:v libx264", job.Arguments);
+        Assert.DoesNotContain("_amf", job.Arguments);
+        Assert.DoesNotContain("_nvenc", job.Arguments);
+        Assert.DoesNotContain("_qsv", job.Arguments);
+        Assert.Equal(Math.Max(2, Environment.ProcessorCount / 2), job.ThreadCap);   // software: the game keeps its cores
+        Assert.Contains("-map 0:v:0 -map 0:a? -fps_mode passthrough", job.Arguments);   // streams as for every exact cut
+        Assert.Contains("-c:a aac -b:a 192k", job.Arguments);
+    }
+
+    [Fact]
+    public async Task An_exact_cut_of_a_4096_px_wide_source_still_uses_the_hardware_encoder()
+    {
+        using var h = Build(read: ResultHasFrames(156), encoders: new[] { "h264_amf", "libx264" });
+        var source = Source();
+        var uhd = SourceIndex() with { Width = 4096, Height = 2160 };
+        var range = new ClipTimeline(uhd).Resolve(95, 250, CutMode.Exact);
+
+        await h.Service.CutAsync(new CutRequest(source, uhd, range, CutMode.Exact, false), null, CancellationToken.None);
+
+        var job = Assert.Single(h.Jobs);
+        Assert.Contains("-c:v h264_amf", job.Arguments);
+        Assert.Null(job.ThreadCap);
+    }
+
+    [Fact]
+    public async Task A_fast_cut_of_a_wide_source_is_still_a_stream_copy()
+    {
+        using var h = Build(read: ResultHasFrames(161), encoders: new[] { "h264_amf", "libx264" });
+        var source = Source();
+        var wide = SourceIndex() with { Width = 5120, Height = 1440 };
+        var range = new ClipTimeline(wide).Resolve(95, 250, CutMode.Fast);
+
+        await h.Service.CutAsync(new CutRequest(source, wide, range, CutMode.Fast, false), null, CancellationToken.None);
+
+        Assert.Contains("-c copy", Assert.Single(h.Jobs).Arguments);
     }
 
     [Fact]
@@ -553,6 +605,107 @@ public sealed class ClipCutServiceTests : ClipCutFixture
 
         Assert.Equal(RecycleOutcome.NotSupported, h.Service.RecycleOriginal(Path.Combine(Clips, "gone.mp4")));
         Assert.Empty(h.Recycled);
+    }
+
+    [Fact]
+    public void RecycleOriginal_tells_the_gallery_about_a_permanent_delete_because_the_file_is_gone_either_way()
+    {
+        using var h = Build(recycle: _ => RecycleOutcome.DeletedPermanently);
+        var source = Source();
+
+        Assert.Equal(RecycleOutcome.DeletedPermanently, h.Service.RecycleOriginal(source));
+        Assert.Equal(new[] { source }, h.Finished);
+    }
+
+    [Fact]
+    public async Task A_permanent_delete_after_the_cut_is_a_warning_that_does_not_claim_the_recycle_bin()
+    {
+        using var h = Build(read: ResultHasFrames(156), recycle: _ => RecycleOutcome.DeletedPermanently);
+        var source = Source();
+
+        var result = await h.Service.CutAsync(Request(source, 95, 250, CutMode.Exact, recycle: true), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(RecycleOutcome.DeletedPermanently, result.Recycle);
+        Assert.Contains("nicht im Papierkorb", result.Warning);
+        Assert.DoesNotContain("liegt im Papierkorb", result.Warning);
+    }
+
+    // ---- 6b: the original is recycled with a short retry (the preview releases the file a moment late) ----
+
+    [Fact]
+    public async Task RecycleOriginalAsync_retries_while_the_file_is_in_use_and_then_moves_it()
+    {
+        int calls = 0;
+        var waits = new List<TimeSpan>();
+        using var h = Build(recycle: _ => ++calls < 3 ? RecycleOutcome.InUse : RecycleOutcome.Recycled,
+                            delay: t => { waits.Add(t); return Task.CompletedTask; });
+        var source = Source();
+
+        var outcome = await h.Service.RecycleOriginalAsync(source);
+
+        Assert.Equal(RecycleOutcome.Recycled, outcome);
+        Assert.Equal(3, calls);
+        Assert.Equal(2, waits.Count);
+        Assert.True(waits[1] > waits[0]);                 // backing off
+        Assert.Equal(new[] { source }, h.Finished);       // the gallery hears about it once, at the end
+    }
+
+    [Fact]
+    public async Task RecycleOriginalAsync_gives_up_after_the_last_delay_and_keeps_the_file()
+    {
+        int calls = 0;
+        var waits = new List<TimeSpan>();
+        using var h = Build(recycle: _ => { calls++; return RecycleOutcome.InUse; },
+                            delay: t => { waits.Add(t); return Task.CompletedTask; });
+        var source = Source();
+
+        var outcome = await h.Service.RecycleOriginalAsync(source);
+
+        Assert.Equal(RecycleOutcome.InUse, outcome);
+        Assert.Equal(1 + ClipCutService.RecycleRetryDelays.Length, calls);
+        Assert.Equal(ClipCutService.RecycleRetryDelays, waits);
+        Assert.Empty(h.Finished);
+        Assert.True(File.Exists(source));
+    }
+
+    [Theory]
+    [InlineData(RecycleOutcome.Recycled)]
+    [InlineData(RecycleOutcome.DeletedPermanently)]
+    [InlineData(RecycleOutcome.Declined)]       // asking "delete permanently?" again would be nagging
+    [InlineData(RecycleOutcome.Failed)]
+    [InlineData(RecycleOutcome.NotSupported)]
+    public async Task RecycleOriginalAsync_only_retries_when_the_file_is_in_use(RecycleOutcome outcome)
+    {
+        int calls = 0;
+        var waits = new List<TimeSpan>();
+        using var h = Build(recycle: _ => { calls++; return outcome; }, delay: t => { waits.Add(t); return Task.CompletedTask; });
+        var source = Source();
+
+        Assert.Equal(outcome, await h.Service.RecycleOriginalAsync(source));
+        Assert.Equal(1, calls);
+        Assert.Empty(waits);
+    }
+
+    [Fact]
+    public async Task RecycleOriginalAsync_does_not_wait_for_a_file_that_is_not_there()
+    {
+        var waits = new List<TimeSpan>();
+        using var h = Build(delay: t => { waits.Add(t); return Task.CompletedTask; });
+
+        Assert.Equal(RecycleOutcome.NotSupported, await h.Service.RecycleOriginalAsync(Path.Combine(Clips, "gone.mp4")));
+        Assert.Empty(waits);
+        Assert.Empty(h.Recycled);
+    }
+
+    [Fact]
+    public void The_retry_is_short_and_backs_off()
+    {
+        var delays = ClipCutService.RecycleRetryDelays;
+
+        Assert.NotEmpty(delays);
+        Assert.Equal(delays.OrderBy(d => d), delays);
+        Assert.True(delays.Aggregate(TimeSpan.Zero, (sum, d) => sum + d) <= TimeSpan.FromSeconds(5));
     }
 
     // ---- 7: finishing ----

@@ -3,7 +3,10 @@ using System.Runtime.InteropServices;
 
 namespace WKI_Clipper.Native;
 
-/// <summary>SHFileOperationW: the only API that moves a file into the Recycle Bin (File.Delete never does).</summary>
+/// <summary>
+/// SHFileOperationW: the only API that moves a file into the Recycle Bin (File.Delete never does), and
+/// SHQueryRecycleBinW, which counts a drive's bin (the only way to tell "recycled" from "deleted for good").
+/// </summary>
 internal static class Shell32
 {
     public const uint FO_DELETE = 0x0003;
@@ -35,4 +38,20 @@ internal static class Shell32
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern int SHFileOperationW(ref SHFILEOPSTRUCTW lpFileOp);
+
+    /// <summary>
+    /// What <see cref="SHQueryRecycleBinW"/> reports for one drive: bytes and items of the current user's bin there.
+    /// Natural alignment (24 bytes: the shell rejects any other cbSize with E_INVALIDARG; Pack = 4 gave 20).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SHQUERYRBINFO
+    {
+        public int cbSize;
+        public long i64Size;
+        public long i64NumItems;
+    }
+
+    /// <summary>The Recycle Bin of one drive (a root like "C:\"). S_OK (0) when it has one and could be read.</summary>
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SHQueryRecycleBinW(string pszRootPath, ref SHQUERYRBINFO pSHQueryRBInfo);
 }
