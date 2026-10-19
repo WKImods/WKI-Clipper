@@ -138,9 +138,11 @@ public partial class StatusView : UserControl
         {
             _bufferDot!.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0x6A, 0x2C));
             string avail = DurationText.FormatActual(host.ReplayBuffer.AvailableSeconds());
-            string limited = host.ReplayBuffer.DiskLimited ? L.T("  ·  gekürzt: wenig Platz", "  ·  shortened: low space") : "";
-            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{limited}",
-                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{limited}");
+            string limited = host.ReplayBuffer.DiskLimited ? L.T("  ·  gekürzt: wenig Platz", "  ·  shortened: low space")
+                           : host.ReplayBuffer.MemoryLimited ? L.T("  ·  gekürzt: wenig Arbeitsspeicher", "  ·  shortened: low RAM") : "";
+            string storage = host.ReplayBuffer.StorageLine is { } line ? "\n" + line : "";
+            _bufferText!.Text = L.T($"Buffer aktiv  ·  {avail} bereit  ·  F9 speichert{limited}{storage}",
+                                    $"Buffer active  ·  {avail} ready  ·  F9 saves{limited}{storage}");
         }
         else
         {

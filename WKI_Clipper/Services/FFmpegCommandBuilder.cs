@@ -59,7 +59,7 @@ public static class FFmpegCommandBuilder
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
         int segmentDurationSec = 5, int segmentWrap = 12, IReadOnlyList<string>? audioPipeArgs = null,
         int monitorIndex = 0, string? videoInputArgs = null,
-        KeyframeMode keyframes = KeyframeMode.EncoderDefault)
+        KeyframeMode keyframes = KeyframeMode.EncoderDefault, bool mpegTsPipe = false)
     {
         var sb = new StringBuilder();
         sb.Append("-hide_banner -loglevel warning -nostats ");
@@ -256,7 +256,12 @@ public static class FFmpegCommandBuilder
             sb.Append("-c:a aac -b:a 192k ");
         }
 
-        if (segmentOutput)
+        if (segmentOutput && mpegTsPipe)
+        {
+            // RAM buffer: one continuous MPEG-TS on stdout, split into segments in memory (MpegTsSegmenter).
+            sb.Append(MpegTsPipeMuxerArgs);
+        }
+        else if (segmentOutput)
         {
             sb.Append(SegmentMuxerArgs(segmentDurationSec, segmentWrap,
                 KeyframePolicy.SegmentTimeDelta(settings.Video.Framerate, keyframes)));
@@ -282,13 +287,17 @@ public static class FFmpegCommandBuilder
     // chaptersFile: an ffmetadata file (ClipStitcher.ChapterMetadata) read as a second input; -map_chapters 1 takes
     // the chapters from it. The concat demuxer has no chapter option of its own. The mp4 muxer then writes both the
     // Nero chpl atom and a QuickTime text track, so downstream jobs must map 0:v/0:a (or -dn), never a blind -map 0.
-    public static string BuildConcat(string listFilePath, string outputPath, bool faststart = true, string? chaptersFile = null)
+    //
+    // audioVideoOnly: for MPEG-TS inputs (RAM buffer) only video and audio are taken (-map 0:v -map 0:a?): a TS can carry
+    // other streams, and the mp4 muxer must never get a blind -map 0 of it. Every audio track is still kept.
+    public static string BuildConcat(string listFilePath, string outputPath, bool faststart = true, string? chaptersFile = null,
+        bool audioVideoOnly = false)
     {
         var sb = new StringBuilder("-hide_banner -loglevel warning -f concat -safe 0 -i \"");
         sb.Append(listFilePath).Append("\" ");
         bool chapters = !string.IsNullOrWhiteSpace(chaptersFile);
         if (chapters) sb.Append("-f ffmetadata -i \"").Append(chaptersFile).Append("\" ");
-        sb.Append("-map 0 ");
+        sb.Append(audioVideoOnly ? "-map 0:v -map 0:a? " : "-map 0 ");
         if (chapters) sb.Append("-map_chapters 1 ");
         sb.Append("-c copy ");
         if (faststart) sb.Append("-movflags +faststart ");
@@ -310,6 +319,27 @@ public static class FFmpegCommandBuilder
         sb.Append("-reset_timestamps 1 ");
         sb.Append("-segment_format mp4 ");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The muxer part of the RAM buffer command. -pes_payload_size 0 writes every audio frame as its own PES instead of
+    /// bundling ~100 ms: a RAM segment starts at a video key frame and the audio from before it is trimmed per PES, so the
+    /// fine grain keeps that trim to one AAC frame. ffmpeg sets the random_access_indicator on every key frame and repeats
+    /// PAT/PMT right before it - that is where the segments are cut.
+    /// </summary>
+    internal const string MpegTsPipeMuxerArgs = "-f mpegts -pes_payload_size 0 pipe:1";
+
+    /// <summary>The highest effective video bitrate over all monitors (a stable estimate across Alt-Tabs in Auto mode).</summary>
+    internal static int MaxEffectiveBitrate(AppSettings settings)
+    {
+        int best = EffectiveBitrate(settings, 0);
+        try
+        {
+            int n = Screen.AllScreens.Length;
+            for (int i = 1; i < n; i++) best = Math.Max(best, EffectiveBitrate(settings, i));
+        }
+        catch { }
+        return best;
     }
 
     /// <summary>

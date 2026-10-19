@@ -16,7 +16,11 @@ public sealed record ClipGap(DateTime FromUtc, DateTime ToUtc, GapReason Reason,
 
 /// <param name="EndUtc">When the segment was closed (its last write).</param>
 /// <param name="Duration">From the file header; null when it could not be read.</param>
-public sealed record SegmentCandidate(string Path, int Generation, DateTime EndUtc, long Bytes, TimeSpan? Duration);
+public sealed record SegmentCandidate(string Path, int Generation, DateTime EndUtc, long Bytes, TimeSpan? Duration)
+{
+    /// <summary>The RAM segment behind this candidate (RAM buffer); null for a segment file. <see cref="Path"/> is then only a label.</summary>
+    internal MemorySegment? Memory { get; init; }
+}
 
 public sealed record ClipChapter(TimeSpan Start, TimeSpan End, string Title);
 

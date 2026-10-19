@@ -33,9 +33,18 @@ public static class SegmentRetention
     /// <summary>First matching rule wins.</summary>
     public static bool ShouldDelete(SegmentFileFacts f, RetentionContext c)
     {
-        // 1) Not ours or an unknown generation: only a file from before this session is safe to remove -
-        //    a newer one may be the segment ffmpeg is creating right now.
-        if (!SegmentName.TryParseGeneration(f.Name, out int gen) || !c.Generations.TryGetValue(gen, out var info))
+        // 1) Not ours: only a file from before this session is safe to remove - a newer one may be the segment ffmpeg is
+        //    creating right now.
+        if (!SegmentName.TryParseGeneration(f.Name, out int gen)) return f.LastWriteUtc < c.SessionStartUtc;
+        return ShouldDelete(gen, f.LastWriteUtc, c);
+    }
+
+    /// <summary>The same rules for a segment known by its generation and end time (the RAM ring has no file names).</summary>
+    public static bool ShouldDelete(int gen, DateTime endUtc, RetentionContext c)
+    {
+        var f = new SegmentFileFacts("", endUtc);
+        // 1) An unknown generation: only a segment from before this session is safe to remove.
+        if (!c.Generations.TryGetValue(gen, out var info))
             return f.LastWriteUtc < c.SessionStartUtc;
 
         // 2) Earlier session / other monitor: unusable by definition.

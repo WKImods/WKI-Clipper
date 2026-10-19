@@ -357,8 +357,10 @@ public partial class CaptureView : UserControl
         {
             _bufferDot!.Fill = new SolidColorBrush(Green);
             string avail = DurationText.FormatActual(host.ReplayBuffer.AvailableSeconds());
-            string limited = host.ReplayBuffer.DiskLimited ? L.T(" (gekürzt: wenig Platz)", " (shortened: low space)") : "";
-            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{limited}", $"Buffer active · {avail} ready for F9{limited}");
+            string limited = host.ReplayBuffer.DiskLimited ? L.T(" (gekürzt: wenig Platz)", " (shortened: low space)")
+                           : host.ReplayBuffer.MemoryLimited ? L.T(" (gekürzt: wenig Arbeitsspeicher)", " (shortened: low RAM)") : "";
+            string storage = host.ReplayBuffer.StorageLine is { } line ? " · " + line : "";
+            _bufferText!.Text = L.T($"Buffer aktiv · {avail} bereit für F9{limited}{storage}", $"Buffer active · {avail} ready for F9{limited}{storage}");
         }
         else
         {

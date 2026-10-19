@@ -66,6 +66,29 @@ public static class ClipOutputFiles
     public static string PartPathFor(string finalPath) => finalPath + PartSuffix;
 
     /// <summary>
+    /// Helper files of a RAM-buffer save live next to the output: "Clip_….mp4.wkitmp.0.ts", "….wkitmp.list.txt". Hidden,
+    /// deleted when the save ends, and never one of the gallery's extensions. A crash leaves them behind for the sweep.
+    /// </summary>
+    public const string TempMarker = ".wkitmp.";
+
+    /// <summary>A temp file this old is a leftover (no save runs for hours).</summary>
+    public static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(6);
+
+    private static readonly Regex OwnTempName = new(
+        @"^(?:Clip_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}(?: \([0-9]+\))?\.mp4" +
+        @"|Gif_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}(?: \([0-9]+\))?\.gif)\.wkitmp\.[A-Za-z0-9_-]+(?:\.[a-z0-9]{1,4})?$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <param name="tag">"0.ts", "list.txt", "chapters.txt", "src" - letters, digits, '-', '_' and one short extension.</param>
+    public static string TempPathFor(string finalPath, string tag) => finalPath + TempMarker + tag;
+
+    public static bool IsStaleTemp(string fileName, DateTime lastWriteUtc, DateTime nowUtc)
+        => IsOwnTemp(fileName) && nowUtc - lastWriteUtc > StaleTempAge;
+
+    /// <summary>One of our RAM-save helper files, whatever its age.</summary>
+    public static bool IsOwnTemp(string fileName) => OwnTempName.IsMatch(fileName);
+
+    /// <summary>
     /// A leftover of an interrupted save: one of our own Clip_/Gif_ names with the .part suffix,
     /// older than <see cref="StalePartAge"/>. Anything else in the clips folder belongs to the user.
     /// </summary>
@@ -76,11 +99,13 @@ public static class ClipOutputFiles
     /// Removes stale leftovers from the clips folder and one level of game subfolders (the same
     /// scan depth as the gallery). Returns how many files were deleted.
     /// </summary>
-    public static int DeleteStaleParts(string clipsDir, DateTime nowUtc)
+    /// <param name="tempsOfAnyAge">RAM-save helper files go regardless of age (first start of the process: all orphans).</param>
+    public static int DeleteStaleParts(string clipsDir, DateTime nowUtc, bool tempsOfAnyAge = false)
     {
         int deleted = 0;
         foreach (var (file, _) in GameFolderNaming.EnumerateMedia(clipsDir,
-                     f => IsStalePart(f.Name, f.LastWriteTimeUtc, nowUtc)))
+                     f => IsStalePart(f.Name, f.LastWriteTimeUtc, nowUtc)
+                          || (tempsOfAnyAge ? IsOwnTemp(f.Name) : IsStaleTemp(f.Name, f.LastWriteTimeUtc, nowUtc))))
         {
             try { file.Delete(); deleted++; }
             catch (Exception ex) { Logger.Warn($"Could not delete stale partial output '{file.FullName}': {ex.Message}"); }

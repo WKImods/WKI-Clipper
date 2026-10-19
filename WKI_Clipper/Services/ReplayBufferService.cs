@@ -90,8 +90,51 @@ public sealed class ReplayBufferService : IDisposable
     private volatile int _diskCapSeconds;
     private volatile bool _diskLimited;
     private int _lastAnnouncedCap = -1;
+    // What the disk ring occupies at the running lookback (status line).
+    private long _diskRingBytes;
+
+    // ---- RAM ring ----
+    // The in-memory ring of this session; null while the buffer records to disk. Like the segment files it outlives
+    // warm restarts (Alt-Tab, settings, a manual recording); a cold start empties it, switching the buffer off or to the
+    // disk releases it.
+    private MemorySegmentStore? _memory;
+    private MemoryBufferFeed? _memoryFeed;
+    // The storage decision of the running (or last) run and the settings it was made from: a warm restart with the same
+    // settings keeps the store, so an Alt-Tab never flips RAM/disk and starts the lookback over.
+    private StorageDecision? _storage;
+    private string? _storageKey;
+    private volatile int _memoryCapSeconds;
+    private volatile bool _memoryLimited;
+    private bool _lowMemoryAnnounced;
+    private bool _recentLowMemoryAnnounced;
+    private bool _tempSweepDone;
+    private bool _codecFallbackLogged;
+    // Low-RAM guard hysteresis: when it last cut, and the gen-2 collection count right after that cut.
+    private DateTime _memoryCutUtc = DateTime.MinValue;
+    private int _memoryCutGen2 = -1;
+    private int _guarding;
+    private static readonly TimeSpan MemoryGuardInterval = TimeSpan.FromSeconds(3);
+    /// <summary>After a cut the OS needs a moment to show the freed RAM; a second cut waits at least this long.</summary>
+    private static readonly TimeSpan MemoryCutSettle = TimeSpan.FromSeconds(10);
 
     public bool IsRunning => _ffmpeg?.IsRunning ?? false;
+
+    /// <summary>Where the running buffer keeps its ring; null when it is not running.</summary>
+    public BufferStorageKind? StorageKind => IsRunning ? _storage?.Kind : null;
+
+    /// <summary>RAM the ring holds right now (RAM mode) or the fixed size of the disk ring (disk mode).</summary>
+    public long StorageBytes => _storage?.Kind switch
+    {
+        BufferStorageKind.Memory => _memory?.BytesInUse ?? 0,
+        BufferStorageKind.Disk => _diskRingBytes,
+        _ => 0
+    };
+
+    /// <summary>True while the RAM lookback runs shorter than configured (budget or free RAM).</summary>
+    public bool MemoryLimited => _memoryLimited;
+
+    /// <summary>"Zwischenspeicher: …" for the status pages; null when the buffer is off.</summary>
+    public string? StorageLine => StorageKind is { } kind ? BufferStoragePlanner.StatusLine(kind, StorageBytes) : null;
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
     public CaptureTargetResolver.CapturePlan? CurrentPlan { get; private set; }
     public event EventHandler<ReplaySavedInfo>? ReplaySaved;
@@ -137,16 +180,31 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
-    /// The lookback the buffer actually holds: the configured length (clamped to the supported range) or, when the
-    /// buffer drive is too small for it, the shorter length decided at the last (re)start.
+    /// The length the RING is sized for: every sizing and keying site (ring plan, disk plan, RAM decision, age limit,
+    /// forecasts) uses this, never a per-clip length. Today it is the configured length; per-game F9 lengths will make it
+    /// the longest of them, while each press saves its own (<see cref="ClipSecondsAtPress"/>).
+    /// </summary>
+    public int RingLookbackSeconds => DurationText.Clamp(_settings.Current.ReplayBuffer.DurationSeconds);
+
+    /// <summary>
+    /// Per-press clip length (seconds), read on the calling thread when F9 is pressed; null or a non-positive answer =
+    /// the whole lookback. Never more than <see cref="EffectiveDurationSeconds"/>: the ring holds nothing older.
+    /// </summary>
+    public Func<int>? ClipSecondsAtPress { get; set; }
+
+    /// <summary>
+    /// The lookback the buffer actually holds: <see cref="RingLookbackSeconds"/> or, when the buffer drive or the RAM is
+    /// too small for it, the shorter length decided at the last (re)start / by the low-RAM guard.
     /// </summary>
     public int EffectiveDurationSeconds
     {
         get
         {
-            int configured = DurationText.Clamp(_settings.Current.ReplayBuffer.DurationSeconds);
+            int configured = RingLookbackSeconds;
             int cap = _diskCapSeconds;
-            return cap > 0 ? Math.Min(configured, cap) : configured;
+            int effective = cap > 0 ? Math.Min(configured, cap) : configured;
+            int memCap = _memoryCapSeconds;
+            return memCap > 0 ? Math.Min(effective, memCap) : effective;
         }
     }
 
@@ -176,12 +234,45 @@ public sealed class ReplayBufferService : IDisposable
             while (_suspensions.Count > MaxSuspensions) _suspensions.RemoveAt(0);
         }
         await StopAsync().ConfigureAwait(false);
+        // The RAM ring outlives the pause (its footage goes into the next clip), so its low-RAM guard has to as well -
+        // the stopped watchdog no longer runs it, and a recording is exactly when the game needs memory.
+        if (_memory is not null) StartSuspendGuard();
+    }
+
+    private CancellationTokenSource? _suspendGuardCts;
+
+    private void StartSuspendGuard()
+    {
+        _suspendGuardCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _suspendGuardCts = cts;
+        var token = cts.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested && Suspended && _memory is not null)
+            {
+                try
+                {
+                    await Task.Delay(MemoryGuardInterval, token).ConfigureAwait(false);
+                    GuardMemory();
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex) { Logger.Warn("RAM guard during pause failed: " + ex.Message); }
+            }
+        }, token);
+    }
+
+    private void StopSuspendGuard()
+    {
+        try { _suspendGuardCts?.Cancel(); } catch { }
+        _suspendGuardCts = null;
     }
 
     /// <summary>Comes back after the recording, keeping the segments from before the pause.</summary>
     public void Resume()
     {
         Suspended = false;
+        StopSuspendGuard();
         lock (_suspendLock)
         {
             int last = _suspensions.Count - 1;
@@ -260,13 +351,29 @@ public sealed class ReplayBufferService : IDisposable
         _sessionStartUtc = DateTime.UtcNow;
         _generations.Clear();
         _lastAnnouncedCap = -1;
+        // A save that still copies pinned RAM segments keeps them until it is done.
+        if (_memory is { } mem && mem.BytesInUse > 0)
+        {
+            mem.Clear();
+            CollectFreedMemory();
+        }
+        _storage = null;
+        _storageKey = null;
+        _memoryCapSeconds = 0;
+        _memoryLimited = false;
+        _lowMemoryAnnounced = false;
     }
 
     // Assumes _lifecycleLock is held.
     private void StartCore(bool clearHistory)
     {
         _bufferDir = ResolveBufferDir(warn: true);
-        Directory.CreateDirectory(_bufferDir);
+        // A folder this app creates is its own and may be hidden; a folder the user picked that already exists is not.
+        if (!Directory.Exists(_bufferDir))
+        {
+            Directory.CreateDirectory(_bufferDir);
+            _record.AddCreated(_bufferDir);
+        }
 
         // A moved buffer folder: the new one starts fresh, the old one (gigabytes at 30 minutes) is emptied.
         bool folderMoved = HandleBufferFolderChange();
@@ -294,8 +401,18 @@ public sealed class ReplayBufferService : IDisposable
                 _sessionStartUtc = DateTime.UtcNow;
         }
 
-        // Does the lookback fit on the buffer drive? Decided before anything is started.
-        if (!DecideDiskPlan(plan)) return;
+        // A reader of a run that died on its own (no StopCore since) has reached the end of its stream by now.
+        DisposeMemoryFeed();
+
+        // RAM or disk for this run, then: does the lookback fit there? Decided before anything is started.
+        var storage = DecideStorage(clearHistory);
+        bool memoryMode = storage.Kind == BufferStorageKind.Memory && _memory is not null;
+        if (memoryMode)
+        {
+            _diskCapSeconds = 0;
+            _diskLimited = false;
+        }
+        else if (!DecideDiskPlan(plan)) return;
 
         CurrentPlan = plan;
 
@@ -382,13 +499,26 @@ public sealed class ReplayBufferService : IDisposable
         _generations[ownGeneration] = new GenerationInfo(ownGeneration, identity,
             plan.TargetProcess ?? $"Monitor {plan.MonitorIndex + 1}", DateTime.UtcNow, null);
         _currentIdentity = identity;
-        _epoch = new BufferEpoch(ring, identity, ownGeneration, _bufferDir);
+        _epoch = new BufferEpoch(ring, identity, ownGeneration, _bufferDir, memoryMode ? _memory : null);
 
         var args = FFmpegCommandBuilder.Build(settings, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
             audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
-            videoInputArgs: videoArgs, keyframes: keyframes);
+            videoInputArgs: videoArgs, keyframes: keyframes, mpegTsPipe: memoryMode);
         Logger.Info("[buffer-ffmpeg] CMD: " + args);
+
+        if (memoryMode)
+        {
+            // Segments older than what a save can reach (plus slack) leave the RAM ring as soon as new ones arrive.
+            _memory!.SetAgeLimit(TimeSpan.FromSeconds(SegmentRetention.AgeWindowSeconds(ring, CurrentRingPlan())));
+        }
+        else
+        {
+            // ffmpeg cannot (re)create a hidden file: names of this generation left over from an earlier run become visible.
+            SegmentVisibility.ShowGeneration(_bufferDir, ownGeneration);
+        }
+        // Empty in RAM mode, the hidden ring in disk mode: nothing to look at in Explorer either way - if the folder is ours.
+        SegmentVisibility.UpdateFolder(_bufferDir, IsOurFolder(_bufferDir));
 
         _ffmpeg = new FFmpegService();
         if (!_ffmpeg.IsAvailable())
@@ -457,6 +587,22 @@ public sealed class ReplayBufferService : IDisposable
         try
         {
             _ffmpeg.Start(args);
+            if (memoryMode)
+            {
+                // At once: ffmpeg blocks as soon as the stdout pipe is full.
+                // A reader that fails keeps draining the pipe (ffmpeg must not block) and the run is restarted - instead
+                // of ffmpeg hanging on a full stdout until the stall watchdog notices it 20-50 s later.
+                var feed = new MemoryBufferFeed(_ffmpeg.StandardOutputStream!, _memory!.OpenWriter(ownGeneration), segSec,
+                    KeyframePolicy.SegmentTimeDelta(settings.Video.Framerate, keyframes), () => ownFfmpeg.StopRequested,
+                    cause =>
+                    {
+                        if (_ffmpeg != ownFfmpeg) return;
+                        Logger.Warn($"ReplayBuffer: RAM reader of generation {ownGeneration} failed ({cause}) - restarting the buffer");
+                        RequestRestart();
+                    });
+                _memoryFeed = feed;
+                feed.Start();
+            }
             _genStartedUtc = DateTime.UtcNow;
             if (_generations.TryGetValue(ownGeneration, out var started))
                 _generations[ownGeneration] = started with { StartedUtc = _genStartedUtc };
@@ -521,6 +667,10 @@ public sealed class ReplayBufferService : IDisposable
 
         _lastBufferDir = _bufferDir;
         _record.Write(_bufferDir);
+
+        // A folder the buffer leaves is no longer kept out of sight.
+        foreach (var folder in left)
+            if (IsOurFolder(folder)) SegmentVisibility.ShowFolder(folder);
 
         foreach (var folder in cleanup)
         {
@@ -627,7 +777,7 @@ public sealed class ReplayBufferService : IDisposable
     {
         var s = _settings.Current;
         var rb = s.ReplayBuffer;
-        int configured = DurationText.Clamp(rb.DurationSeconds);
+        int configured = RingLookbackSeconds;
         int seg = Math.Max(1, rb.SegmentDurationSeconds);
 
         // The previous generation's rate is the best guess for the next one - if it encoded the same way.
@@ -637,6 +787,10 @@ public sealed class ReplayBufferService : IDisposable
             g => g.Identity.Stream.StartsWith(prefix, StringComparison.Ordinal), 12));
 
         var f = BuildForecast(_bufferDir, configured, seg, plan.MonitorIndex, observed);
+        _diskRingBytes = f.RequiredBytes;
+        if (f.Decision.Shortened)
+            _diskRingBytes = f.RequiredBytes * DiskPlan.RingSegments(f.Decision.EffectiveSeconds, seg)
+                             / Math.Max(1, DiskPlan.RingSegments(configured, seg));
         if (!f.Known)
         {
             // UNC/unknown drive: no way to ask, so no check.
@@ -681,6 +835,186 @@ public sealed class ReplayBufferService : IDisposable
         return true;
     }
 
+    /// <summary>The default buffer folder or one this app created: only such a folder is ever hidden.</summary>
+    private bool IsOurFolder(string dir)
+        => !string.IsNullOrWhiteSpace(dir)
+           && (!BufferFolderRules.IsDifferentFolder(dir, SettingsService.ExpandPath(PathRules.DefaultBufferFolder))
+               || _record.WasCreated(dir));
+
+    // ---- RAM or disk ----
+
+    /// <summary>Audio tracks the run will most likely have (as AudioTrackSet splits them), for the size estimate.</summary>
+    private static int ExpectedAudioTracks(AppSettings s)
+    {
+        bool mic = s.Audio.RecordMicrophone && !string.IsNullOrWhiteSpace(s.Audio.MicDeviceId);
+        bool sys = s.Audio.RecordSystemSound;
+        return mic && sys && s.Audio.SeparateMicTrack ? 2 : (mic || sys ? 1 : 0);
+    }
+
+    /// <summary>
+    /// The storage a lookback of <paramref name="durationSeconds"/> would use with the current settings and free RAM.
+    /// No side effects - the settings page shows it next to the length picker.
+    /// </summary>
+    public StorageDecision PlanStorage(int durationSeconds)
+    {
+        var s = _settings.Current;
+        var rb = s.ReplayBuffer;
+        var (ram, budget, recentLowMemory) = StorageInputs(coldStart: _memory is null);
+        return BufferStoragePlanner.Decide(rb.StorageMode, MpegTs.SupportsCodec(s.Video.Codec), durationSeconds,
+            Math.Max(1, rb.SegmentDurationSeconds), FFmpegCommandBuilder.MaxEffectiveBitrate(s), ExpectedAudioTracks(s),
+            budget, ram, recentLowMemory);
+    }
+
+    /// <summary>
+    /// The longest lookback Auto keeps in RAM with the current settings and RAM state (0 = always disk) - the settings page
+    /// shows this instead of a fixed "about 5 minutes".
+    /// </summary>
+    public int LongestMemoryLookback()
+    {
+        var s = _settings.Current;
+        var (ram, budget, recentLowMemory) = StorageInputs(coldStart: _memory is null);
+        return BufferStoragePlanner.LongestAutoMemoryLookback(MpegTs.SupportsCodec(s.Video.Codec),
+            Math.Max(1, s.ReplayBuffer.SegmentDurationSeconds), FFmpegCommandBuilder.MaxEffectiveBitrate(s),
+            ExpectedAudioTracks(s), budget, ram, recentLowMemory);
+    }
+
+    /// <summary>
+    /// RAM state, RAM budget and low-RAM history for a storage decision. Our own ring counts as available: it is ours to
+    /// give back, and leaving it out made a warm restart see its own 1.2 GB as "the game's" and shrink or drop the ring.
+    /// The history only matters at a cold start.
+    /// </summary>
+    private (RamStatus? Ram, long Budget, bool RecentLowMemory) StorageInputs(bool coldStart)
+    {
+        var rb = _settings.Current.ReplayBuffer;
+        var measured = PhysicalMemory.Read();
+        var ram = BufferStoragePlanner.WithOwnRing(measured, _memory?.BytesInUse ?? 0);
+        long budget = (long)BufferStoragePlanner.EffectiveMaxMemoryMB(rb.MaxMemoryMB, ram?.TotalBytes ?? 0) << 20;
+        bool recent = coldStart && rb.StorageMode == BufferStorageMode.Auto
+                      && _record.ReadLowMemory() is { } t
+                      && DateTime.UtcNow - t < BufferStoragePlanner.RecentLowMemoryWindow;
+        return (ram, budget, recent);
+    }
+
+    /// <summary>Forgets that the RAM ring had to be shortened (the user changed the storage setting).</summary>
+    public void ClearLowMemoryHistory() => _record.WriteLowMemory(null);
+
+    /// <summary>
+    /// RAM or disk for the next run. A cold start or changed settings decide anew. A warm restart with the same settings
+    /// (Alt-Tab, window resize, a manual recording) keeps the previous decision AS IT IS: never a shorter RAM ring, never a
+    /// switch from RAM to disk - that would throw the lookback away, and memory pressure is the low-RAM guard's job
+    /// (<see cref="GuardMemory"/>). Switching stores starts a fresh lookback: RAM segments and mp4 files are different
+    /// containers and are never joined into one clip, so the old footage is released (RAM) or left to the prune (disk) -
+    /// documented loss. Assumes _lifecycleLock is held.
+    /// </summary>
+    private StorageDecision DecideStorage(bool coldStart)
+    {
+        var s = _settings.Current;
+        var rb = s.ReplayBuffer;
+        int seg = Math.Max(1, rb.SegmentDurationSeconds);
+        int lookback = RingLookbackSeconds;
+        long video = FFmpegCommandBuilder.MaxEffectiveBitrate(s);
+        int tracks = ExpectedAudioTracks(s);
+        string key = string.Join("|", rb.StorageMode, rb.MaxMemoryMB, lookback, seg, s.Video.Codec, video, tracks);
+
+        var previous = _storage;
+        bool keep = !coldStart && previous is not null && _storageKey == key
+                    && (previous.Kind == BufferStorageKind.Disk || _memory is not null);
+        if (keep)
+        {
+            _storageKey = key;
+            return previous!;
+        }
+
+        var (ram, budget, recentLowMemory) = StorageInputs(coldStart);
+        bool codecOk = MpegTs.SupportsCodec(s.Video.Codec);
+        var d = BufferStoragePlanner.Decide(rb.StorageMode, codecOk, lookback, seg, video, tracks, budget, ram, recentLowMemory);
+
+        if (d.Reason == StorageReason.CodecUnsupported && rb.StorageMode != BufferStorageMode.Disk && !_codecFallbackLogged)
+        {
+            _codecFallbackLogged = true;
+            Logger.Info($"ReplayBuffer: {s.Video.Codec} does not survive MPEG-TS - the ring stays on the disk for this codec");
+        }
+        if (d.Reason == StorageReason.RecentLowMemory && !_recentLowMemoryAnnounced)
+        {
+            _recentLowMemoryAnnounced = true;
+            BufferInfo?.Invoke(this, L.T(
+                "Beim letzten Mal war der Arbeitsspeicher knapp und der RAM-Rückblick musste gekürzt werden — der Buffer nutzt deshalb vorerst die Festplatte (versteckter Ordner). Ändern unter Video → Zwischenspeicher.",
+                "Last time the RAM ran low and the in-memory lookback had to be shortened — the buffer uses the disk (hidden folder) for now. Change it under Video → Buffer storage."));
+        }
+
+        if (previous is not null && previous.Kind != d.Kind && !coldStart)
+        {
+            _sessionStartUtc = DateTime.UtcNow;
+            Logger.Info($"ReplayBuffer: storage switches {previous.Kind} -> {d.Kind} - the lookback starts over");
+        }
+
+        if (d.Kind == BufferStorageKind.Memory)
+        {
+            if (_memory is null) _memory = new MemorySegmentStore(d.BudgetBytes);
+            else _memory.SetBudget(d.BudgetBytes);
+            _memoryCapSeconds = d.Shortened ? d.LookbackSeconds : 0;
+            _memoryLimited = d.Shortened;
+            _memoryCutUtc = DateTime.MinValue;
+            _memoryCutGen2 = -1;
+            if (d.Shortened && !_lowMemoryAnnounced)
+            {
+                _lowMemoryAnnounced = true;
+                BufferInfo?.Invoke(this, L.T(
+                    $"Zu wenig Arbeitsspeicher für {DurationText.Format(lookback)} Rückblick im RAM — Buffer läuft mit {DurationText.Format(d.LookbackSeconds)}. Für längere Rückblicke „Zwischenspeicher: Automatisch“ oder „Festplatte“ wählen.",
+                    $"Not enough RAM for a {DurationText.Format(lookback)} lookback in memory — the buffer runs with {DurationText.Format(d.LookbackSeconds)}. For longer lookbacks choose storage “Automatic” or “Disk”."));
+            }
+        }
+        else
+        {
+            ReleaseMemory();
+        }
+
+        Logger.Info($"ReplayBuffer: storage {d.Kind} ({d.Reason}), ring ~{DiskPlan.FormatBytes(d.EstimatedBytes)}" +
+                    (d.Kind == BufferStorageKind.Memory ? $", RAM budget {DiskPlan.FormatBytes(d.BudgetBytes)}" : "") +
+                    (ram is { } r ? $", free RAM (incl. own ring) {DiskPlan.FormatBytes(r.AvailableBytes)} of {DiskPlan.FormatBytes(r.TotalBytes)}" : ""));
+        _storage = d;
+        _storageKey = key;
+        return d;
+    }
+
+    /// <summary>Gives the RAM ring back (pinned segments go when their save is done).</summary>
+    private void ReleaseMemory()
+    {
+        var mem = _memory;
+        _memory = null;
+        _memoryCapSeconds = 0;
+        _memoryLimited = false;
+        if (mem is null) return;
+        bool held = mem.BytesInUse > 0;
+        mem.Dispose();
+        if (held) CollectFreedMemory();
+    }
+
+    /// <summary>
+    /// Evicted blocks are large-object-heap arrays: dropped, they are garbage, and the OS sees no free RAM until a gen-2
+    /// collection - a low-RAM guard measuring before that would cut again and again for nothing. One blocking collection
+    /// right after the ring shrank makes the memory really free. Not compacting: the blocks are all the same size, and the
+    /// freed regions are decommitted without moving anything.
+    /// </summary>
+    private static void CollectFreedMemory()
+    {
+        try { GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false); }
+        catch (Exception ex) { Logger.Warn("GC after freeing the RAM ring failed: " + ex.Message); }
+    }
+
+    /// <summary>Lets the reader of the stopped ffmpeg finish its stream (the last segment), then drops it.</summary>
+    private void DisposeMemoryFeed()
+    {
+        var feed = _memoryFeed;
+        _memoryFeed = null;
+        if (feed is null) return;
+        if (!feed.WaitForEnd(TimeSpan.FromSeconds(3)))
+            Logger.Warn("RAM buffer: the reader did not finish within 3 s");
+        Logger.Info($"RAM buffer: generation {feed.Writer.Generation} read {feed.BytesRead / (1024 * 1024)} MiB, " +
+                    $"{feed.Writer.Completed} segments ({feed.Writer.Dropped} dropped), reader CPU {feed.CpuTime.TotalSeconds:0.00} s");
+        feed.Dispose();
+    }
+
     public async Task StopAsync()
     {
         CancelDebounce();
@@ -688,6 +1022,14 @@ public sealed class ReplayBufferService : IDisposable
         try
         {
             await StopCoreAsync().ConfigureAwait(false);
+            // Off for real (not a pause for a manual recording): the RAM goes back now, the next start is a cold one anyway.
+            if (!Suspended)
+            {
+                StopSuspendGuard();
+                ReleaseMemory();
+                _storage = null;
+                _storageKey = null;
+            }
         }
         finally { _lifecycleLock.Release(); }
     }
@@ -699,6 +1041,8 @@ public sealed class ReplayBufferService : IDisposable
         if (_ffmpeg is not null)
             await _ffmpeg.StopAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         MarkGenerationStopped(_generation);
+        // ffmpeg is gone: its reader drains the rest of the pipe and closes the last RAM segment.
+        DisposeMemoryFeed();
         _ffmpeg?.Dispose();
         _ffmpeg = null;
         _audio?.Dispose();
@@ -854,6 +1198,13 @@ public sealed class ReplayBufferService : IDisposable
         int target = EffectiveDurationSeconds;
         var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(target);
         var identity = _currentIdentity;   // read once: not once per file
+        if (_epoch?.Memory is { } mem)
+        {
+            double seconds = mem.Snapshot()
+                .Where(s => s.EndUtc >= _sessionStartUtc && s.EndUtc > cutoff && IsIdentity(s.Generation, identity))
+                .Sum(s => s.Duration.TotalSeconds);
+            return Math.Min(target, (int)seconds);
+        }
         int complete;
         try
         {
@@ -872,8 +1223,9 @@ public sealed class ReplayBufferService : IDisposable
     private static string LocalClock(DateTime utc)
         => utc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
-    private sealed record ClipScan(BufferMaterial Material, StitchPlan? Plan);
-    private sealed record GifScan(BufferMaterial Material, IReadOnlyList<SegmentCandidate> Pick);
+    /// <param name="Pins">RAM mode: the picked segments, pinned until the save has copied them out.</param>
+    private sealed record ClipScan(BufferMaterial Material, StitchPlan? Plan, MemoryPin? Pins = null);
+    private sealed record GifScan(BufferMaterial Material, IReadOnlyList<SegmentCandidate> Pick, MemoryPin? Pins = null);
 
     /// <summary>
     /// Save the most recent N seconds into a single MP4. Concat demuxer + stream
@@ -892,6 +1244,8 @@ public sealed class ReplayBufferService : IDisposable
         }
         string? listPath = null;
         string? chaptersPath = null;
+        MemoryPin? pins = null;
+        var temps = new List<string>();
         try
         {
             // One snapshot of the running recording - ring, identity, generation, folder - for the whole save. A warm
@@ -904,10 +1258,12 @@ public sealed class ReplayBufferService : IDisposable
                 SignalFailed(SaveKind.Clip, SaveFailureReason.NotRunning);
                 return null;
             }
+            bool fromMemory = epoch.Memory is not null;
 
             // Sized from the RUNNING ring: a duration raised a moment ago (restart still pending)
             // must not make this save reach into the overwrite reserve of the old, smaller ring.
-            int requested = EffectiveDurationSeconds;
+            // A per-press length (per-game F9 lengths) is read here, on the pressing thread, and capped by the ring.
+            int requested = RequestedSecondsAtPress();
             var bufferDir = epoch.BufferDir;
             var nowUtc = DateTime.UtcNow;
             // What is on screen NOW decides the game folder - not what is on screen when the scan is done.
@@ -915,6 +1271,7 @@ public sealed class ReplayBufferService : IDisposable
 
             // Directory scan + 360 header reads + planning: never on the UI thread (F9 arrives there).
             var scan = await Task.Run(() => ScanForClip(epoch, requested, nowUtc)).ConfigureAwait(false);
+            pins = scan.Pins;
             if (scan.Material == BufferMaterial.Stalled)
             {
                 ReportStalled(SaveKind.Clip);
@@ -931,9 +1288,10 @@ public sealed class ReplayBufferService : IDisposable
                 return null;
             }
 
-            // The clip is a full copy of the footage: refuse before writing when the clips drive cannot hold it.
+            // The clip is a full copy of the footage: refuse before writing when the clips drive cannot hold it. From RAM
+            // the footage is written out once more first (temporary .ts next to the clip).
             var o = _settings.Current.Output;
-            long need = (long)(plan.TotalBytes * 1.02) + 256L * 1024 * 1024;
+            long need = (long)(plan.TotalBytes * 1.02) + 256L * 1024 * 1024 + (fromMemory ? plan.TotalBytes : 0);
             if (DiskProbe.TryGetFreeSpace(SettingsService.ExpandPath(o.ClipsFolder), out long clipsFree, out string clipsDrive)
                 && clipsFree < need)
             {
@@ -952,37 +1310,61 @@ public sealed class ReplayBufferService : IDisposable
             // Written as .part and renamed on success, so the gallery never lists a half-written clip.
             var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
-            listPath = Path.Combine(bufferDir, "_concat_list.txt");
-            await File.WriteAllLinesAsync(listPath, ClipStitcher.ConcatListLines(plan.Segments)).ConfigureAwait(false);
+            int clipSeconds = (int)Math.Ceiling(plan.TotalDuration.TotalSeconds);
+            var startedUtc = DateTime.UtcNow;
+            _currentSave = new SaveProgressInfo(SaveKind.Clip, clipSeconds, 0, SavePhase.Copying, TimeSpan.Zero);
+
+            // From RAM the picked segments are written out first (one hidden .ts per uninterrupted run, next to the clip),
+            // then they are unpinned: the ring records on during the concat without having to hold them.
+            IReadOnlyList<SegmentCandidate> inputs = plan.Segments;
+            if (fromMemory)
+            {
+                var lastSignal = DateTime.MinValue;
+                inputs = await MemoryClipMaterializer.MaterializeAsync(plan.Segments,
+                    r => ClipOutputFiles.TempPathFor(outputPath, $"{r}.ts"), temps, written =>
+                    {
+                        // Copying out is the first half of the progress, the concat the second.
+                        var info = new SaveProgressInfo(SaveKind.Clip, clipSeconds,
+                            0.5 * ClipSavePolicy.Fraction(written, plan.TotalBytes), SavePhase.Copying, DateTime.UtcNow - startedUtc);
+                        _currentSave = info;
+                        if (DateTime.UtcNow - lastSignal < ConcatWatch.PollInterval) return;
+                        lastSignal = DateTime.UtcNow;
+                        SignalProgress(info);
+                    }, _disposeCts.Token).ConfigureAwait(false);
+                pins?.Dispose();
+                pins = null;
+            }
+
+            listPath = fromMemory ? ClipOutputFiles.TempPathFor(outputPath, "list.txt") : Path.Combine(bufferDir, "_concat_list.txt");
+            await WriteHelperFileAsync(listPath, string.Join("\n", ClipStitcher.ConcatListLines(inputs)) + "\n", fromMemory)
+                .ConfigureAwait(false);
 
             // Gaps become chapters (ffmetadata is a second ffmpeg input; the concat demuxer has no chapter option).
             string? chapters = null;
             if (plan.Chapters.Count > 0)
             {
-                chaptersPath = Path.Combine(bufferDir, "_chapters.txt");
-                await File.WriteAllTextAsync(chaptersPath, ClipStitcher.ChapterMetadata(plan.Chapters),
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)).ConfigureAwait(false);
+                chaptersPath = fromMemory ? ClipOutputFiles.TempPathFor(outputPath, "chapters.txt") : Path.Combine(bufferDir, "_chapters.txt");
+                await WriteHelperFileAsync(chaptersPath, ClipStitcher.ChapterMetadata(plan.Chapters), fromMemory).ConfigureAwait(false);
                 chapters = chaptersPath;
             }
 
             bool faststart = ClipSavePolicy.UseFaststart(plan.TotalBytes);
-            var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath, faststart, chapters);
-
-            int clipSeconds = (int)Math.Ceiling(plan.TotalDuration.TotalSeconds);
-            var startedUtc = DateTime.UtcNow;
-            _currentSave = new SaveProgressInfo(SaveKind.Clip, clipSeconds, 0, SavePhase.Copying, TimeSpan.Zero);
+            var args = FFmpegCommandBuilder.BuildConcat(listPath, partPath, faststart, chapters, audioVideoOnly: fromMemory);
 
             // Waits for the concat as long as its output keeps growing, so a hung process
             // can't block every future save but a slow disk doesn't kill a good clip. Also aborts
-            // a copy slower than the recording (the muxer would overwrite segments still unread).
-            var expected = new ConcatExpectation(plan.TotalBytes,
-                plan.TotalBytes / Math.Max(1.0, plan.TotalDuration.TotalSeconds));
+            // a copy slower than the recording (the muxer would overwrite segments still unread) - not from RAM: the
+            // copies on disk are the save's own. The mp4 comes out a few percent smaller than the .ts input.
+            long expectedBytes = fromMemory ? (long)(plan.TotalBytes * 0.97) : plan.TotalBytes;
+            var expected = new ConcatExpectation(expectedBytes,
+                fromMemory ? 0 : plan.TotalBytes / Math.Max(1.0, plan.TotalDuration.TotalSeconds));
             var run = await RunWatchedFfmpegAsync(args, partPath, clipSeconds, expected: expected,
                 onOutputLength: len =>
                 {
+                    double fraction = ClipSavePolicy.Fraction(len, expectedBytes);
                     var info = new SaveProgressInfo(SaveKind.Clip, clipSeconds,
-                        ClipSavePolicy.Fraction(len, plan.TotalBytes),
-                        ClipSavePolicy.Phase(len, plan.TotalBytes, faststart),
+                        fromMemory ? 0.5 + 0.5 * fraction : fraction,
+                        ClipSavePolicy.Phase(len, expectedBytes, faststart),
                         DateTime.UtcNow - startedUtc);
                     _currentSave = info;
                     SignalProgress(info);
@@ -1039,6 +1421,8 @@ public sealed class ReplayBufferService : IDisposable
         {
             try { if (listPath != null && File.Exists(listPath)) File.Delete(listPath); } catch { }
             try { if (chaptersPath != null && File.Exists(chaptersPath)) File.Delete(chaptersPath); } catch { }
+            pins?.Dispose();
+            DeleteTemps(temps);
             _currentSave = null;
             Interlocked.Exchange(ref _saving, 0);
             PruneAfterSave();
@@ -1047,6 +1431,50 @@ public sealed class ReplayBufferService : IDisposable
 
     /// <summary>A prune that was blocked by the save runs now; off the caller's thread, the folder can hold hundreds of files.</summary>
     private void PruneAfterSave() => _ = Task.Run(PruneOldSegments);
+
+    /// <summary>
+    /// The length this press saves: <see cref="ClipSecondsAtPress"/> when set and positive, never more than the lookback
+    /// the ring actually holds (<see cref="EffectiveDurationSeconds"/>).
+    /// </summary>
+    internal int RequestedSecondsAtPress()
+    {
+        int ring = EffectiveDurationSeconds;
+        int wanted = ring;
+        if (ClipSecondsAtPress is { } hook)
+        {
+            try
+            {
+                int v = hook();
+                if (v > 0) wanted = v;
+            }
+            catch (Exception ex) { Logger.Warn("Clip length at press failed: " + ex.Message); }
+        }
+        return Math.Min(wanted, ring);
+    }
+
+    /// <summary>
+    /// A concat list / chapter file. Next to a RAM save's output it is hidden; any earlier file of that name goes first
+    /// (a hidden file cannot be overwritten in place). UTF-8 without BOM: chapter titles carry umlauts.
+    /// </summary>
+    private static async Task WriteHelperFileAsync(string path, string content, bool hidden)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        await File.WriteAllTextAsync(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)).ConfigureAwait(false);
+        if (hidden) MemoryClipMaterializer.TryHide(path);
+    }
+
+    private static void DeleteTemps(List<string> temps)
+    {
+        foreach (var t in temps)
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try { if (File.Exists(t)) File.Delete(t); break; }
+                catch { Thread.Sleep(100); }   // a killed ffmpeg may still hold it for a moment
+            }
+        }
+        temps.Clear();
+    }
 
     /// <summary>
     /// Names the game folder for a capture of the current plan. Set by the composition root;
@@ -1111,6 +1539,13 @@ public sealed class ReplayBufferService : IDisposable
             if (sinceStart < stale + TimeSpan.FromSeconds(segSec)) return false;
 
             var identity = _currentIdentity;   // read once: not once per file
+            if (_epoch?.Memory is { } mem)
+            {
+                // The RAM ring holds complete segments only: the newest one is the measure.
+                var newest = mem.Snapshot().LastOrDefault(s => IsIdentity(s.Generation, identity) && s.EndUtc >= _genStartedUtc);
+                age = newest is null ? sinceStart : DateTime.UtcNow - newest.EndUtc;
+                return age > stale;
+            }
             var times = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
                 .Where(fi => fi.Length > 1024 && IsCurrentIdentity(fi.Name, identity))
                 .Select(fi => fi.LastWriteTimeUtc)
@@ -1134,6 +1569,8 @@ public sealed class ReplayBufferService : IDisposable
     private (List<SegmentCandidate> Complete, BufferMaterial Material) CollectComplete(BufferEpoch epoch, DateTime nowUtc)
     {
         var ring = epoch.Ring;
+        if (epoch.Memory is not null)
+            throw new InvalidOperationException("RAM epochs are collected with CollectCompleteMemory");
         var files = new DirectoryInfo(epoch.BufferDir).EnumerateFiles("seg_*.mp4")
             .Where(fi => fi.Length > 1024
                          && fi.LastWriteTimeUtc >= _sessionStartUtc
@@ -1163,13 +1600,68 @@ public sealed class ReplayBufferService : IDisposable
     }
 
     /// <summary>
+    /// The RAM counterpart of <see cref="CollectComplete"/>: the complete segments of the epoch's identity, session-
+    /// filtered, oldest first - all pinned in one step with the snapshot, so nothing the scan looks at can be evicted
+    /// before the save narrows the pin to what it picked. The returned pin is null when the material is not usable.
+    /// </summary>
+    private (List<SegmentCandidate> Complete, BufferMaterial Material, MemoryPin? Pin) CollectCompleteMemory(
+        BufferEpoch epoch, MemorySegmentStore mem, DateTime nowUtc)
+    {
+        var pin = mem.SnapshotPinned();
+        var segments = pin.Segments
+            .Where(s => s.EndUtc >= _sessionStartUtc && IsIdentity(s.Generation, epoch.Identity))
+            .ToList();
+        if (segments.Count == 0)
+        {
+            pin.Dispose();
+            return (new List<SegmentCandidate>(), BufferMaterial.NotEnoughYet, null);
+        }
+        if (BufferHealth.Judge(segments[^1].EndUtc, nowUtc, Math.Max(1, epoch.Ring.SegmentSeconds)) == BufferMaterial.Stalled)
+        {
+            pin.Dispose();
+            return (new List<SegmentCandidate>(), BufferMaterial.Stalled, null);
+        }
+        var list = segments.Select(s => new SegmentCandidate($"ram:{s.Generation}:{s.Sequence}", s.Generation, s.EndUtc,
+            s.Bytes, s.Duration) { Memory = s }).ToList();
+        return (list, BufferMaterial.Ok, pin);
+    }
+
+    /// <summary>Complete segments of either store; RAM ones come pinned (see <see cref="CollectCompleteMemory"/>).</summary>
+    private (List<SegmentCandidate> Complete, BufferMaterial Material, MemoryPin? Pin) CollectAny(BufferEpoch epoch, DateTime nowUtc)
+    {
+        if (epoch.Memory is { } mem) return CollectCompleteMemory(epoch, mem, nowUtc);
+        var (complete, material) = CollectComplete(epoch, nowUtc);
+        return (complete, material, null);
+    }
+
+    /// <summary>Swaps the broad scan pin for one on the picked segments only.</summary>
+    private static MemoryPin? NarrowPin(BufferEpoch epoch, MemoryPin? broad, IEnumerable<SegmentCandidate> picked)
+    {
+        if (broad is null || epoch.Memory is not { } mem) return null;
+        var narrow = mem.Pin(picked.Where(c => c.Memory is not null).Select(c => c.Memory!));
+        broad.Dispose();
+        return narrow;
+    }
+
+    /// <summary>
     /// Picks and plans a clip: with stitching on, everything inside the lookback window (holes become gaps with
     /// chapters), otherwise only the newest uninterrupted run. Runs on a worker thread.
     /// </summary>
     private ClipScan ScanForClip(BufferEpoch epoch, int requestedSeconds, DateTime nowUtc)
     {
+        var (complete, material, broad) = CollectAny(epoch, nowUtc);
+        try { return PlanClip(epoch, requestedSeconds, nowUtc, complete, material, broad); }
+        catch
+        {
+            broad?.Dispose();   // pinned segments must never outlive a failed scan
+            throw;
+        }
+    }
+
+    private ClipScan PlanClip(BufferEpoch epoch, int requestedSeconds, DateTime nowUtc, List<SegmentCandidate> complete,
+        BufferMaterial material, MemoryPin? broad)
+    {
         var ring = epoch.Ring;
-        var (complete, material) = CollectComplete(epoch, nowUtc);
         if (material == BufferMaterial.Stalled) return new ClipScan(BufferMaterial.Stalled, null);
         if (complete.Count == 0) return new ClipScan(BufferMaterial.NotEnoughYet, null);
 
@@ -1185,9 +1677,10 @@ public sealed class ReplayBufferService : IDisposable
             selected = complete.Skip(start).TakeLast(ring.PickForSeconds(requestedSeconds)).ToList();
         }
 
-        // The real durations drive the chapters and the saved length; an unreadable header (segment still open) drops the segment.
+        // The real durations drive the chapters and the saved length; an unreadable header (segment still open) drops the
+        // segment. RAM segments know theirs from the key frame timestamps.
         var withDurations = selected
-            .Select(c => c with { Duration = Mp4Duration.TryRead(c.Path, out var d) ? d : null })
+            .Select(c => c.Memory is not null ? c : c with { Duration = Mp4Duration.TryRead(c.Path, out var d) ? d : null })
             .ToList();
 
         var current = epoch.Identity;
@@ -1196,19 +1689,19 @@ public sealed class ReplayBufferService : IDisposable
         var plan = ClipStitcher.Plan(withDurations,
             (from, to) => ClipStitcher.ClassifyGap(from, to, nowUtc, current, generations, suspensions),
             (run, from, to, gap) => ClipStitcher.ChapterTitle(run, from, to, gap, LocalClock));
-        return new ClipScan(BufferMaterial.Ok, plan);
+        return new ClipScan(BufferMaterial.Ok, plan, NarrowPin(epoch, broad, plan.Segments));
     }
 
     /// <summary>The newest uninterrupted run, capped to <paramref name="neededSegments"/> (a GIF never jumps across a gap).</summary>
     private GifScan ScanForGif(BufferEpoch epoch, int neededSegments, DateTime nowUtc)
     {
         var ring = epoch.Ring;
-        var (complete, material) = CollectComplete(epoch, nowUtc);
+        var (complete, material, broad) = CollectAny(epoch, nowUtc);
         if (material != BufferMaterial.Ok) return new GifScan(material, Array.Empty<SegmentCandidate>());
 
         int start = BufferHealth.ContiguousTailStart(complete.Select(c => c.EndUtc).ToList(), ring.SegmentSeconds);
         var pick = complete.Skip(start).TakeLast(Math.Max(1, neededSegments)).ToList();
-        return new GifScan(BufferMaterial.Ok, pick);
+        return new GifScan(BufferMaterial.Ok, pick, NarrowPin(epoch, broad, pick));
     }
 
     /// <summary>
@@ -1227,6 +1720,8 @@ public sealed class ReplayBufferService : IDisposable
         }
         string? tempMp4 = null;
         string? listPath = null;
+        MemoryPin? pins = null;
+        var temps = new List<string>();
         try
         {
             var epoch = _epoch;   // one snapshot of the running recording for the whole save (see SaveLastAsync)
@@ -1249,6 +1744,7 @@ public sealed class ReplayBufferService : IDisposable
             string? game = ResolveGameAtPress();
 
             var scan = await Task.Run(() => ScanForGif(epoch, neededSegments, nowUtc)).ConfigureAwait(false);
+            pins = scan.Pins;
             if (scan.Material == BufferMaterial.Stalled)
             {
                 ReportStalled(SaveKind.Gif);
@@ -1269,14 +1765,30 @@ public sealed class ReplayBufferService : IDisposable
             var outputPath = Path.Combine(clipsDir, $"Gif_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.gif");
             var partPath = ClipOutputFiles.PartPathFor(outputPath);
 
-            // 1) concat the covering segments into a temp mp4 (stream copy, instant).
-            tempMp4 = Path.Combine(bufferDir, "_gif_src.mp4");
-            listPath = Path.Combine(bufferDir, "_gif_list.txt");
-            await File.WriteAllLinesAsync(listPath,
-                pick.Select(c => $"file '{c.Path.Replace("'", @"'\''")}'")).ConfigureAwait(false);
-            var concat = await RunWatchedFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4),
+            // 1) concat the covering segments into a temp mp4 (stream copy, instant). From RAM the segments are written
+            //    out first, like for a clip, and every helper file sits next to the GIF (hidden, deleted afterwards).
+            bool fromMemory = epoch.Memory is not null;
+            if (fromMemory)
+            {
+                var runs = await MemoryClipMaterializer.MaterializeAsync(pick,
+                    r => ClipOutputFiles.TempPathFor(outputPath, $"{r}.ts"), temps, null, _disposeCts.Token).ConfigureAwait(false);
+                pins?.Dispose();
+                pins = null;
+                tempMp4 = ClipOutputFiles.TempPathFor(outputPath, "src");
+                listPath = ClipOutputFiles.TempPathFor(outputPath, "list.txt");
+                await WriteHelperFileAsync(listPath, string.Join("\n", ClipStitcher.ConcatListLines(runs)) + "\n", hidden: true)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                tempMp4 = Path.Combine(bufferDir, "_gif_src.mp4");
+                listPath = Path.Combine(bufferDir, "_gif_list.txt");
+                await File.WriteAllLinesAsync(listPath,
+                    pick.Select(c => $"file '{c.Path.Replace("'", @"'\''")}'")).ConfigureAwait(false);
+            }
+            var concat = await RunWatchedFfmpegAsync(FFmpegCommandBuilder.BuildConcat(listPath, tempMp4, audioVideoOnly: fromMemory),
                 tempMp4, pick.Count * segSec,
-                expected: ConcatExpectation.FromSegments(pick.Select(f => f.Bytes).ToList(), segSec)).ConfigureAwait(false);
+                expected: fromMemory ? null : ConcatExpectation.FromSegments(pick.Select(f => f.Bytes).ToList(), segSec)).ConfigureAwait(false);
             if (!concat.Succeeded || !File.Exists(tempMp4))
             {
                 if (concat.AbortedBy is { } concatWhy)
@@ -1329,6 +1841,8 @@ public sealed class ReplayBufferService : IDisposable
         {
             try { if (listPath != null && File.Exists(listPath)) File.Delete(listPath); } catch { }
             try { if (tempMp4 != null && File.Exists(tempMp4)) File.Delete(tempMp4); } catch { }
+            pins?.Dispose();
+            DeleteTemps(temps);
             Interlocked.Exchange(ref _saving, 0);
             PruneAfterSave();
         }
@@ -1402,10 +1916,94 @@ public sealed class ReplayBufferService : IDisposable
         }
     }
 
+    /// <summary>
+    /// The fast companion of the watchdog, every second: RAM mode checks the free RAM (the 30 s watchdog would be late
+    /// when a game loads), disk mode keeps the ring hidden except for the slots ffmpeg reopens next (<see cref="SegmentVisibility"/>).
+    /// </summary>
+    private void StartMaintenance(CancellationToken token)
+    {
+        _ = Task.Run(async () =>
+        {
+            var nextGuard = DateTime.UtcNow + MemoryGuardInterval;
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+                    var epoch = _epoch;
+                    if (epoch is null) continue;
+                    if (epoch.Memory is not null)
+                    {
+                        // The one place the running buffer checks the free RAM (the 30 s watchdog does not).
+                        if (DateTime.UtcNow < nextGuard) continue;
+                        nextGuard = DateTime.UtcNow + MemoryGuardInterval;
+                        GuardMemory();
+                    }
+                    else
+                    {
+                        SegmentVisibility.Apply(epoch.BufferDir, epoch.Generation, epoch.Ring.Wrap, epoch.Ring.SegmentSeconds);
+                    }
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex) { Logger.Warn("Buffer maintenance failed: " + ex.Message); }
+            }
+        }, token);
+    }
+
+    /// <summary>
+    /// Low-RAM guard of the RAM ring: below the safety floor (max(1.5 GiB, 10 %) free) the ring gives back the difference,
+    /// oldest footage first, and the lookback shortens - one toast per session - instead of the game running out of memory.
+    /// The freed blocks are collected at once (otherwise the OS sees nothing freed), and a second cut needs both a settle
+    /// time and a gen-2 collection since the last one - without that hysteresis the guard kept cutting every tick for memory
+    /// that was already free but not yet collected. The budget is never raised again within the run; a cut below the
+    /// configured length is remembered, and Auto uses the disk at the next cold start (<see cref="StorageInputs"/>).
+    /// Runs from one loop at a time (maintenance while recording, the pause guard while suspended).
+    /// </summary>
+    private void GuardMemory()
+    {
+        if (Interlocked.CompareExchange(ref _guarding, 1, 0) != 0) return;
+        try
+        {
+            var mem = _memory;
+            if (mem is null) return;
+            var now = DateTime.UtcNow;
+            if (_memoryCutGen2 >= 0 && (now - _memoryCutUtc < MemoryCutSettle || GC.CollectionCount(2) <= _memoryCutGen2))
+                return;
+            if (PhysicalMemory.Read() is not { } ram) return;
+            var s = _settings.Current;
+            int seg = Math.Max(1, _runningRing.SegmentSeconds);
+            long video = FFmpegCommandBuilder.MaxEffectiveBitrate(s);
+            int tracks = ExpectedAudioTracks(s);
+            long minimum = BufferStoragePlanner.EstimateRingBytes(DurationText.MinSeconds, seg, video, tracks);
+            if (BufferStoragePlanner.ShrinkBudget(mem.BudgetBytes, mem.BytesInUse, ram, minimum) is not { } budget) return;
+
+            long freed = mem.SetBudget(budget);
+            mem.TrimPool();
+            _memoryCutUtc = now;
+            _memoryCutGen2 = GC.CollectionCount(2);
+            CollectFreedMemory();
+
+            int seconds = BufferStoragePlanner.LookbackForBytes(budget, RingLookbackSeconds, seg, video, tracks);
+            int cap = _memoryCapSeconds;
+            if (cap == 0 || seconds < cap) _memoryCapSeconds = seconds;
+            _memoryLimited = true;
+            if (EffectiveDurationSeconds < RingLookbackSeconds) _record.WriteLowMemory(now);
+            Logger.Warn($"RAM buffer: only {DiskPlan.FormatBytes(ram.AvailableBytes)} RAM free (floor {DiskPlan.FormatBytes(BufferStoragePlanner.SafetyFloorBytes(ram.TotalBytes))}) - " +
+                        $"budget {DiskPlan.FormatBytes(budget)}, freed {DiskPlan.FormatBytes(freed)}, lookback {DurationText.Format(EffectiveDurationSeconds)}");
+            if (_lowMemoryAnnounced) return;
+            _lowMemoryAnnounced = true;
+            BufferInfo?.Invoke(this, L.T(
+                $"Wenig freier Arbeitsspeicher — der Replay-Buffer gibt RAM frei und hält nur noch {DurationText.Format(EffectiveDurationSeconds)} Rückblick, damit das Spiel genug hat. Beim nächsten Start nutzt „Automatisch“ die Festplatte.",
+                $"Low free RAM — the replay buffer gives memory back and keeps only {DurationText.Format(EffectiveDurationSeconds)} of lookback so the game has enough. “Automatic” uses the disk from the next start on."));
+        }
+        finally { Interlocked.Exchange(ref _guarding, 0); }
+    }
+
     private void StartWatchdog()
     {
         _watchdogCts = new CancellationTokenSource();
         var token = _watchdogCts.Token;
+        StartMaintenance(token);
         _ = Task.Run(async () =>
         {
             while (!token.IsCancellationRequested)
@@ -1435,6 +2033,11 @@ public sealed class ReplayBufferService : IDisposable
                     }
 
                     PruneOldSegments();
+                    // Something of the user's appeared in our hidden folder: it becomes visible again.
+                    SegmentVisibility.UpdateFolder(_bufferDir, IsOurFolder(_bufferDir));
+
+                    // The RAM ring has a hard budget and no files; its free-RAM guard runs in the maintenance loop.
+                    if (_epoch?.Memory is not null) continue;
 
                     // A 30-minute ring is gigabytes: watch the drive, not just the ring.
                     if (await GuardDiskAsync().ConfigureAwait(false)) return;
@@ -1532,6 +2135,14 @@ public sealed class ReplayBufferService : IDisposable
     /// </summary>
     private void PruneOldSegments()
     {
+        // The RAM ring follows the same retention rules; pins protect what a running save still copies.
+        if (_memory is { } mem && _currentIdentity is { } memIdentity)
+        {
+            var memCtx = new RetentionContext(DateTime.UtcNow, _sessionStartUtc,
+                SegmentRetention.AgeWindowSeconds(_runningRing, CurrentRingPlan()),
+                _generation, memIdentity, _generations, User32.IsWindow);
+            mem.Prune(s => SegmentRetention.ShouldDelete(s.Generation, s.EndUtc, memCtx));
+        }
         if (string.IsNullOrEmpty(_bufferDir)) return;
         // A save's concat opens its input files one after another; deleting one it has not
         // reached yet (the settings were shortened meanwhile) would break or splice the clip.
@@ -1572,10 +2183,12 @@ public sealed class ReplayBufferService : IDisposable
     private bool IsCurrentIdentity(string fileName, SegmentIdentity? id)
     {
         if (id is null) return true;
-        return SegmentName.TryParseGeneration(fileName, out int gen)
-               && _generations.TryGetValue(gen, out var info)
-               && info.Identity == id;
+        return SegmentName.TryParseGeneration(fileName, out int gen) && IsIdentity(gen, id);
     }
+
+    /// <summary>True when generation <paramref name="gen"/> recorded <paramref name="id"/> (null = any).</summary>
+    private bool IsIdentity(int gen, SegmentIdentity? id)
+        => id is null || (_generations.TryGetValue(gen, out var info) && info.Identity == id);
 
     private RingPlan CurrentRingPlan()
     {
@@ -1593,11 +2206,16 @@ public sealed class ReplayBufferService : IDisposable
     private void CleanStaleClipParts()
     {
         var clipsDir = SettingsService.ExpandPath(_settings.Current.Output.ClipsFolder);
+        // The first cold start of the process removes RAM-save helper files (.wkitmp.*, gigabytes of hidden .ts) of ANY
+        // age: the app is single-instance (App's session mutex) and no save of this process can have run before its first
+        // start, so every such file is an orphan of a crash. Later cold starts keep the age limit - a save may be running.
+        bool anyAge = !_tempSweepDone && Volatile.Read(ref _saving) == 0;
+        _tempSweepDone = true;
         _ = Task.Run(() =>
         {
             try
             {
-                int n = ClipOutputFiles.DeleteStaleParts(clipsDir, DateTime.UtcNow);
+                int n = ClipOutputFiles.DeleteStaleParts(clipsDir, DateTime.UtcNow, tempsOfAnyAge: anyAge);
                 if (n > 0) Logger.Info($"ReplayBuffer: removed {n} stale partial clip file(s) from '{clipsDir}'");
             }
             catch (Exception ex) { Logger.Warn("Stale partial clip cleanup failed: " + ex.Message); }
@@ -1615,5 +2233,9 @@ public sealed class ReplayBufferService : IDisposable
         _concatFfmpeg?.Dispose();
         _videoPipe?.Dispose();
         _wgc?.Dispose();
+        _memoryFeed?.Dispose();
+        _memoryFeed = null;
+        StopSuspendGuard();
+        ReleaseMemory();
     }
 }

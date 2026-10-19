@@ -70,7 +70,9 @@ public sealed record GenerationInfo(int Generation, SegmentIdentity Identity, st
 /// folder it writes to. Published as ONE reference when a run starts, so a save that reads it once cannot see half of
 /// one run and half of the next.
 /// </summary>
-internal sealed record BufferEpoch(RingPlan Ring, SegmentIdentity Identity, int Generation, string BufferDir);
+/// <param name="Memory">The RAM ring the run records into; null = segment files in <paramref name="BufferDir"/>.</param>
+internal sealed record BufferEpoch(RingPlan Ring, SegmentIdentity Identity, int Generation, string BufferDir,
+    MemorySegmentStore? Memory = null);
 
 /// <summary>A pause of the buffer for a manual recording; <see cref="ToUtc"/> is null while it lasts.</summary>
 public readonly record struct SuspendInterval(DateTime FromUtc, DateTime? ToUtc);
@@ -78,7 +80,7 @@ public readonly record struct SuspendInterval(DateTime FromUtc, DateTime? ToUtc)
 public static class SegmentName
 {
     // [0-9] and \z on purpose (see PathRules): \d matches non-ASCII digits, $ tolerates a trailing newline.
-    private static readonly Regex Rx = new(@"^seg_([0-9]+)_[0-9]+\.mp4\z",
+    private static readonly Regex Rx = new(@"^seg_([0-9]+)_([0-9]+)\.mp4\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>"seg_12_07.mp4" gives 12. Anything else (including overflow) gives false. Case-insensitive.</summary>
@@ -88,5 +90,17 @@ public static class SegmentName
         if (fileName is null) return false;
         var m = Rx.Match(fileName);
         return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out generation);
+    }
+
+    /// <summary>"seg_12_07.mp4" gives generation 12, ring index 7.</summary>
+    public static bool TryParse(string? fileName, out int generation, out int index)
+    {
+        generation = 0;
+        index = 0;
+        if (fileName is null) return false;
+        var m = Rx.Match(fileName);
+        return m.Success
+               && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out generation)
+               && int.TryParse(m.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out index);
     }
 }

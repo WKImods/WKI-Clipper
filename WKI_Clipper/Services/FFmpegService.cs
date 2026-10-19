@@ -31,6 +31,12 @@ public sealed class FFmpegService : IDisposable
 
     public bool IsRunning => _process is { HasExited: false };
 
+    /// <summary>
+    /// ffmpeg's stdout as raw bytes (the RAM buffer reads its MPEG-TS from here). Null before Start. Whoever writes to
+    /// stdout must have a reader on it: a full pipe blocks ffmpeg.
+    /// </summary>
+    public Stream? StandardOutputStream => _process?.StandardOutput.BaseStream;
+
     public FFmpegService(string? ffmpegPath = null)
     {
         FFmpegPath = ffmpegPath ?? ResolveFFmpegPath();

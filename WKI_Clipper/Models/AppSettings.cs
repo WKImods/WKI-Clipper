@@ -255,6 +255,18 @@ public sealed class ReplayBufferSettings
 
     /// <summary>Hidden (settings.json only). Null = <c>KeyframePolicy.Default</c>.</summary>
     public WKI_Clipper.Services.KeyframeMode? KeyframeModeOverride { get; set; }
+
+    /// <summary>
+    /// Where the ring lives. Auto = in RAM when the lookback fits <see cref="MaxMemoryMB"/> (about five minutes at the
+    /// usual bitrates: no files, no SSD wear), otherwise the hidden seg_*.mp4 ring in the buffer folder.
+    /// </summary>
+    public WKI_Clipper.Services.BufferStorageMode StorageMode { get; set; } = WKI_Clipper.Services.BufferStorageMode.Auto;
+
+    /// <summary>
+    /// RAM budget of the in-memory ring in MB (settings.json only). 0 = automatic: min(2048, 15 % of the physical RAM).
+    /// Other values are clamped to 256..16384.
+    /// </summary>
+    public int MaxMemoryMB { get; set; }
 }
 
 public sealed class OutputSettings

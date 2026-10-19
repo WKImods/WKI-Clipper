@@ -54,6 +54,89 @@ public sealed class BufferFolderRecord
         }
     }
 
+    // ---- low-RAM history of the RAM ring ----
+
+    internal const string LowMemoryValueName = "RamBufferShortenedUtc";
+
+    /// <summary>When the low-RAM guard last had to shorten the RAM ring (UTC), null when never / cleared.</summary>
+    public DateTime? ReadLowMemory()
+    {
+        try
+        {
+            using var key = _root.OpenSubKey(KeyPath, writable: false);
+            return key?.GetValue(LowMemoryValueName) is string s
+                   && long.TryParse(s, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long ticks)
+                   && ticks > 0 && ticks <= DateTime.MaxValue.Ticks
+                ? new DateTime(ticks, DateTimeKind.Utc)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("BufferFolderRecord.ReadLowMemory failed: " + ex.Message);
+            return null;
+        }
+    }
+
+    public void WriteLowMemory(DateTime? utc)
+    {
+        try
+        {
+            using var key = _root.CreateSubKey(KeyPath);
+            if (utc is { } t) key.SetValue(LowMemoryValueName, t.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), RegistryValueKind.String);
+            else key.DeleteValue(LowMemoryValueName, throwOnMissingValue: false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("BufferFolderRecord.WriteLowMemory failed: " + ex.Message);
+        }
+    }
+
+    // ---- folders this app created (only those, and the default folder, are ever hidden) ----
+
+    internal const string CreatedValueName = "CreatedFolders";
+
+    public bool WasCreated(string fullPath)
+        => !string.IsNullOrWhiteSpace(fullPath)
+           && ReadList(CreatedValueName).Any(p => !BufferFolderRules.IsDifferentFolder(p, fullPath));
+
+    public void AddCreated(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath) || fullPath.Contains(PendingSeparator) || WasCreated(fullPath)) return;
+        var list = ReadList(CreatedValueName).ToList();
+        list.Add(fullPath);
+        WriteList(CreatedValueName, list.TakeLast(16).ToList());   // a handful of moves at most; never grows unbounded
+    }
+
+    private IReadOnlyList<string> ReadList(string valueName)
+    {
+        try
+        {
+            using var key = _root.OpenSubKey(KeyPath, writable: false);
+            var raw = key?.GetValue(valueName) as string;
+            if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+            return raw.Split(PendingSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"BufferFolderRecord.ReadList({valueName}) failed: " + ex.Message);
+            return Array.Empty<string>();
+        }
+    }
+
+    private void WriteList(string valueName, List<string> list)
+    {
+        try
+        {
+            using var key = _root.CreateSubKey(KeyPath);
+            if (list.Count == 0) key.DeleteValue(valueName, throwOnMissingValue: false);
+            else key.SetValue(valueName, string.Join(PendingSeparator, list), RegistryValueKind.String);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"BufferFolderRecord.WriteList({valueName}) failed: " + ex.Message);
+        }
+    }
+
     // ---- folders still to be emptied ----
 
     /// <summary>
