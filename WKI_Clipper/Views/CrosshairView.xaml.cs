@@ -30,7 +30,43 @@ public partial class CrosshairView : UserControl
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
-        IsVisibleChanged += (_, _) => PublishEditTarget();
+        IsVisibleChanged += (_, _) => OnVisibleChanged();
+    }
+
+    /// <summary>
+    /// A user's pick in "Gilt für" lasts while the widget is on screen; when it opens again the editor follows the
+    /// detected game (see <see cref="CrosshairProfileEditor.FollowDetectedGame"/>).
+    /// </summary>
+    private void OnVisibleChanged()
+    {
+        if (_editor is not null)
+        {
+            if (!IsVisible) _editor.ReleaseUserPick();
+            else { SyncToDetectedGame(); _targetBar?.Refresh(); _shownOverrides = _editor.HasOverrides; }
+        }
+        PublishEditTarget();
+    }
+
+    /// <summary>
+    /// Until the user picks a target, the editor shows the detected game's profile when it has crosshair values of
+    /// its own (so the board opened over a game previews and drags THAT look), else all games. Rebuilds the sliders
+    /// and the library marker when the target moved.
+    /// </summary>
+    private void SyncToDetectedGame()
+    {
+        if (_editor is null || App.Host is not { } host) return;
+        var game = host.CurrentGame;
+        if (!_editor.FollowDetectedGame(game?.ExeName, game?.DisplayName)) return;
+        RebuildSliders();
+        RefreshLibrary();
+    }
+
+    /// <summary>The detected game changed (the host calls this): the editor may follow it; list, hint and sliders follow.</summary>
+    public void OnGameChanged()
+    {
+        if (_targetBar is null) return;
+        SyncToDetectedGame();
+        RefreshTargets();
     }
 
     /// <summary>
@@ -106,7 +142,9 @@ public partial class CrosshairView : UserControl
 
         if (SlidersPanel.Children.Count > 0)
         {
+            SyncToDetectedGame();
             _targetBar?.Refresh();
+            _shownOverrides = _editor?.HasOverrides ?? false;
             PublishEditTarget();
             RefreshLibrary();
             return;
@@ -136,6 +174,9 @@ public partial class CrosshairView : UserControl
         };
 
         _editor = new CrosshairProfileEditor(host.Settings.Current);
+        // Start on the detected game's profile when it has crosshair values (before the bar and sliders are built).
+        _editor.FollowDetectedGame(host.CurrentGame?.ExeName, host.CurrentGame?.DisplayName);
+        _shownOverrides = _editor.HasOverrides;
         _targetBar = new CrosshairTargetBar(host.Settings.Current, _editor, () => host.CurrentGame);
         _targetBar.TargetChanged += OnTargetChanged;
         _targetBar.ProfileReset += () => { SaveAndRefresh(); RebuildSliders(); RefreshLibrary(); RefreshTargets(); };
@@ -317,6 +358,7 @@ public partial class CrosshairView : UserControl
         host.Settings.Save();
         RefreshLibrary();
         host.RefreshCrosshair();
+        RefreshTargets();   // a profile that only had this image is gone: list, hint and "Wie Standard" follow
     }
 
     // ---- sliders ----
@@ -326,14 +368,19 @@ public partial class CrosshairView : UserControl
         _building = true;
 
         // --- Positioning: snap-to-grid + a hard "dead center" reset ---
+        // Snapping and the grid are one global setting, not part of a game's profile: with a game selected the
+        // labels say so, so they do not look like they would create a profile.
+        bool forProfile = _editor!.IsProfile;
         var snapBox = new System.Windows.Controls.CheckBox
         {
-            Content = L.T("Nach Raster verschieben", "Snap to grid"),
+            Content = forProfile
+                ? L.T("Nach Raster verschieben (gilt für alle Spiele)", "Snap to grid (applies to all games)")
+                : L.T("Nach Raster verschieben", "Snap to grid"),
             IsChecked = S!.SnapToGrid,
             Foreground = (Brush)FindResource("TextBrush"),
             Margin = new Thickness(0, 0, 0, 2)
         };
-        var gridRow = MakeSlider(L.T("Raster", "Grid"), 5, 100, S.GridSize,
+        var gridRow = MakeSlider(forProfile ? L.T("Raster (alle)", "Grid (all)") : L.T("Raster", "Grid"), 5, 100, S.GridSize,
             v => S.GridSize = (int)Math.Round(v), "0 px");
         gridRow.IsEnabled = S.SnapToGrid;
         snapBox.Checked += (_, _) => { S.SnapToGrid = true; gridRow.IsEnabled = true; SaveAndRefresh(); };

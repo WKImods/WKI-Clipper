@@ -16,7 +16,7 @@ namespace WKI_Clipper.Services;
 public static class EffectiveSettings
 {
     /// <summary>
-    /// The profile key for an exe: the file name in lower case (".exe" added when missing). null for nothing, for
+    /// The profile key for an exe: the file name in lower case (".exe" added when it does not end in it). null for nothing, for
     /// the folder names the capture uses when no game is involved ("Desktop", "Unknown") and for a bare drive.
     /// </summary>
     public static string? ProfileKey(string? exe)
@@ -26,7 +26,9 @@ public static class EffectiveSettings
         if (name.Length == 0) return null;
         if (name.Equals(GameFolderNaming.DesktopFolder, StringComparison.OrdinalIgnoreCase)
             || name.Equals(GameFolderNaming.UnknownFolder, StringComparison.OrdinalIgnoreCase)) return null;
-        if (!Path.HasExtension(name)) name += ".exe";
+        // Only ".exe" counts as the extension: a dotted process name ("Minecraft.Windows", as the capture settings
+        // write it) is still missing its ".exe" and must meet the detected game's "minecraft.windows.exe".
+        if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name += ".exe";
         return name.ToLowerInvariant();
     }
 

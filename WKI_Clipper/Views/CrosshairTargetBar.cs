@@ -170,8 +170,8 @@ public sealed class CrosshairTargetBar : UserControl
             text = _editor.HasOverrides
                 ? L.T($"Eigene Werte für {name}: Sie gelten, solange {name} im Vordergrund ist. Alles, was hier nicht geändert wurde, kommt aus „Alle Spiele“.",
                       $"Own values for {name}: they apply while {name} is in front. Anything not changed here comes from \"All games\".")
-                : L.T($"{name} hat noch keine eigenen Werte — jede Änderung unten legt ein Profil an. Bis dahin gelten die Werte von „Alle Spiele“.",
-                      $"{name} has no values of its own yet - any change below creates a profile. Until then the \"All games\" values apply.");
+                : L.T($"{name} hat noch keine eigenen Werte — jede Änderung unten (außer Raster) legt ein Profil an. Bis dahin gelten die Werte von „Alle Spiele“.",
+                      $"{name} has no values of its own yet - any change below (except the grid) creates a profile. Until then the \"All games\" values apply.");
         }
 
         string now = game is null

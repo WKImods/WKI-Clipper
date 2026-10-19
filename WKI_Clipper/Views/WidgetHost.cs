@@ -111,9 +111,10 @@ public sealed class WidgetHost : IDisposable
         }
 
         // A profile places the crosshair relative to the centre of the monitor the game is on.
-        if (EffectiveSettings.CrosshairOffsetFor(settings, CrosshairPlacement.LookExe(game?.ExeName, editing)) is { } offset)
+        var lookExe = CrosshairPlacement.LookExe(game?.ExeName, editing);
+        if (EffectiveSettings.CrosshairOffsetFor(settings, lookExe) is { } offset)
         {
-            var (monitor, scale) = GameMonitor(game);
+            var (monitor, scale) = ReferenceMonitor(game, EffectiveSettings.ProfileKey(lookExe));
             (look.CenterX, look.CenterY) = CrosshairPlacement.Center(monitor, scale, offset.X, offset.Y);
         }
 
@@ -131,12 +132,39 @@ public sealed class WidgetHost : IDisposable
         BumpTopmost(_crosshair);
     }
 
-    /// <summary>The monitor (physical pixels) and its Windows scale that a profile's crosshair offset is measured from.</summary>
+    /// <summary>
+    /// The monitor (physical pixels) and its Windows scale the game is on RIGHT NOW: looked up from its window, so a
+    /// resolution change, an unplugged monitor or a moved window is followed. Falls back to the snapshot taken when
+    /// the game was detected, then to the primary monitor.
+    /// </summary>
     private static (LayoutRect Bounds, double Scale) GameMonitor(GameInfo? game)
     {
-        if (game?.Monitor is { } m && m.W > 0 && m.H > 0)
-            return (m, DisplayGeometry.ScaleAt(m.X + m.W / 2, m.Y + m.H / 2));
-        var screen = PrimaryScreen();
+        LayoutRect? live = null;
+        if (game is { Window: var hwnd } && hwnd != IntPtr.Zero && User32.IsWindow(hwnd))
+        {
+            try
+            {
+                var b = WinForms.Screen.FromHandle(hwnd).Bounds;
+                live = new LayoutRect(b.X, b.Y, b.Width, b.Height);
+            }
+            catch { /* window vanished meanwhile: the snapshot takes over */ }
+        }
+        var r = CrosshairPlacement.ResolveMonitor(live, game?.Monitor, DisplayGeometry.Bounds(PrimaryScreen()));
+        return (r, DisplayGeometry.ScaleAt(r.X + r.W / 2, r.Y + r.H / 2));
+    }
+
+    /// <summary>
+    /// The monitor a profile's offset is measured from: the game's own when the profile belongs to the game in front,
+    /// otherwise (another game's profile edited from the board, or no game) the monitor the crosshair is on - at the
+    /// drop point for a drag, else where the overlay currently sits. Preview and drag use this same reference.
+    /// </summary>
+    private (LayoutRect Bounds, double Scale) ReferenceMonitor(GameInfo? game, string? profileKey, double? atX = null, double? atY = null)
+    {
+        if (CrosshairPlacement.OffsetUsesGameMonitor(game?.ExeName, profileKey)) return GameMonitor(game);
+
+        WinForms.Screen screen = atX is double x && atY is double y ? DisplayGeometry.ScreenAt(x, y)
+            : _crosshair is { IsVisible: true } && DisplayGeometry.BoundsOf(_crosshair) is { } b ? DisplayGeometry.ScreenOf(b)
+            : PrimaryScreen();
         return (DisplayGeometry.Bounds(screen), DisplayGeometry.ScaleOf(screen));
     }
 
@@ -152,7 +180,7 @@ public sealed class WidgetHost : IDisposable
 
         if (CrosshairPlacement.DragProfileKey(settings, game?.ExeName, editing) is { } key)
         {
-            var (monitor, scale) = GameMonitor(game);
+            var (monitor, scale) = ReferenceMonitor(game, key, cx, cy);
             var (ox, oy) = CrosshairPlacement.OffsetFrom(monitor, scale, cx, cy);
             string? name = editing?.Key is not null && EffectiveSettings.ProfileKey(editing.Key) == key ? editing.DisplayName
                 : EffectiveSettings.ProfileKey(game?.ExeName) == key ? game!.DisplayName : null;
@@ -277,7 +305,7 @@ public sealed class WidgetHost : IDisposable
     {
         ApplyCrosshair();
         if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
-            cv.RefreshTargets();
+            cv.OnGameChanged();
     }
 
     private void OnPerfSampleForOverlay(PerfSample _)

@@ -160,8 +160,23 @@ public sealed class GameProfileTests : IDisposable
     [InlineData(@"C:\Games\Foo\Foo.exe", "foo.exe")]
     [InlineData("arma", "arma.exe")]
     [InlineData("VALORANT-Win64-Shipping.exe", "valorant-win64-shipping.exe")]
+    [InlineData("Minecraft.Windows", "minecraft.windows.exe")]        // a dot in the name is not an extension
+    [InlineData("Minecraft.Windows.exe", "minecraft.windows.exe")]
+    [InlineData("Game.v2.EXE", "game.v2.exe")]
     public void The_key_is_the_lower_case_exe_file_name(string exe, string key)
         => Assert.Equal(key, EffectiveSettings.ProfileKey(exe));
+
+    [Fact]
+    public void A_hand_written_process_name_with_a_dot_meets_the_detected_exe()
+    {
+        // The capture settings name processes without ".exe"; a key written in that style must still apply.
+        var loaded = JsonSerializer.Deserialize<AppSettings>(
+            @"{ ""GameProfiles"": { ""Minecraft.Windows"": { ""Crosshair"": { ""Scale"": 2 } } } }")!;
+        SettingsService.EnsureSections(loaded);
+
+        Assert.Equal(2, EffectiveSettings.CrosshairLookFor(loaded, "Minecraft.Windows.exe").Scale);
+        Assert.True(loaded.GameProfiles.ContainsKey("minecraft.windows.exe"));
+    }
 
     [Theory]
     [InlineData(null)] [InlineData("")] [InlineData("   ")]
@@ -489,6 +504,24 @@ public sealed class GameProfileTests : IDisposable
         Assert.False(GameProfiles.Remove(s, Arma));
         Assert.Equal(60, EffectiveSettings.ClipSecondsFor(s, Arma));
         Assert.Equal(1.0, EffectiveSettings.CrosshairLookFor(s, Arma).Scale);
+    }
+
+    [Fact]
+    public void A_profile_whose_only_override_was_the_deleted_image_is_removed()
+    {
+        var s = Settings();
+        Profile(s, "a.exe", look: new CrosshairLook { ActiveId = "gone" });                 // nothing else
+        Profile(s, "b.exe", seconds: 300, look: new CrosshairLook { ActiveId = "gone" });   // keeps its F9 length
+        Profile(s, "c.exe", look: new CrosshairLook { ActiveId = "gone", OffsetX = 3 });    // keeps its position
+        Profile(s, "d.exe", look: new CrosshairLook { ActiveId = "kept" });
+
+        GameProfiles.ForgetCrosshairId(s, "gone");
+
+        Assert.False(s.GameProfiles.ContainsKey("a.exe"));
+        Assert.Equal(300, s.GameProfiles["b.exe"].ClipSeconds);
+        Assert.Equal(3, s.GameProfiles["c.exe"].Crosshair!.OffsetX);
+        Assert.Equal("kept", s.GameProfiles["d.exe"].Crosshair!.ActiveId);
+        Assert.Null(GameProfiles.ActiveKey(s, "a.exe"));
     }
 
     [Fact]

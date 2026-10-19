@@ -219,6 +219,94 @@ public sealed class CrosshairProfileEditorTests
         Assert.False(e.IsProfile);
     }
 
+    // ---- following the detected game ----
+
+    private static (AppSettings S, CrosshairProfileEditor E) WithArmaLook()
+    {
+        var s = new AppSettings();
+        s.GameProfiles[ArmaKey] = new GameProfile { DisplayName = "Arma", Crosshair = new CrosshairLook { Scale = 2 } };
+        return (s, new CrosshairProfileEditor(s));
+    }
+
+    [Fact]
+    public void The_editor_follows_a_detected_game_that_has_crosshair_values_of_its_own()
+    {
+        var (s, e) = WithArmaLook();
+
+        Assert.True(e.FollowDetectedGame(Arma, "Arma Reforger"));
+
+        Assert.Equal(ArmaKey, e.TargetKey);
+        Assert.Equal("Arma Reforger", e.TargetName);
+        Assert.False(e.UserPicked);
+        Assert.Equal(2.0, e.Get(CrosshairField.Scale));
+        Assert.Equal(2.0, s.GameProfiles[ArmaKey].Crosshair!.Scale);   // nothing was written
+    }
+
+    [Fact]
+    public void A_game_without_crosshair_values_leaves_the_editor_on_all_games()
+    {
+        var s = new AppSettings();
+        s.GameProfiles[ArmaKey] = new GameProfile { ClipSeconds = 900 };   // only an F9 length: the crosshair is the standard
+        var e = new CrosshairProfileEditor(s);
+
+        Assert.False(e.FollowDetectedGame(Arma, "Arma"));
+        Assert.False(e.FollowDetectedGame("cs2.exe", "CS2"));
+        Assert.False(e.FollowDetectedGame(null, null));
+        Assert.Null(e.TargetKey);
+        Assert.Single(s.GameProfiles);   // following created nothing
+    }
+
+    [Fact]
+    public void When_the_game_leaves_the_editor_goes_back_to_all_games_and_following_the_same_game_twice_is_a_no_op()
+    {
+        var (_, e) = WithArmaLook();
+        Assert.True(e.FollowDetectedGame(Arma, "Arma"));
+        Assert.False(e.FollowDetectedGame(Arma, "Arma"));
+
+        Assert.True(e.FollowDetectedGame(null, null));
+        Assert.Null(e.TargetKey);
+        Assert.False(e.FollowDetectedGame(null, null));
+    }
+
+    [Fact]
+    public void Once_the_user_picked_a_target_the_editor_stays_there()
+    {
+        var (_, e) = WithArmaLook();
+        e.SetTarget(null, null);                       // the user explicitly chose "Alle Spiele"
+
+        Assert.True(e.UserPicked);
+        Assert.False(e.FollowDetectedGame(Arma, "Arma"));
+        Assert.Null(e.TargetKey);
+
+        e.SetTarget("cs2.exe", "CS2");
+        Assert.False(e.FollowDetectedGame(Arma, "Arma"));
+        Assert.Equal("cs2.exe", e.TargetKey);
+        Assert.False(e.FollowDetectedGame(null, null));
+        Assert.Equal("cs2.exe", e.TargetKey);
+    }
+
+    [Fact]
+    public void Closing_the_widget_releases_the_pick_so_the_next_opening_follows_the_game_again()
+    {
+        var (_, e) = WithArmaLook();
+        e.SetTarget(null, null);
+        e.ReleaseUserPick();
+
+        Assert.False(e.UserPicked);
+        Assert.True(e.FollowDetectedGame(Arma, "Arma"));
+        Assert.Equal(ArmaKey, e.TargetKey);
+    }
+
+    [Fact]
+    public void Edits_after_following_land_in_the_followed_profile()
+    {
+        var (s, e) = WithArmaLook();
+        e.FollowDetectedGame(Arma, "Arma");
+        e.Set(CrosshairField.Opacity, 0.4);
+        Assert.Equal(0.4, s.GameProfiles[ArmaKey].Crosshair!.Opacity);
+        Assert.Equal(1.0, s.Crosshair.Opacity);
+    }
+
     // ---- selector entries ----
 
     private static AppSettings WithProfiles()

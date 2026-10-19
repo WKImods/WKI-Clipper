@@ -87,6 +87,57 @@ public sealed class CrosshairPlacementTests
         Assert.Equal(0.33, nx);        // 0.3333... rounded to two decimals
     }
 
+    // ---- which monitor ----
+
+    [Fact]
+    public void The_monitor_the_window_is_on_now_beats_the_snapshot_and_the_primary()
+        => Assert.Equal(Right, CrosshairPlacement.ResolveMonitor(live: Right, snapshot: Main, primary: Left));
+
+    [Fact]
+    public void Without_a_live_monitor_the_snapshot_is_used_and_then_the_primary()
+    {
+        Assert.Equal(Main, CrosshairPlacement.ResolveMonitor(null, Main, Left));
+        Assert.Equal(Left, CrosshairPlacement.ResolveMonitor(null, null, Left));
+    }
+
+    [Fact]
+    public void An_empty_rectangle_counts_as_missing()
+    {
+        var empty = new LayoutRect(0, 0, 0, 0);
+        Assert.Equal(Main, CrosshairPlacement.ResolveMonitor(empty, Main, Left));
+        Assert.Equal(Left, CrosshairPlacement.ResolveMonitor(empty, empty, Left));
+    }
+
+    [Fact]
+    public void After_a_resolution_change_the_centre_follows_the_live_monitor_not_the_stale_one()
+    {
+        // detected on a 2560x1440 monitor, then switched to 1920x1080 (the snapshot still says 2560x1440)
+        var live = new LayoutRect(0, 0, 1920, 1080);
+        var monitor = CrosshairPlacement.ResolveMonitor(live, Main, Left);
+        Assert.Equal((960.0, 540.0), CrosshairPlacement.Center(monitor, 1.0, 0, 0));
+    }
+
+    [Fact]
+    public void The_game_monitor_is_the_reference_only_for_the_profile_of_the_game_in_front()
+    {
+        Assert.True(CrosshairPlacement.OffsetUsesGameMonitor(Arma, "armareforgersteam.exe"));
+        Assert.True(CrosshairPlacement.OffsetUsesGameMonitor("ARMAREFORGERSTEAM.EXE", "armareforgersteam.exe"));
+        Assert.False(CrosshairPlacement.OffsetUsesGameMonitor(Arma, "cs2.exe"));      // another game's profile
+        Assert.False(CrosshairPlacement.OffsetUsesGameMonitor(null, "cs2.exe"));      // no game in front
+        Assert.False(CrosshairPlacement.OffsetUsesGameMonitor(Arma, null));           // the standard has no offset
+    }
+
+    [Fact]
+    public void A_profile_dragged_to_the_second_monitor_while_its_game_is_not_running_stores_a_small_offset()
+    {
+        // Measured from the monitor the crosshair is dropped on (not the primary), the offset is 0/0 - so the
+        // crosshair later lands in the middle of the game's monitor instead of 2240 px beyond it.
+        var (ox, oy) = CrosshairPlacement.OffsetFrom(Right, 1.0, 3520, 540);
+        Assert.Equal((0.0, 0.0), (ox, oy));
+        var (wrongX, _) = CrosshairPlacement.OffsetFrom(Main, 1.0, 3520, 540);
+        Assert.Equal(2240.0, wrongX);   // what measuring from the primary used to store
+    }
+
     // ---- where does a drag go ----
 
     private static AppSettings Settings() => new();

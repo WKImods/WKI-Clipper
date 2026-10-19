@@ -91,12 +91,20 @@ public static class GameProfiles
             settings.GameProfiles.Remove(key);
     }
 
-    /// <summary>A library image was deleted: profiles must not keep pointing at it.</summary>
+    /// <summary>
+    /// A library image was deleted: profiles must not keep pointing at it. A profile whose only override was
+    /// that image is left with nothing and goes too (collected first, pruned after the loop).
+    /// </summary>
     public static void ForgetCrosshairId(AppSettings settings, string id)
     {
-        foreach (var p in settings.GameProfiles.Values)
-            if (p?.Crosshair is { } look && string.Equals(look.ActiveId, id, StringComparison.Ordinal))
-                look.ActiveId = null;
+        var touched = new List<string>();
+        foreach (var (key, p) in settings.GameProfiles)
+        {
+            if (p?.Crosshair is not { } look || !string.Equals(look.ActiveId, id, StringComparison.Ordinal)) continue;
+            look.ActiveId = null;
+            touched.Add(key);
+        }
+        foreach (var key in touched) Prune(settings, key);
     }
 
     /// <summary>True when the look sets at least one field.</summary>

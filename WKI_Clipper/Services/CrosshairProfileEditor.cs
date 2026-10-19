@@ -29,12 +29,47 @@ public sealed class CrosshairProfileEditor
     /// <summary>The selected game's label (for hints); empty for all games.</summary>
     public string TargetName => TargetKey is null ? "" : (string.IsNullOrWhiteSpace(_displayName) ? TargetKey : _displayName!);
 
-    /// <summary>Selects what is edited. An exe that names no game (null, Desktop) selects all games.</summary>
+    /// <summary>
+    /// The user chose the target in the selector. From then on the editor stays where they put it
+    /// (see <see cref="FollowDetectedGame"/>) until <see cref="ReleaseUserPick"/>.
+    /// </summary>
+    public bool UserPicked { get; private set; }
+
+    /// <summary>The USER selects what is edited. An exe that names no game (null, Desktop) selects all games.</summary>
     public void SetTarget(string? exe, string? displayName)
+    {
+        UserPicked = true;
+        Assign(exe, displayName);
+    }
+
+    private void Assign(string? exe, string? displayName)
     {
         TargetKey = EffectiveSettings.ProfileKey(exe);
         _displayName = TargetKey is null ? null : displayName;
     }
+
+    /// <summary>
+    /// Until the user picks a target themselves, the editor follows what is on screen: the detected game when it
+    /// has crosshair values of its own, else all games. That keeps the preview and a drag on the game's profile
+    /// when the board opens over a game - instead of silently editing the standard. Never writes anything.
+    /// True = the target changed (sliders and lists must be rebuilt).
+    /// </summary>
+    public bool FollowDetectedGame(string? gameExe, string? gameName)
+    {
+        if (UserPicked) return false;
+        string? key = GameProfiles.HasOverrides(EffectiveSettings.ProfileFor(_settings, gameExe)?.Crosshair)
+            ? EffectiveSettings.ProfileKey(gameExe) : null;
+        if (string.Equals(key, TargetKey, StringComparison.Ordinal))
+        {
+            if (key is not null && !string.IsNullOrWhiteSpace(gameName)) _displayName = gameName;
+            return false;
+        }
+        Assign(key, gameName);
+        return true;
+    }
+
+    /// <summary>The widget left the screen: the next time it opens it follows the detected game again.</summary>
+    public void ReleaseUserPick() => UserPicked = false;
 
     private CrosshairLook? ExistingLook => TargetKey is null ? null : EffectiveSettings.ProfileFor(_settings, TargetKey)?.Crosshair;
 
