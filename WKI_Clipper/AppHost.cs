@@ -67,6 +67,8 @@ public sealed class AppHost : IDisposable
     public SoundCueService Sounds { get; }
     /// <summary>"Discord 20 MB" / "Discord 500 MB": re-encodes a gallery clip to fit an upload limit.</summary>
     public DiscordCompressService Discord { get; }
+    /// <summary>The clip editor's cut ("Schneiden…"): stream copy or frame-accurate re-encode of a range of a gallery clip.</summary>
+    public ClipCutService ClipCut { get; }
     /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
     public SpotifyMediaService Spotify { get; } = new();
     /// <summary>Controller combos (hold View+Menu etc.): polls XInput in the background, raises the hotkey action names.</summary>
@@ -138,6 +140,10 @@ public sealed class AppHost : IDisposable
             GameInForeground = () => GameForegroundDetector.IsGameInForeground(
                 () => Foreground?.LastExternalForegroundPid,
                 Settings.Current.Capture.Mode == CaptureMode.Window ? Settings.Current.Capture.TargetProcessName : null)
+        };
+        ClipCut = new ClipCutService(Jobs, () => Settings.Current, GalleryMeta)
+        {
+            AvailableEncoders = () => AvailableCodecs.Select(c => c.FFmpegName)
         };
 
         // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
@@ -456,6 +462,7 @@ public sealed class AppHost : IDisposable
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();
         Discord.Dispose();
+        ClipCut.Dispose();
         Jobs.Dispose();
         FFmpeg.Dispose();
     }
