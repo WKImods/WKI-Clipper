@@ -141,6 +141,30 @@ public static class IrcParser
         return null;
     }
 
+    /// <summary>
+    /// True for Twitch's ROOMSTATE of <paramref name="channel"/> — the answer to a JOIN that only
+    /// a channel that really exists gets.
+    /// </summary>
+    public static bool IsRoomStateFor(string? line, string channel)
+    {
+        if (string.IsNullOrEmpty(line) || channel.Length == 0) return false;
+        int at = line.IndexOf(" ROOMSTATE #", StringComparison.Ordinal);
+        if (at < 0) return false;
+        string target = line[(at + " ROOMSTATE #".Length)..].TrimEnd('\r', '\n');
+        int sp = target.IndexOf(' ');
+        if (sp >= 0) target = target[..sp];
+        return target.Equals(channel, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>One tag of a tagged line, unescaped; null when absent.</summary>
+    public static string? TagValue(string? line, string key)
+    {
+        if (string.IsNullOrEmpty(line) || line[0] != '@') return null;
+        int sp = line.IndexOf(' ');
+        if (sp < 0) return null;
+        return Tag(ParseTags(line[1..sp]), key);
+    }
+
     /// <summary>True for a server PING — the caller must answer with PONG or get dropped.</summary>
     public static bool IsPing(string? line)
         => line != null && line.StartsWith("PING", StringComparison.Ordinal);

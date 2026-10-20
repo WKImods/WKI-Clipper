@@ -4,6 +4,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -19,7 +20,14 @@
                      KeyDown="OnChannelKey" LostFocus="OnChannelCommit" />
         </DockPanel>
 
-        <ScrollViewer x:Name="Scroller" Grid.Row="1" VerticalScrollBarVisibility="Auto"
+        <!-- Shown when Twitch never confirmed the channel (typo or renamed channel) -->
+        <Border x:Name="ChannelWarning" Grid.Row="1" Visibility="Collapsed"
+                Background="#26E5484D" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="10,6" Margin="0,0,0,6">
+            <TextBlock x:Name="ChannelWarningText" TextWrapping="Wrap" />
+        </Border>
+
+        <ScrollViewer x:Name="Scroller" Grid.Row="2" VerticalScrollBarVisibility="Auto"
                       ScrollChanged="OnScrollChanged">
             <StackPanel x:Name="Messages" />
         </ScrollViewer>
