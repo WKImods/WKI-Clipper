@@ -169,11 +169,134 @@ internal static class PhillipsPc
     public static readonly ShellLinkInfo SteamLink = Link(
         StartMenu + @"\Steam\Steam.lnk", @"C:\Program Files (x86)\Steam\Steam.exe", null, @"C:\Program Files (x86)\Steam");
 
-    /// <summary>Launcher exe names as the catalog will hand them to the resolver (superset of what the tests here need).</summary>
-    public static readonly IReadOnlySet<string> LauncherExeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    /// <summary>The real catalog set (it contains wgc_api.exe on purpose, so the resolver tests run against the same combination as the app).</summary>
+    public static IReadOnlySet<string> LauncherExeNames => LauncherCatalog.LauncherExeNames;
+
+    // ---- the rest of Phillip's Start menu and desktop (read from the PC on 2026-10-20) ----
+
+    private const string UserStartMenu = @"C:\Users\cr4zy\AppData\Roaming\Microsoft\Windows\Start Menu\Programs";
+    private const string UserDesktop = @"C:\Users\cr4zy\Desktop";
+
+    public const string SteamExePath = @"C:\Program Files (x86)\Steam\steam.exe";
+    public const string EaLauncherPath = @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\EALauncher.exe";
+    public const string EpicLauncherPath = @"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe";
+    public const string GogGalaxyPath = @"C:\Program Files (x86)\GOG Galaxy\GalaxyClient.exe";
+    public const string UbisoftConnectPath = @"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\UbisoftConnect.exe";
+    public const string BattleNetPath = @"C:\Program Files (x86)\Battle.net\Battle.net Launcher.exe";
+    public const string RockstarPath = @"C:\Program Files\Rockstar Games\Launcher\LauncherPatcher.exe";
+    public const string WargamingPath = @"C:\ProgramData\Wargaming.net\GameCenter\wgc.exe";
+    public const string CometPath = @"C:\Users\cr4zy\AppData\Local\Perplexity\Comet\Application\comet.exe";
+    public const string ChromePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
+    public const string BravePath = @"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
+    public const string IePath = @"C:\Program Files\Internet Explorer\iexplore.exe";
+    public const string XboxAumid = "Microsoft.GamingApp_8wekyb3d8bbwe!Microsoft.Xbox.App";
+
+    public static readonly ShellLinkInfo RockstarLink = Link(
+        StartMenu + @"\Rockstar Games\Rockstar Games Launcher.lnk", RockstarPath, null, @"C:\Program Files\Rockstar Games\Launcher\");
+    public static readonly ShellLinkInfo RockstarDesktopLink = Link(
+        Desktop + @"\Rockstar Games Launcher.lnk", RockstarPath, null, @"C:\Program Files\Rockstar Games\Launcher\");
+    public static readonly ShellLinkInfo EaLink = Link(
+        StartMenu + @"\EA\EA.lnk", EaLauncherPath, null, @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\");
+    public static readonly ShellLinkInfo EaAppRecovery = Link(
+        StartMenu + @"\EA\App Recovery.lnk", EaLauncherPath, "-recovery", @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop");
+    public static readonly ShellLinkInfo EaAppUpdater = Link(
+        StartMenu + @"\EA\EA app-Updater.lnk", @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\EAUpdater.exe");
+    public static readonly ShellLinkInfo EaUpdater = Link(
+        StartMenu + @"\EA\EA Updater.lnk", @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\EAUpdater.exe");
+    public static readonly ShellLinkInfo EaErrorReporter = Link(
+        StartMenu + @"\EA\EA Error Reporter.lnk", @"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\ErrorReporter.exe");
+    public static readonly ShellLinkInfo EpicLink = Link(
+        StartMenu + @"\Epic Games Launcher.lnk", EpicLauncherPath, null, @"C:\Program Files (x86)\Epic Games\");
+    public static readonly ShellLinkInfo GogLink = Link(
+        StartMenu + @"\GOG.com\GOG GALAXY\GOG GALAXY.lnk", GogGalaxyPath, null, @"C:\Program Files (x86)\GOG Galaxy");
+    /// <summary>A GOG GAME shortcut: it targets the launcher exe, too, but with arguments that start the game.</summary>
+    public static readonly ShellLinkInfo GogCyberpunk = Link(
+        StartMenu + @"\Cyberpunk 2077 [GOG.com]\Cyberpunk 2077.lnk", GogGalaxyPath,
+        "/command=runGame /gameId=1423049311 /path=\"D:\\Program Files\\GOG Galaxy\\Cyberpunk 2077\"", @"C:\Program Files (x86)\GOG Galaxy");
+    public static readonly ShellLinkInfo UbisoftLink = Link(
+        StartMenu + @"\Ubisoft\Ubisoft Connect\Ubisoft Connect.lnk", UbisoftConnectPath, null, @"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher");
+    public static readonly ShellLinkInfo UbisoftDesktopLink = Link(
+        Desktop + @"\Ubisoft Connect.lnk", UbisoftConnectPath, null, @"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher");
+    public static readonly ShellLinkInfo BattleNetLink = Link(
+        StartMenu + @"\Battle.net\Battle.net.lnk", BattleNetPath, null, @"C:\Program Files (x86)\Battle.net");
+    public static readonly ShellLinkInfo SteamStartMenuLink = Link(
+        UserStartMenu + @"\Steam\Steam.lnk", SteamExePath, null, @"C:\Program Files (x86)\Steam");
+    public static readonly ShellLinkInfo SteamDesktopLink = Link(
+        UserDesktop + @"\Steam.lnk", @"C:\Program Files (x86)\Steam\Steam.exe", null, @"C:\Program Files (x86)\Steam");
+
+    /// <summary>Everything the Start menu and the desktops hold, in the order a scan lists it (updaters and helpers before the launchers on purpose).</summary>
+    public static IReadOnlyList<ShellLinkInfo> StartMenuLinks() => new[]
     {
-        "steam.exe", "EALauncher.exe", "EpicGamesLauncher.exe", "GalaxyClient.exe", "UbisoftConnect.exe",
-        "Battle.net Launcher.exe", "LauncherPatcher.exe", "wgc.exe",
-        "EADesktop.exe", "Battle.net.exe", "Launcher.exe", "wgc_api.exe",
+        EaAppRecovery, EaAppUpdater, EaErrorReporter, EaUpdater, EaLink,
+        GogCyberpunk, GogLink,
+        WotUninstall, WotStart, WargamingGameCenter, AslainLogsArchiver,
+        RockstarDesktopLink, RockstarLink,
+        UbisoftDesktopLink, UbisoftLink,
+        SteamDesktopLink, SteamStartMenuLink,
+        EpicLink, BattleNetLink,
     };
+
+    /// <summary>The files the links above point at (an installed launcher has its exe on disk).</summary>
+    public static FakeFileSystem Programs()
+    {
+        return new FakeFileSystem()
+            .Add(SteamExePath).Add(EaLauncherPath)
+            .Add(@"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\EAUpdater.exe")
+            .Add(@"C:\Program Files\Electronic Arts\EA Desktop\EA Desktop\ErrorReporter.exe")
+            .Add(EpicLauncherPath).Add(GogGalaxyPath).Add(UbisoftConnectPath).Add(BattleNetPath)
+            .Add(RockstarPath).Add(WargamingPath)
+            .Add(CometPath).Add(ChromePath).Add(BravePath).Add(IePath);
+    }
+
+    private const string StartMenuInternet = @"SOFTWARE\Clients\StartMenuInternet";
+    private const string StartMenuInternet32 = @"SOFTWARE\WOW6432Node\Clients\StartMenuInternet";
+
+    private static void AddBrowser(FakeRegistry reg, string hive, string root, string key, string displayName, string command)
+    {
+        reg.Set(hive, root + "\\" + key, null, displayName);
+        reg.Set(hive, root + "\\" + key + @"\shell\open\command", null, command);
+    }
+
+    /// <summary>The StartMenuInternet registry as it is on the PC: Brave and Chrome in HKLM (and mirrored in WOW6432Node), Comet in HKCU, IE registered.</summary>
+    public static FakeRegistry BrowserRegistry()
+    {
+        var reg = new FakeRegistry();
+        foreach (var root in new[] { StartMenuInternet, StartMenuInternet32 })
+        {
+            AddBrowser(reg, "HKLM", root, "Brave", "Brave", "\"" + BravePath + "\"");
+            AddBrowser(reg, "HKLM", root, "Google Chrome", "Google Chrome", "\"" + ChromePath + "\"");
+            AddBrowser(reg, "HKLM", root, "IEXPLORE.EXE", "Internet Explorer", IePath);
+        }
+        AddBrowser(reg, "HKCU", StartMenuInternet, "Comet.LMIUB2OZQHSTWDG23CICJZPPGU", "Comet", "\"" + CometPath + "\"");
+        return reg;
+    }
+}
+
+/// <summary>In-memory registry: case-insensitive keys, "HKLM"/"HKCU" hives, null value name = the key's default value.</summary>
+internal sealed class FakeRegistry : IRegistryView
+{
+    private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _keys = new(StringComparer.OrdinalIgnoreCase);
+
+    public FakeRegistry Set(string hive, string key, string? value, string data)
+    {
+        var k = key.Trim('\\');
+        _values[hive + "|" + k + "|" + (value ?? "")] = data;
+        for (var p = k; p.Length > 0; p = p.Contains('\\') ? p[..p.LastIndexOf('\\')] : "")
+            _keys.Add(hive + "|" + p);
+        return this;
+    }
+
+    public string? GetString(string hive, string key, string? value)
+        => _values.TryGetValue(hive + "|" + key.Trim('\\') + "|" + (value ?? ""), out var v) ? v : null;
+
+    public IReadOnlyList<string> SubKeys(string hive, string key)
+    {
+        var prefix = hive + "|" + key.Trim('\\') + "\\";
+        return _keys
+            .Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && k.IndexOf('\\', prefix.Length) < 0)
+            .Select(k => k[prefix.Length..])
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 }
