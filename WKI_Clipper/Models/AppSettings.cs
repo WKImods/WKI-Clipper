@@ -30,6 +30,7 @@ public sealed class AppSettings
     public SoundSettings Sounds { get; set; } = new();
     public DiscordCompressSettings Discord { get; set; } = new();
     public GamepadSettings Gamepad { get; set; } = new();
+    public ShortcutSettings Shortcuts { get; set; } = new();
 
     /// <summary>
     /// Per-game overrides (F9 length, crosshair look), keyed by the lower-case exe file name. Keys are cleaned up

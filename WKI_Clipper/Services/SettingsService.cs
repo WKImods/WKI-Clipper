@@ -19,7 +19,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 10;
 
     public string SettingsFilePath { get; }
     /// <summary>Previous version of settings.json, kept by every Save (see <see cref="Save"/>).</summary>
@@ -112,6 +112,9 @@ public sealed class SettingsService
         s.Discord ??= new DiscordCompressSettings();
         s.Gamepad ??= new GamepadSettings();
         s.Gamepad.Bindings ??= new();
+        s.Shortcuts ??= new ShortcutSettings();
+        s.Shortcuts.Items ??= new();
+        s.Shortcuts.RecentGames ??= new();
         // Per-game profiles: keys of a hand-edited file may differ in case/path form from the ones the lookup uses.
         s.GameProfiles = GameProfiles.Normalize(s.GameProfiles);
     }
@@ -290,6 +293,16 @@ public sealed class SettingsService
             s.SchemaVersion = 9;
             changed = true;
             Logger.Info("Settings migrated to schema v9: Spotify + WhatsApp widgets ensured");
+        }
+
+        // v9 → v10: shortcut bar. The section arrives with its defaults (expanded, no items yet:
+        // the first scan fills the launchers); only the version is stamped.
+        if (s.SchemaVersion < 10)
+        {
+            s.Shortcuts ??= new ShortcutSettings();
+            s.SchemaVersion = 10;
+            changed = true;
+            Logger.Info("Settings migrated to schema v10: shortcut bar section ensured");
         }
 
         return changed;
