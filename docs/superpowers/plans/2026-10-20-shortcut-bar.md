@@ -298,7 +298,7 @@ public static class ShortcutHotkeys { public const string Prefix = "App:"; publi
 **Files:**
 - Create `Services/Shortcuts/BarLayout.cs` and `Views/ShortcutBarWindow.cs`.
 - Modify `Views/WidgetHost.cs`:
-  - `OpenBoard` shows the bar after the sidebar; `CloseBoard` hides it.
+  - `OpenBoard` shows the bar after the sidebar and calls `RescanAsync()` when the last scan is older than 60 s; `CloseBoard` hides it.
   - Run the widget obstacle step next to `KeepWidgetsClearOfSidebar`.
 - Tests: `BarLayoutTests.cs`, `ShortcutBarWindowTests.cs` (STA, offscreen).
 
