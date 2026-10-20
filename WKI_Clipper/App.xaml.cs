@@ -98,7 +98,7 @@ public partial class App : Application
                     L.T($"Speichere {len}-Clip … {pct} %", $"Saving {len} clip … {pct} %"),
                     p.Phase == SavePhase.Finalizing
                         ? L.T("Finalisiere …", "Finalizing …")
-                        : L.T("F8/F9 sind bis zum Ende gesperrt.", "F8/F9 are blocked until it finishes."),
+                        : SaveKeyHints.BlockedUntilFinished(Host.Settings.Current),   // the user's own keys, not the defaults
                     durationSeconds: 20);
             };
             Host.ReplayBuffer.ReplaySaved += (_, info) =>

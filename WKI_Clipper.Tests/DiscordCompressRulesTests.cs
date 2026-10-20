@@ -157,6 +157,91 @@ public sealed class DiscordCompressRulesTests
         Assert.Equal(CompressEncoder.Amf, DiscordCompressRules.PickEncoder(new[] { "H264_AMF" }));   // case-insensitive
     }
 
+    // ---- disk space the result needs (the runner asks for this much free space, plus its reserve) ----
+
+    [Fact]
+    public void A_short_clip_needs_room_for_its_real_size_not_for_the_whole_target()
+    {
+        // 30 s at 10.7 Mbit/s video + 128 kbit/s audio: about 41 MB, however big the 500 MB target is
+        long bytes = DiscordCompressRules.EstimateOutputBytes(10_700_000, 30, audioBytes: 490_000, muxBytes: 70_000, targetBytes: 500_000_000);
+
+        Assert.InRange(bytes, 40_000_000, 60_000_000);
+    }
+
+    [Fact]
+    public void The_estimate_never_asks_for_more_than_the_target_and_has_room_for_an_overshoot()
+    {
+        // a clip that really fills the target: the target is the bound
+        Assert.Equal(20_000_000, DiscordCompressRules.EstimateOutputBytes(2_700_000, 60, 100_000, 10_000, 20_000_000));
+        // video 1 000 000 bit/s for 8 s = 1 MB; a hardware encoder may overshoot by a quarter
+        Assert.Equal(1_250_000L + 50_000 + 5_000, DiscordCompressRules.EstimateOutputBytes(1_000_000, 8, 50_000, 5_000, 500_000_000));
+    }
+
+    [Fact]
+    public void The_estimate_is_never_negative_or_zero_for_nonsense_input()
+    {
+        Assert.True(DiscordCompressRules.EstimateOutputBytes(0, 0, 0, 0, 20_000_000) >= 0);
+        Assert.True(DiscordCompressRules.EstimateOutputBytes(-5, -5, 0, 0, 20_000_000) >= 0);
+    }
+
+    // ---- x264 pass-1 statistics (.log and .mbtree) ----
+
+    [Fact]
+    public void The_pass_one_statistics_of_a_ten_minute_1080p60_clip_are_about_600_MB()
+    {
+        // 8160 macroblocks x 2 bytes + a text line per frame, 36 000 frames
+        long bytes = DiscordCompressRules.EstimatePassLogBytes(1920, 1080, 60, TimeSpan.FromMinutes(10));
+
+        Assert.InRange(bytes, 550_000_000, 700_000_000);
+    }
+
+    [Fact]
+    public void The_statistics_estimate_scales_with_picture_rate_and_length_and_survives_nonsense()
+    {
+        long a = DiscordCompressRules.EstimatePassLogBytes(854, 480, 30, TimeSpan.FromMinutes(10));
+        long b = DiscordCompressRules.EstimatePassLogBytes(1920, 1080, 60, TimeSpan.FromMinutes(10));
+
+        Assert.True(a < b / 5);
+        Assert.Equal(0, DiscordCompressRules.EstimatePassLogBytes(1920, 1080, 60, TimeSpan.Zero));
+        Assert.Equal(0, DiscordCompressRules.EstimatePassLogBytes(0, 0, 0, TimeSpan.FromMinutes(1)));
+    }
+
+    // ---- stale statistics files ----
+
+    [Theory]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-0.log", true)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-0.log.mbtree", true)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-0.log.temp", true)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-0.log.mbtree.temp", true)]
+    [InlineData("WKI_0123456789ABCDEF0123456789ABCDEF-0.LOG", true)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-1.log", true)]
+    [InlineData("wki_test.log", false)]
+    [InlineData("wki_0123456789abcdef-0.log", false)]
+    [InlineData("0123456789abcdef0123456789abcdef-0.log", false)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef-0.log.bak", false)]
+    [InlineData("wki_0123456789abcdef0123456789abcdef.mp4", false)]
+    public void Only_the_pass_statistics_files_of_the_compress_are_recognised(string name, bool expected)
+        => Assert.Equal(expected, DiscordCompressRules.IsPassStatsFile(name));
+
+    // ---- which ffmpeg failure is the decoder's ----
+
+    [Theory]
+    [InlineData("[h264 @ 000001] Failed setup for format d3d11: hwaccel initialisation returned error.", true)]
+    [InlineData("[AVHWDeviceContext @ 0000] Device creation failed: -12.", true)]
+    [InlineData("Failed to create a D3D11VA device", true)]
+    [InlineData("Error initializing the decoder: hwaccel", true)]
+    [InlineData("[vost#0:0/h264_amf @ 0000] Error while opening encoder - maybe incorrect parameters such as bit_rate", false)]
+    [InlineData("av_interleaved_write_frame(): No space left on device", false)]
+    [InlineData("C:\\clips\\a.mp4: Invalid data found when processing input", false)]
+    [InlineData("[AMF] Failed to create AMF context: AMF_DIRECTX_FAILED", false)]
+    [InlineData("", false)]
+    public void Only_a_decoder_or_hwaccel_message_makes_the_hardware_decoding_the_suspect(string stderr, bool expected)
+        => Assert.Equal(expected, DiscordCompressRules.LooksLikeHwDecodeFailure(stderr));
+
+    [Fact]
+    public void A_missing_stderr_is_no_decoder_failure()
+        => Assert.False(DiscordCompressRules.LooksLikeHwDecodeFailure(null));
+
     // ---- settings ----
 
     [Fact]

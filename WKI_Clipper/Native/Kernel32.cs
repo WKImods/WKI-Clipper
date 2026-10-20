@@ -73,6 +73,20 @@ internal static class Kernel32
     public const uint STILL_ACTIVE = 259;
     public const int ERROR_ACCESS_DENIED = 5;
 
+    // --- I/O accounting of a process (sign of life for the ffmpeg stall watchdog) ---
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+
+    /// <summary>Needs PROCESS_QUERY_[LIMITED_]INFORMATION - the handle <see cref="System.Diagnostics.Process"/> holds for a process it started has it.</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetProcessIoCounters(SafeHandle hProcess, out IO_COUNTERS lpIoCounters);
+
     // --- Volume GUID of a drive (Recycle Bin settings are stored per volume) ---
 
     /// <summary>"C:\" to "\\?\Volume{guid}\". The mount point needs its trailing backslash.</summary>

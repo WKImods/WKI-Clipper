@@ -249,8 +249,8 @@ public partial class AboutView : UserControl
             Content = L.T("Nur komprimieren, wenn kein Spiel im Vordergrund läuft", "Only compress while no game is in the foreground"),
             IsChecked = discord.OnlyWhenNoGame,
             Foreground = (Brush)FindResource("TextBrush"),
-            ToolTip = L.T("Der Auftrag wartet in der Warteschlange, bis das Spiel beendet oder verlassen wurde (kostet sonst FPS).",
-                          "The job waits until you leave the game (compressing costs FPS)."),
+            ToolTip = L.T("Ein Auftrag – und jeder weitere Versuch oder Durchgang – startet erst, wenn kein Spiel im Vordergrund läuft (kostet sonst FPS). Ein gerade laufender Encode wird nicht unterbrochen.",
+                          "A job - and each further attempt or pass - only starts while no game is in the foreground (compressing costs FPS). An encode that is already running is not interrupted."),
             Margin = new Thickness(0, 2, 0, 0)
         };
         onlyNoGame.Checked += (_, _) => { discord.OnlyWhenNoGame = true; host.Settings.Save(); };

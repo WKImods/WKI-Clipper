@@ -26,6 +26,10 @@ public partial class ClipsView : UserControl
     private bool _rebuildingGameFilter;
     /// <summary>The status line of each row that can show a Discord compress (by file path), rebuilt with the rows.</summary>
     private readonly Dictionary<string, CompressStatusLine> _compressLines = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The note title of each row, rebuilt with the rows: a reload commits the ones being edited first.</summary>
+    private readonly List<RowNoteTitle> _titles = new();
+    /// <summary>A reload a background job asked for while a note was being typed waits here for the end of that edit.</summary>
+    private readonly ReloadDeferral _reloadDeferral = new();
 
     public ClipsView()
     {
@@ -81,10 +85,35 @@ public partial class ClipsView : UserControl
     /// <summary>From a background thread: the editor saved a cut or moved an original to the Recycle Bin.</summary>
     private void OnCutFinished(string path)
     {
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (App.Host is { } host) Reload(host);
-        }));
+        Dispatcher.BeginInvoke(new Action(RequestReload));
+    }
+
+    private bool AnyNoteEditing() => _titles.Any(t => t.IsEditing);
+
+    /// <summary>
+    /// A reload because something happened in the background (a cut or a compress finished). While a note is being
+    /// typed it waits for the end of that edit instead of making the box vanish; <see cref="OnNoteEditEnded"/> runs it.
+    /// </summary>
+    private void RequestReload()
+    {
+        if (App.Host is { } host && _reloadDeferral.Request(AnyNoteEditing())) Reload(host);
+    }
+
+    private void OnNoteEditEnded()
+    {
+        if (_reloadDeferral.TakeIfDue(AnyNoteEditing()))
+            Dispatcher.BeginInvoke(new Action(() => { if (App.Host is { } host) Reload(host); }));   // after this edit has closed completely
+    }
+
+    /// <summary>
+    /// The notes file became readable with the edit that just ran: the rows built while it was locked show empty
+    /// notes for files that have one. Rebuilding them (once this edit has closed) keeps the next edit from starting
+    /// at a stale blank.
+    /// </summary>
+    private void ReloadIfRecovered(bool hadProblem)
+    {
+        if (hadProblem && App.Host?.GalleryMeta.HasProblem == false)
+            Dispatcher.BeginInvoke(new Action(() => { if (App.Host is { } host) Reload(host); }));
     }
 
     private void OnSearchChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -175,6 +204,14 @@ public partial class ClipsView : UserControl
 
     private void Reload(AppHost host)
     {
+        // Whatever waited for the end of an edit is satisfied by this reload.
+        _reloadDeferral.Done();
+        // Commit open note edits now, synchronously: a removed text box only loses focus (and saves) later, at input
+        // priority - after the new rows have read the old note and showed it.
+        foreach (var title in _titles.ToList())
+            if (title.IsEditing) title.Commit();
+        _titles.Clear();
+
         ItemsContainer.Children.Clear();
         _compressLines.Clear();
 
@@ -303,10 +340,18 @@ public partial class ClipsView : UserControl
         var meta = App.Host?.GalleryMeta;
         var title = new RowNoteTitle(meta?.GetNote(it.Key) ?? "", text =>
         {
+            bool hadProblem = App.Host?.GalleryMeta.HasProblem == true;
             var saved = App.Host?.GalleryMeta.SetNote(it.Key, text) ?? false;
             UpdateMetaWarning();
+            ReloadIfRecovered(hadProblem);
             return saved;
+        }, () =>
+        {
+            App.Host?.GalleryMeta.DiscardNoteEdit(it.Key);   // Esc after a failed save: take the edit back, write nothing
+            UpdateMetaWarning();
         });
+        _titles.Add(title);
+        title.EditEnded += OnNoteEditEnded;
         var fileName = new TextBlock
         {
             Text = it.FileName,
@@ -374,11 +419,13 @@ public partial class ClipsView : UserControl
         favBtn.Click += (_, _) =>
         {
             if (App.Host is null) return;
+            bool hadProblem = App.Host.GalleryMeta.HasProblem;
             App.Host.GalleryMeta.ToggleFavorite(it.Key);   // a failed save is kept in memory; the banner says so
             bool now = App.Host.GalleryMeta.IsFavorite(it.Key);
             favBtn.Foreground = (Brush)FindResource(now ? "AccentBrush" : "MutedBrush");
             UpdateMetaWarning();
             if (_favOnly) Reload(App.Host);
+            else ReloadIfRecovered(hadProblem);
         };
         Grid.SetColumn(favBtn, 3);
         grid.Children.Add(favBtn);
@@ -510,7 +557,7 @@ public partial class ClipsView : UserControl
         {
             if (_compressLines.TryGetValue(snapshot.SourcePath, out var line)) line.Apply(snapshot);
             // A finished compress is a new file in the "Komprimiert" folder.
-            if (snapshot.Outcome == CompressStatus.Succeeded && App.Host is { } host) Reload(host);
+            if (snapshot.Outcome == CompressStatus.Succeeded) RequestReload();
         }));
     }
 

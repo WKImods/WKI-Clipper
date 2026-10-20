@@ -52,6 +52,13 @@ public sealed class FFmpegJobRunner : IDisposable
     // Created on the first job: an app that never encodes never makes a job object.
     private readonly Lazy<KillOnCloseJob?> _guard = new(KillOnCloseJob.TryCreate);
 
+    /// <summary>
+    /// Bytes the running ffmpeg has read so far (null = unknown). Part of the stall watchdog: after the last frame
+    /// ffmpeg rewrites the whole file for +faststart, which prints no progress for minutes on a slow disk but reads
+    /// all the while. Test seam.
+    /// </summary>
+    internal Func<Process, ulong?> ReadCounter { get; init; } = ProcessIo.TryGetReadBytes;
+
     public FFmpegJobRunner(FFmpegService ffmpeg) : this(ffmpeg.FFmpegPath) { }
 
     /// <param name="freeSpace">Free bytes on the drive of a folder, null if unknown (test seam).</param>
@@ -235,6 +242,7 @@ public sealed class FFmpegJobRunner : IDisposable
         if (stallAfter > TimeSpan.Zero)
         {
             var poll = TimeSpan.FromMilliseconds(Math.Clamp(stallAfter.TotalMilliseconds / 4, 100, 1000));
+            ulong lastRead = 0;
             watchdog = Task.Run(async () =>
             {
                 try
@@ -243,6 +251,15 @@ public sealed class FFmpegJobRunner : IDisposable
                     {
                         await Task.WhenAny(Task.Delay(poll, jobCts.Token), exited.Task).ConfigureAwait(false);
                         if (exited.Task.IsCompleted || jobCts.IsCancellationRequested) return;
+
+                        // Alive is not only "the encoded position moved": the +faststart rewrite after the last frame
+                        // prints no progress, but it reads the file again, block by block. A hung driver or a
+                        // vanished network input reads nothing.
+                        if (ReadCounter(process) is { } read && read != lastRead)
+                        {
+                            lastRead = read;
+                            Interlocked.Exchange(ref lastAdvance, Stopwatch.GetTimestamp());
+                        }
                         if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastAdvance)) > stallAfter)
                         {
                             Volatile.Write(ref stalled, 1);
@@ -279,7 +296,7 @@ public sealed class FFmpegJobRunner : IDisposable
                 if (Volatile.Read(ref stalled) == 1)
                 {
                     var seconds = ((int)stallAfter.TotalSeconds).ToString(CultureInfo.InvariantCulture);
-                    Logger.Warn($"FFmpeg job terminated: no progress for {seconds} s ({job.FinalPath})");
+                    Logger.Warn($"FFmpeg job terminated: no progress and no reading for {seconds} s ({job.FinalPath})");
                     return Failed(-1,
                         L.T($"ffmpeg hat seit {seconds} s keinen Fortschritt gemeldet und wurde beendet.",
                             $"ffmpeg made no progress for {seconds} s and was terminated."), stderr);

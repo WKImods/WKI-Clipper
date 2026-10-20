@@ -354,6 +354,8 @@ public sealed class AppHost : IDisposable
         _ = DetectCodecsAsync();
         // A crash mid-encode leaves "*.mp4.part" behind; sweep those off the UI thread.
         _ = Task.Run(() => Jobs.CleanupStaleParts());
+        // ... and a 2-pass Discord compress leaves its pass-1 statistics (hundreds of MB for a long clip) the same way.
+        _ = Task.Run(() => Discord.CleanupStaleStats());
         // A crashed clipper leaves its FPS session running (providers stay enabled until reboot).
         _ = Task.Run(FrameTimeMonitor.StopOrphanedSession);
         StartGameWatcherIfNeeded();

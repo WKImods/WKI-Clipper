@@ -191,6 +191,150 @@ public sealed class GalleryMetaSafetyTests : IDisposable
         Assert.Equal("x", new GalleryMetaService(_path).GetNote("clips|a.mp4"));
     }
 
+    // ---- an emptied main file and the backup next to it ----
+
+    private string Bak => _store + ".bak";
+
+    /// <summary>A store with two saves, so the .bak holds the first version (evidence + more) and the main file the second.</summary>
+    private void WriteGoodStoreWithBak()
+    {
+        var good = new GalleryMetaService(_path);
+        good.SetNote("clips|a.mp4", "evidence");
+        good.SetNote("clips|b.mp4", "more");
+        File.WriteAllText(Bak, File.ReadAllText(_store));   // the .bak is the complete notes file
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \r\n  ")]
+    public void An_emptied_store_with_a_good_bak_is_restored_from_the_bak_instead_of_replacing_it(string emptied)
+    {
+        WriteGoodStoreWithBak();
+        var goodBak = File.ReadAllText(Bak);
+        File.WriteAllText(_store, emptied);               // a sync tool, a restore or a profile reset left this behind
+
+        var svc = new GalleryMetaService(_path);
+
+        Assert.False(svc.HasProblem);
+        Assert.Equal("evidence", svc.GetNote("clips|a.mp4"));
+        Assert.Equal("more", svc.GetNote("clips|b.mp4"));
+        Assert.Equal(emptied, File.ReadAllText(_store));  // loading alone changes nothing
+
+        Assert.True(svc.SetNote("clips|c.mp4", "c"));     // the first save must not end the only good copy
+        var re = new GalleryMetaService(_path);
+        Assert.Equal("evidence", re.GetNote("clips|a.mp4"));
+        Assert.Equal("c", re.GetNote("clips|c.mp4"));
+        Assert.Contains(Siblings("gallery-meta.v2.restored-*.json"), p => File.ReadAllText(p) == goodBak);   // and a copy of it stays
+    }
+
+    [Fact]
+    public void An_emptied_store_without_any_bak_is_still_just_an_empty_store()
+    {
+        File.WriteAllText(_store, "");
+
+        var svc = new GalleryMetaService(_path);
+
+        Assert.False(svc.HasProblem);
+        Assert.Empty(Siblings("gallery-meta.v2.*-*.json"));
+        Assert.True(svc.SetNote("clips|a.mp4", "x"));
+    }
+
+    [Fact]
+    public void An_emptied_store_with_an_empty_bak_starts_empty_without_copies()
+    {
+        File.WriteAllText(_store, "");
+        File.WriteAllText(Bak, "  ");
+
+        var svc = new GalleryMetaService(_path);
+
+        Assert.False(svc.HasProblem);
+        Assert.Empty(Siblings("gallery-meta.v2.*-*.json"));
+    }
+
+    [Fact]
+    public void An_emptied_store_with_an_unusable_bak_keeps_a_copy_of_that_bak_before_anything_is_written()
+    {
+        const string garbage = "{ \"entries\": { \"clips|a.mp4\": { \"note\": \"half";
+        File.WriteAllText(_store, "");
+        File.WriteAllText(Bak, garbage);
+
+        var svc = new GalleryMetaService(_path);
+
+        Assert.False(svc.HasProblem);
+        var copy = Assert.Single(Siblings("gallery-meta.v2.bak-corrupt-*.json"));
+        Assert.Equal(garbage, File.ReadAllText(copy));
+        svc.SetNote("clips|b.mp4", "new");                // overwrites the .bak with the empty main file
+        Assert.Equal(garbage, File.ReadAllText(copy));    // the copy is still the original
+    }
+
+    [Fact]
+    public void A_locked_bak_is_incomplete_not_missing_and_nothing_is_written_until_it_can_be_read()
+    {
+        WriteGoodStoreWithBak();
+        File.WriteAllText(_store, "");
+        var mainBefore = File.ReadAllText(_store);
+        var bakBefore = File.ReadAllText(Bak);
+
+        GalleryMetaService svc;
+        using (new FileStream(Bak, FileMode.Open, FileAccess.Read, FileShare.None))   // a scanner holds the backup
+        {
+            svc = new GalleryMetaService(_path);
+            Assert.True(svc.HasProblem);
+            Assert.False(svc.SetNote("clips|c.mp4", "typed while the backup was locked"));
+            Assert.Equal(mainBefore, File.ReadAllText(_store));
+        }
+        Assert.Equal(bakBefore, File.ReadAllText(Bak));
+
+        Assert.True(svc.Flush());                         // readable now: restore, overlay, save
+        Assert.False(svc.HasProblem);
+        var re = new GalleryMetaService(_path);
+        Assert.Equal("evidence", re.GetNote("clips|a.mp4"));
+        Assert.Equal("typed while the backup was locked", re.GetNote("clips|c.mp4"));
+    }
+
+    [Fact]
+    public void A_corrupt_store_with_a_locked_bak_is_incomplete_too()
+    {
+        WriteGoodStoreWithBak();
+        File.WriteAllText(_store, "not json at all");
+
+        using (new FileStream(Bak, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var svc = new GalleryMetaService(_path);
+            Assert.True(svc.HasProblem);
+            Assert.False(svc.SetNote("clips|c.mp4", "x"));
+            Assert.Equal("not json at all", File.ReadAllText(_store));
+            Assert.Single(Siblings("gallery-meta.v2.corrupt-*.json"));   // the corrupt main file was still kept
+        }
+    }
+
+    [Fact]
+    public void A_missing_store_with_a_locked_bak_is_incomplete_too()
+    {
+        WriteGoodStoreWithBak();
+        File.Delete(_store);
+
+        using (new FileStream(Bak, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var svc = new GalleryMetaService(_path);
+            Assert.True(svc.HasProblem);
+            Assert.False(svc.SetNote("clips|c.mp4", "x"));
+            Assert.False(File.Exists(_store));            // no half-empty store appears next to the backup
+        }
+    }
+
+    [Fact]
+    public void Restoring_from_the_bak_keeps_a_copy_of_it_once()
+    {
+        WriteGoodStoreWithBak();
+        File.WriteAllText(_store, "garbage");
+
+        _ = new GalleryMetaService(_path);
+        _ = new GalleryMetaService(_path);
+
+        Assert.Single(Siblings("gallery-meta.v2.restored-*.json"));
+    }
+
     [Fact]
     public void Unparsable_old_file_is_kept_aside_once_and_ignored()
     {
@@ -251,6 +395,180 @@ public sealed class GalleryMetaSafetyTests : IDisposable
             Assert.True(s.IsFavorite("clips|a.mp4"));                    // the star typed meanwhile
             Assert.Equal("untouched", s.GetNote("clips|z.mp4"));
         }
+    }
+
+    // ---- edits made blind (the gallery showed an empty store while the real file was locked) ----
+
+    private GalleryMetaService LockedWithEvidence(out IDisposable fileLock)
+    {
+        var first = new GalleryMetaService(_path);
+        first.SetNote("clips|a.mp4", "Cheater XYZ 12:30");
+        first.SetTags("clips|a.mp4", new[] { "ban" });
+        first.SetFavorite("clips|a.mp4", true);
+        fileLock = new FileStream(_store, FileMode.Open, FileAccess.Read, FileShare.None);
+        var svc = new GalleryMetaService(_path);
+        Assert.Equal("", svc.GetNote("clips|a.mp4"));   // what the gallery shows: nothing
+        return svc;
+    }
+
+    [Fact]
+    public void A_note_typed_blind_is_added_to_the_note_the_file_has_never_replacing_it()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        Assert.False(svc.SetNote("clips|a.mp4", "typed over a note nobody saw"));
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+
+        foreach (var s in new[] { svc, new GalleryMetaService(_path) })
+            Assert.Equal("Cheater XYZ 12:30\ntyped over a note nobody saw", s.GetNote("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void Clearing_a_note_blind_cannot_delete_the_real_one()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        svc.SetNote("clips|a.mp4", "oops");
+        svc.SetNote("clips|a.mp4", "");                // what Esc used to write: the displayed (empty) note
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+
+        Assert.Equal("Cheater XYZ 12:30", new GalleryMetaService(_path).GetNote("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void Tags_set_blind_are_added_to_the_tags_the_file_has()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        svc.SetTags("clips|a.mp4", new[] { "proof", "BAN" });   // "BAN" is the file's "ban" again
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+
+        Assert.Equal(new[] { "ban", "proof" }, new GalleryMetaService(_path).GetTags("clips|a.mp4").OrderBy(t => t));
+    }
+
+    [Fact]
+    public void A_star_toggled_off_blind_cannot_remove_the_star_the_file_has()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        svc.ToggleFavorite("clips|a.mp4");   // the row showed no star: this "adds" one
+        svc.ToggleFavorite("clips|a.mp4");   // and this "removes" it again
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+
+        Assert.True(new GalleryMetaService(_path).IsFavorite("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void A_blind_edit_of_a_file_the_store_does_not_know_still_just_lands()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        svc.SetNote("clips|new.mp4", "new note");
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+
+        var re = new GalleryMetaService(_path);
+        Assert.Equal("new note", re.GetNote("clips|new.mp4"));
+        Assert.Equal("Cheater XYZ 12:30", re.GetNote("clips|a.mp4"));
+    }
+
+    // ---- cancelling an edit whose save failed ----
+
+    [Fact]
+    public void A_discarded_blind_note_edit_leaves_the_note_of_the_file_alone_and_writes_nothing_of_its_own()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        Assert.False(svc.SetNote("clips|a.mp4", "typed, then Esc"));
+
+        svc.DiscardNoteEdit("clips|a.mp4");
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+        Assert.Equal("Cheater XYZ 12:30", svc.GetNote("clips|a.mp4"));
+        Assert.Equal("Cheater XYZ 12:30", new GalleryMetaService(_path).GetNote("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void Discarding_after_the_lock_ended_but_the_write_failed_goes_back_to_the_note_of_the_file()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        fileLock.Dispose();
+        Directory.CreateDirectory(_store + ".tmp");                       // the file reads again, but the write fails
+        Assert.False(svc.SetNote("clips|a.mp4", "typed blind"));          // re-read and merged in memory, not on disk
+
+        svc.DiscardNoteEdit("clips|a.mp4");
+
+        Assert.Equal("Cheater XYZ 12:30", svc.GetNote("clips|a.mp4"));   // not "", which a later write would make permanent
+        Directory.Delete(_store + ".tmp");
+        Assert.True(svc.Flush());
+        Assert.Equal("Cheater XYZ 12:30", new GalleryMetaService(_path).GetNote("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void Discarding_after_a_failed_write_puts_the_previous_note_back_in_memory()
+    {
+        var svc = new GalleryMetaService(_path);
+        svc.SetNote("clips|a.mp4", "first");
+        Directory.CreateDirectory(_store + ".tmp");   // the write fails
+        Assert.False(svc.SetNote("clips|a.mp4", "second"));
+        Assert.Equal("second", svc.GetNote("clips|a.mp4"));
+
+        svc.DiscardNoteEdit("clips|a.mp4");
+
+        Assert.Equal("first", svc.GetNote("clips|a.mp4"));
+        Directory.Delete(_store + ".tmp");
+        Assert.True(svc.Flush());
+        Assert.False(svc.HasProblem);
+        Assert.Equal("first", new GalleryMetaService(_path).GetNote("clips|a.mp4"));
+    }
+
+    [Fact]
+    public void Discarding_a_note_of_a_file_that_had_none_removes_the_entry_again()
+    {
+        var svc = new GalleryMetaService(_path);
+        svc.SetNote("clips|other.mp4", "keep");
+        Directory.CreateDirectory(_store + ".tmp");
+        Assert.False(svc.SetNote("clips|b.mp4", "never saved"));
+
+        svc.DiscardNoteEdit("clips|b.mp4");
+        Directory.Delete(_store + ".tmp");
+        Assert.True(svc.Flush());
+
+        var re = new GalleryMetaService(_path);
+        Assert.Equal("", re.GetNote("clips|b.mp4"));
+        Assert.Equal("keep", re.GetNote("clips|other.mp4"));
+    }
+
+    [Fact]
+    public void Discarding_leaves_the_other_pending_edits_of_the_file_in_place()
+    {
+        var svc = LockedWithEvidence(out var fileLock);
+        svc.ToggleFavorite("clips|b.mp4");
+        svc.SetNote("clips|b.mp4", "discard me");
+
+        svc.DiscardNoteEdit("clips|b.mp4");
+        fileLock.Dispose();
+
+        Assert.True(svc.Flush());
+        var re = new GalleryMetaService(_path);
+        Assert.True(re.IsFavorite("clips|b.mp4"));
+        Assert.Equal("", re.GetNote("clips|b.mp4"));
+    }
+
+    [Fact]
+    public void Discarding_after_the_edit_reached_the_disk_changes_nothing()
+    {
+        var svc = new GalleryMetaService(_path);
+        Assert.True(svc.SetNote("clips|a.mp4", "saved"));
+
+        svc.DiscardNoteEdit("clips|a.mp4");
+
+        Assert.Equal("saved", svc.GetNote("clips|a.mp4"));
+        svc.DiscardNoteEdit("clips|never-edited.mp4");   // and an unknown key is fine
     }
 
     [Fact]

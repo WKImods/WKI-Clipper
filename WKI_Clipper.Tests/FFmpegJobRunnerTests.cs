@@ -568,6 +568,45 @@ public sealed class FFmpegJobRunnerIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task A_job_whose_position_stands_still_but_which_keeps_reading_is_not_called_hung()
+    {
+        if (_ffmpeg is null) return;
+        // The +faststart rewrite: no progress line for a long time, but the file is read all the while. Simulated with
+        // a hung ffmpeg whose read counter keeps moving for 3 s and then stops.
+        var origin = Stopwatch.GetTimestamp();
+        ulong counter = 0;
+        using var runner = new FFmpegJobRunner(_ffmpeg, null, PartsFile)
+        {
+            ReadCounter = _ => Stopwatch.GetElapsedTime(origin) < TimeSpan.FromSeconds(3) ? ++counter : counter
+        };
+        var hungFinal = Path.Combine(_dir, "rewrite.mp4");
+        var hung = new FFmpegJob($"-i pipe:0 -f mp4 \"{FFmpegJob.PartPathFor(hungFinal)}\"", hungFinal,
+                                 TimeSpan.FromSeconds(10), 1000, StallTimeout: TimeSpan.FromSeconds(1));
+
+        var result = await runner.RunAsync(hung, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(FFmpegJobStatus.Failed, result.Status);   // it ends as hung - but only after the reading stopped
+        Assert.True(Stopwatch.GetElapsedTime(origin) >= TimeSpan.FromSeconds(3.8), "ended after " + Stopwatch.GetElapsedTime(origin));
+        Assert.False(File.Exists(FFmpegJob.PartPathFor(hungFinal)));
+    }
+
+    [Fact]
+    public async Task A_hung_ffmpeg_reads_nothing_so_the_real_counter_does_not_keep_it_alive()
+    {
+        if (_ffmpeg is null) return;
+        using var runner = NewRunner();   // the real ReadCounter
+        var hungFinal = Path.Combine(_dir, "hung-real-counter.mp4");
+        var hung = new FFmpegJob($"-i pipe:0 -f mp4 \"{FFmpegJob.PartPathFor(hungFinal)}\"", hungFinal,
+                                 TimeSpan.FromSeconds(10), 1000, StallTimeout: TimeSpan.FromSeconds(2));
+
+        var watch = Stopwatch.StartNew();
+        var result = await runner.RunAsync(hung, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(FFmpegJobStatus.Failed, result.Status);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(30), "took " + watch.Elapsed);   // not kept alive by anything it reads
+    }
+
+    [Fact]
     public async Task A_healthy_slow_job_is_not_mistaken_for_a_hung_one()
     {
         if (_ffmpeg is null) return;

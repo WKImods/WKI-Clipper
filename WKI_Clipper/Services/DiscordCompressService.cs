@@ -80,6 +80,26 @@ public sealed class DiscordCompressService : IDisposable
     internal Func<TimeSpan, CancellationToken, Task> Delay { get; init; } = Task.Delay;
     internal TimeSpan GamePollInterval { get; init; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>Test seam: runs a job instead of the runner.</summary>
+    internal Func<FFmpegJob, IProgress<FFmpegProgress>?, CancellationToken, Task<FFmpegJobResult>>? RunJob { get; init; }
+
+    /// <summary>Test seam: reads the video's properties instead of starting ffmpeg.</summary>
+    internal Func<string, CancellationToken, Task<MediaProbe?>>? Probe { get; init; }
+
+    /// <summary>Test seam: free bytes on the drive of a folder, null if unknown.</summary>
+    internal Func<string, long?> FreeSpace { get; init; } = FFmpegJobRunner.DefaultFreeSpace;
+
+    /// <summary>
+    /// Where the x264 pass-1 statistics live: a folder of our own, so they are never mixed with other programs'
+    /// temp files and the sweep at startup knows exactly where to look.
+    /// </summary>
+    internal string StatsFolder { get; init; } = DefaultStatsFolder;
+
+    internal static string DefaultStatsFolder => Path.Combine(Path.GetTempPath(), "WKI_Clipper", "pass-logs");
+
+    private Task<FFmpegJobResult> RunOnRunnerAsync(FFmpegJob job, IProgress<FFmpegProgress>? progress, CancellationToken ct)
+        => RunJob is { } custom ? custom(job, progress, ct) : _runner.RunAsync(job, progress, ct);
+
     /// <summary>Raised on every change of a job (from a background thread).</summary>
     public event Action<CompressJobSnapshot>? JobChanged;
 
@@ -252,7 +272,9 @@ public sealed class DiscordCompressService : IDisposable
             return Failed(L.T("Nur Videos können komprimiert werden.", "Only videos can be compressed."));
 
         progress?.Report(new CompressProgress(CompressStage.Analyzing, 0, 0));
-        var probe = await _runner.ProbeAsync(source, ct).ConfigureAwait(false);
+        var probe = Probe is { } customProbe
+            ? await customProbe(source, ct).ConfigureAwait(false)
+            : await _runner.ProbeAsync(source, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (probe is null || probe.VideoCodec is null || probe.Width <= 0 || probe.Height <= 0)
             return Failed(L.T("Das Video konnte nicht gelesen werden.", "The video could not be read."));
@@ -322,23 +344,34 @@ public sealed class DiscordCompressService : IDisposable
         string Source, string DesiredPath, SizePlan Plan, TimeSpan Duration, long Target,
         int AudioTracks, IProgress<CompressProgress>? Progress);
 
-    private Task<AttemptRun> RunAttemptAsync(AttemptContext c, CompressEncoder hardware, AttemptSpec spec, CancellationToken ct)
+    private async Task<AttemptRun> RunAttemptAsync(AttemptContext c, CompressEncoder hardware, AttemptSpec spec, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        return spec.Software ? RunSoftwareAsync(c, spec, ct) : RunHardwareAsync(c, hardware, spec, ct);
+        // "Only while no game is in the foreground" holds for every ffmpeg this job starts - each retry (the size was
+        // missed, a lower rung, the software fallback) and, below, between the two passes - not just for the first start.
+        await WaitForNoGameAsync(c.Progress, ct).ConfigureAwait(false);
+        return spec.Software
+            ? await RunSoftwareAsync(c, spec, ct).ConfigureAwait(false)
+            : await RunHardwareAsync(c, hardware, spec, ct).ConfigureAwait(false);
     }
+
+    /// <summary>What this attempt can write to the disk (see <see cref="DiscordCompressRules.EstimateOutputBytes"/>).</summary>
+    private static long EstimateBytes(AttemptContext c, CompressRung rung, long requestBps)
+        => DiscordCompressRules.EstimateOutputBytes(requestBps, c.Duration.TotalSeconds, rung.AudioBytes, rung.MuxBytes, c.Target);
 
     private async Task<AttemptRun> RunHardwareAsync(AttemptContext c, CompressEncoder encoder, AttemptSpec spec, CancellationToken ct)
     {
         var rung = c.Plan.Rungs[spec.RungIndex];
         var part = FFmpegJob.PartPathFor(c.DesiredPath);
+        long estimate = EstimateBytes(c, rung, spec.RequestBps);
 
         var result = await RunWithHwDecodeFallbackAsync(
             hw => new FFmpegJob(
                 FFmpegCommandBuilder.BuildCompress(new CompressCommand(
                     c.Source, part, encoder, rung.Width, rung.Fps, spec.RequestBps, rung.AudioKbps, c.AudioTracks, hw)),
-                c.DesiredPath, c.Duration, c.Target),
-            EncodeProgress(c, spec.Number, 0, 1), ct).ConfigureAwait(false);
+                c.DesiredPath, c.Duration, estimate),
+            EncodeProgress(c, spec.Number, 0, 1), ct,
+            beforeRetry: () => WaitForNoGameAsync(c.Progress, ct)).ConfigureAwait(false);
 
         return ToRun(result);
     }
@@ -350,7 +383,25 @@ public sealed class DiscordCompressService : IDisposable
         var part = FFmpegJob.PartPathFor(c.DesiredPath);
         // A long software encode must not take every core from the game.
         int threads = Math.Max(2, Environment.ProcessorCount / 2);
-        string passLog = Path.Combine(Path.GetTempPath(), "wki_" + Guid.NewGuid().ToString("N"));
+
+        // Pass 1 writes its statistics (the .log and the much bigger .mbtree: ~600 MB for ten minutes of 1080p60) and
+        // runs as a discarding job, which the runner does not check for disk space. So it is checked here, on the
+        // drive of our own statistics folder - not on whatever %TEMP% happens to be.
+        long statsBytes = DiscordCompressRules.EstimatePassLogBytes(rung.Width, rung.Height, rung.Fps, c.Duration);
+        if (FreeSpace(StatsFolder) is { } free && !FFmpegJobRules.HasEnoughDiskSpace(free, statsBytes))
+        {
+            var drive = Path.GetPathRoot(Path.GetFullPath(StatsFolder)) ?? StatsFolder;
+            return new AttemptRun(AttemptOutcome.Failed, 0, null,
+                L.T($"Zu wenig Speicherplatz für die 2-Pass-Statistik auf {drive}.",
+                    $"Not enough free disk space for the 2-pass statistics on {drive}."));
+        }
+        try { Directory.CreateDirectory(StatsFolder); }
+        catch (Exception ex)
+        {
+            return new AttemptRun(AttemptOutcome.Failed, 0, null,
+                L.T($"Ordner für die 2-Pass-Statistik nicht verfügbar: {ex.Message}", $"Folder for the 2-pass statistics unavailable: {ex.Message}"));
+        }
+        string passLog = Path.Combine(StatsFolder, "wki_" + Guid.NewGuid().ToString("N"));   // unique per attempt
 
         CompressCommand Command(bool hw, int pass) => new(
             c.Source, part, CompressEncoder.X264, rung.Width, rung.Fps, spec.RequestBps, rung.AudioKbps, c.AudioTracks,
@@ -360,35 +411,85 @@ public sealed class DiscordCompressService : IDisposable
         {
             var first = await RunWithHwDecodeFallbackAsync(
                 hw => new FFmpegJob(FFmpegCommandBuilder.BuildCompress(Command(hw, 1)), passLog, c.Duration, 0, DiscardOutput: true),
-                EncodeProgress(c, spec.Number, 0, 0.5), ct).ConfigureAwait(false);
+                EncodeProgress(c, spec.Number, 0, 0.5), ct,
+                beforeRetry: () => WaitForNoGameAsync(c.Progress, ct)).ConfigureAwait(false);
             if (!first.Succeeded) return ToRun(first);
 
+            // The statistics survive the wait; the second pass is a second ffmpeg and must not start in front of a game.
+            await WaitForNoGameAsync(c.Progress, ct).ConfigureAwait(false);
+
             var second = await RunWithHwDecodeFallbackAsync(
-                hw => new FFmpegJob(FFmpegCommandBuilder.BuildCompress(Command(hw, 2)), c.DesiredPath, c.Duration, c.Target),
-                EncodeProgress(c, spec.Number, 0.5, 0.5), ct).ConfigureAwait(false);
+                hw => new FFmpegJob(FFmpegCommandBuilder.BuildCompress(Command(hw, 2)), c.DesiredPath, c.Duration,
+                                    EstimateBytes(c, rung, spec.RequestBps)),
+                EncodeProgress(c, spec.Number, 0.5, 0.5), ct,
+                beforeRetry: () => WaitForNoGameAsync(c.Progress, ct)).ConfigureAwait(false);
             return ToRun(second);
         }
         finally { DeletePassLogs(passLog); }
     }
 
     /// <summary>
-    /// Runs the job with hardware decoding; if ffmpeg itself fails (not a cancel, not "never started") it is run
-    /// once more without, and hardware decoding stays off for the rest of the session.
+    /// Runs the job with hardware decoding. Only when ffmpeg's own error names the hardware decoder (d3d11va, hwaccel
+    /// setup) is it run once more without - an encoder that would not start, a full disk or a damaged input fail the
+    /// same way on the CPU, and a second run would only double the time. Hardware decoding stays off for the rest of
+    /// the session only if that second run WORKED: then it is proven to have been the cause.
     /// </summary>
-    private async Task<FFmpegJobResult> RunWithHwDecodeFallbackAsync(
-        Func<bool, FFmpegJob> makeJob, IProgress<FFmpegProgress> progress, CancellationToken ct)
+    internal async Task<FFmpegJobResult> RunWithHwDecodeFallbackAsync(
+        Func<bool, FFmpegJob> makeJob, IProgress<FFmpegProgress> progress, CancellationToken ct, Func<Task>? beforeRetry = null)
     {
         bool hw = !_hwDecodeBroken;
-        var result = await _runner.RunAsync(makeJob(hw), progress, ct).ConfigureAwait(false);
-        if (hw && result.Status == FFmpegJobStatus.Failed && result.ExitCode is not (0 or -1))
+        var result = await RunOnRunnerAsync(makeJob(hw), progress, ct).ConfigureAwait(false);
+        if (hw && result.Status == FFmpegJobStatus.Failed && result.ExitCode is not (0 or -1)
+            && DiscordCompressRules.LooksLikeHwDecodeFailure(result.StderrTail))
         {
-            Logger.Warn($"Hardware decoding failed (exit {result.ExitCode}) - continuing without it: {result.Message}");
-            _hwDecodeBroken = true;
-            result = await _runner.RunAsync(makeJob(false), progress, ct).ConfigureAwait(false);
+            Logger.Warn($"Hardware decoding failed (exit {result.ExitCode}) - trying again without it: {result.Message}");
+            if (beforeRetry is not null) await beforeRetry().ConfigureAwait(false);
+            var retry = await RunOnRunnerAsync(makeJob(false), progress, ct).ConfigureAwait(false);
+            if (retry.Succeeded)
+            {
+                _hwDecodeBroken = true;
+                Logger.Info("The job worked without hardware decoding - it stays off for this session.");
+            }
+            result = retry;
         }
         return result;
     }
 
+    // ---------------------------------------------------------------- leftovers of crashed runs
+
+    /// <summary>
+    /// Deletes pass-1 statistics a crash or a killed clipper left behind: the files named like ours ("wki_&lt;32 hex&gt;-0.log"
+    /// and its ".mbtree"/".temp" companions) in our statistics folder and - from earlier versions, which wrote them
+    /// straight into %TEMP% - there, but only when older than 10 minutes. Meant for startup. Returns how many were removed.
+    /// </summary>
+    public int CleanupStaleStats(DateTime? nowUtc = null, TimeSpan? minAge = null)
+        => SweepStaleStats(new[] { StatsFolder, Path.GetTempPath() }, nowUtc ?? DateTime.UtcNow, minAge ?? TimeSpan.FromMinutes(10));
+
+    internal static int SweepStaleStats(IEnumerable<string> folders, DateTime nowUtc, TimeSpan minAge)
+    {
+        int removed = 0;
+        foreach (var folder in folders)
+        {
+            try
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var file in Directory.EnumerateFiles(folder, "wki_*"))
+                {
+                    if (!DiscordCompressRules.IsPassStatsFile(Path.GetFileName(file))) continue;
+                    try
+                    {
+                        if (nowUtc - File.GetLastWriteTimeUtc(file) <= minAge) continue;   // a job may be writing it right now
+                        File.Delete(file);
+                        removed++;
+                        Logger.Info("Removed stale 2-pass statistics: " + file);
+                    }
+                    catch (Exception ex) { Logger.Warn($"Could not remove '{file}': {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { Logger.Warn($"Could not sweep '{folder}': {ex.Message}"); }
+        }
+        return removed;
+    }
     private static AttemptRun ToRun(FFmpegJobResult result)
     {
         switch (result.Status)

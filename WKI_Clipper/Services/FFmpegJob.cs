@@ -17,8 +17,10 @@ namespace WKI_Clipper.Services;
 /// <param name="EstimatedOutputBytes">Rough size of the result, for the free-disk-space check.</param>
 /// <param name="ThreadCap">Optional encoder thread limit (keeps a long software encode from starving the game).</param>
 /// <param name="StallTimeout">
-/// A job whose encoded position does not advance for this long is terminated (a hung driver or a
-/// vanished network input would otherwise block the queue forever). Null = 60 s, zero = never.
+/// A job that shows no sign of life for this long is terminated (a hung driver or a vanished network
+/// input would otherwise block the queue forever). A sign of life is an encoded position that advances OR
+/// ffmpeg reading data: the +faststart rewrite after the last frame prints no progress but reads the whole
+/// file again, which takes minutes on a slow disk. Null = 60 s, zero = never.
 /// </param>
 /// <param name="DiscardOutput">
 /// The job writes no output file (a measuring pass, output <c>-f null NUL</c>). The runner then neither

@@ -243,8 +243,9 @@ public partial class VideoSettingsView : UserControl
         {
             Style = (Style)FindResource("MutedStyle"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
             Visibility = Visibility.Collapsed,
-            Text = L.T("Lange Rückblicke: Für lückenlose Beweise das Aufnahme-Ziel „Ganzer Monitor“ oder „Bestimmtes Fenster“ wählen. In „Automatik“ fehlt die Zeit in anderen Fenstern (Alt-Tab) — sie wird im Clip als Kapitel und Notiz markiert. Strg+F9-Aufnahmen pausieren den Buffer. Fenstergröße/Vollbild, Codec oder FPS ändern beendet den bisherigen Rückblick. Ein 30-min-Clip braucht je nach Platte 20–90 s zum Speichern; F8/F9 sind solange gesperrt.",
-                       "Long lookbacks: for gap-free evidence choose the capture target “Whole monitor” or “Specific window”. In “Automatic” the time spent in other windows (Alt-Tab) is missing — it is marked in the clip as a chapter and a note. Ctrl+F9 recordings pause the buffer. Changing the window size/fullscreen, codec or FPS ends the previous lookback. A 30 min clip takes 20–90 s to save depending on the disk; F8/F9 are blocked meanwhile.")
+            Text = L.T("Lange Rückblicke: Für lückenlose Beweise das Aufnahme-Ziel „Ganzer Monitor“ oder „Bestimmtes Fenster“ wählen. In „Automatik“ fehlt die Zeit in anderen Fenstern (Alt-Tab) — sie wird im Clip als Kapitel und Notiz markiert. Strg+F9-Aufnahmen pausieren den Buffer. Fenstergröße/Vollbild, Codec oder FPS ändern beendet den bisherigen Rückblick. Ein 30-min-Clip braucht je nach Platte 20–90 s zum Speichern; ",
+                       "Long lookbacks: for gap-free evidence choose the capture target “Whole monitor” or “Specific window”. In “Automatic” the time spent in other windows (Alt-Tab) is missing — it is marked in the clip as a chapter and a note. Ctrl+F9 recordings pause the buffer. Changing the window size/fullscreen, codec or FPS ends the previous lookback. A 30 min clip takes 20–90 s to save depending on the disk; ")
+                   + SaveKeyHints.BlockedMeanwhile(host.Settings.Current)   // the user's own keys, not the defaults
         };
         // "Automatisch" names what Auto really keeps in RAM on this machine with these settings (not a fixed "5 min").
         System.Windows.Controls.ComboBoxItem? autoItem = null;

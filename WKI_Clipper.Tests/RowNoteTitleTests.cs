@@ -51,6 +51,7 @@ internal static class WpfTestSupport
 public sealed class RowNoteTitleTests
 {
     private static bool Store(string text) => true;
+    private static void NoDiscard() { }
 
     [Fact]
     public void Without_a_note_the_title_takes_no_room()
@@ -58,7 +59,7 @@ public sealed class RowNoteTitleTests
         var (visible, text) = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("", Store);
+            var t = new RowNoteTitle("", Store, NoDiscard);
             return (t.Visibility == Visibility.Visible, t.Note);
         });
         Assert.False(visible);
@@ -71,7 +72,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("cheater at the airfield", Store);
+            var t = new RowNoteTitle("cheater at the airfield", Store, NoDiscard);
             var label = (TextBlock)t.Child;
             return (t.Visibility, label.Text, label.FontWeight == FontWeights.SemiBold);
         });
@@ -86,7 +87,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("old", Store);
+            var t = new RowNoteTitle("old", Store, NoDiscard);
             t.BeginEdit();
             var box = (TextBox)t.Child;
             return (t.IsEditing, box.Text, box.MaxLength);
@@ -104,7 +105,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("", s => { saved.Add(s); return true; });
+            var t = new RowNoteTitle("", s => { saved.Add(s); return true; }, NoDiscard);
             t.NoteChanged += raised.Add;
             t.BeginEdit();
             Assert.Equal(Visibility.Visible, t.Visibility);   // visible while editing although empty
@@ -130,7 +131,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("keep", s => { saved.Add(s); return true; });
+            var t = new RowNoteTitle("keep", s => { saved.Add(s); return true; }, NoDiscard);
             t.BeginEdit();
             ((TextBox)t.Child).Text = "typed but abandoned";
 
@@ -151,7 +152,7 @@ public sealed class RowNoteTitleTests
         var visibility = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("old", Store);
+            var t = new RowNoteTitle("old", Store, NoDiscard);
             t.BeginEdit();
             ((TextBox)t.Child).Text = "   ";
             t.HandleKey(Key.Enter);
@@ -168,7 +169,7 @@ public sealed class RowNoteTitleTests
         WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("same", s => { saved.Add(s); return true; });
+            var t = new RowNoteTitle("same", s => { saved.Add(s); return true; }, NoDiscard);
             t.BeginEdit();
             t.Commit();   // what losing the keyboard focus does
             return 0;
@@ -183,7 +184,7 @@ public sealed class RowNoteTitleTests
         var note = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("", s => { saved.Add(s); return true; });
+            var t = new RowNoteTitle("", s => { saved.Add(s); return true; }, NoDiscard);
             t.BeginEdit();
             ((TextBox)t.Child).Text = "typed, then clicked elsewhere";
             t.Commit();   // what losing the keyboard focus does
@@ -201,7 +202,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("old", _ => { calls++; return false; });
+            var t = new RowNoteTitle("old", _ => { calls++; return false; }, NoDiscard);
             t.NoteChanged += raised.Add;
             t.BeginEdit();
             ((TextBox)t.Child).Text = "typed evidence";
@@ -227,7 +228,7 @@ public sealed class RowNoteTitleTests
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("", s => { saved.Add(s); return diskOk; });
+            var t = new RowNoteTitle("", s => { saved.Add(s); return diskOk; }, NoDiscard);
             t.BeginEdit();
             ((TextBox)t.Child).Text = "typed evidence";
             t.HandleKey(Key.Enter);          // fails
@@ -243,23 +244,172 @@ public sealed class RowNoteTitleTests
     }
 
     [Fact]
-    public void Escape_after_a_failed_save_takes_the_typed_text_back_out_of_the_store()
+    public void Escape_after_a_failed_save_takes_the_typed_text_back_without_writing_anything()
     {
         var saved = new List<string>();
+        int discarded = 0;
         var info = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("keep", s => { saved.Add(s); return false; });
+            // "": the row shows an empty note although the store may hold a real one (the file was locked at load)
+            var t = new RowNoteTitle("", s => { saved.Add(s); return false; }, () => discarded++);
             t.BeginEdit();
             ((TextBox)t.Child).Text = "abandoned";
             t.HandleKey(Key.Enter);          // fails; the store holds "abandoned" in memory
-            t.HandleKey(Key.Escape);         // cancel: the old note goes back in
+            t.HandleKey(Key.Escape);         // cancel: the store drops that edit - it must not write the displayed ""
             return (t.IsEditing, t.Note);
         });
 
         Assert.False(info.IsEditing);
-        Assert.Equal("keep", info.Note);
-        Assert.Equal(new[] { "abandoned", "keep" }, saved);
+        Assert.Equal("", info.Note);
+        Assert.Equal(new[] { "abandoned" }, saved);   // the failed attempt only; Esc saved nothing
+        Assert.Equal(1, discarded);
+    }
+
+    [Fact]
+    public void Escape_without_a_failed_save_does_not_even_ask_the_store()
+    {
+        int discarded = 0;
+        WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var t = new RowNoteTitle("keep", Store, () => discarded++);
+            t.BeginEdit();
+            ((TextBox)t.Child).Text = "typed but abandoned";
+            t.HandleKey(Key.Escape);
+            return 0;
+        });
+        Assert.Equal(0, discarded);
+    }
+
+    [Fact]
+    public void A_discard_that_throws_still_closes_the_editor()
+    {
+        var info = WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var t = new RowNoteTitle("keep", _ => false, () => throw new InvalidOperationException("boom"));
+            t.BeginEdit();
+            ((TextBox)t.Child).Text = "x";
+            t.HandleKey(Key.Enter);
+            t.HandleKey(Key.Escape);
+            return t.IsEditing;
+        });
+        Assert.False(info);
+    }
+
+    [Fact]
+    public void Leaving_the_editor_raises_EditEnded_once_whatever_way_it_ends()
+    {
+        var ended = new List<string>();
+        WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var t = new RowNoteTitle("a", Store, NoDiscard);
+            t.EditEnded += () => ended.Add("ended:" + t.IsEditing);   // already closed when it is raised
+
+            t.BeginEdit();
+            t.HandleKey(Key.Enter);          // saved
+            t.BeginEdit();
+            t.HandleKey(Key.Escape);         // cancelled
+            t.BeginEdit();
+            t.Commit();                      // focus lost
+            t.Commit();                      // not editing any more: nothing
+            return 0;
+        });
+        Assert.Equal(new[] { "ended:False", "ended:False", "ended:False" }, ended);
+    }
+
+    [Fact]
+    public void A_failed_save_does_not_end_the_edit()
+    {
+        int ended = 0;
+        WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var t = new RowNoteTitle("a", _ => false, NoDiscard);
+            t.EditEnded += () => ended++;
+            t.BeginEdit();
+            ((TextBox)t.Child).Text = "b";
+            t.HandleKey(Key.Enter);
+            return 0;
+        });
+        Assert.Equal(0, ended);
+    }
+
+    // ---- focus moves to the box's own Cut/Copy/Paste menu: the edit goes on ----
+
+    [Fact]
+    public void The_boxs_own_context_menu_taking_the_focus_does_not_end_the_edit()
+    {
+        var info = WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var box = new TextBox();
+            var menu = new ContextMenu { PlacementTarget = box };
+            var item = new MenuItem { Header = "Einfügen" };
+            menu.Items.Add(item);
+            return (RowNoteTitle.KeepsEditingWhenFocusMovesTo(menu, box),
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(item, box));   // arrow keys move the focus to an item
+        });
+        Assert.True(info.Item1);
+        Assert.True(info.Item2);
+    }
+
+    [Fact]
+    public void Any_other_focus_target_ends_the_edit_and_so_does_no_target_at_all()
+    {
+        var info = WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var box = new TextBox();
+            var otherBox = new TextBox();
+            var foreignMenu = new ContextMenu { PlacementTarget = otherBox };   // e.g. the row menu of another row
+            var foreignItem = new MenuItem();
+            foreignMenu.Items.Add(foreignItem);
+            var menuWithoutTarget = new ContextMenu();
+            return (RowNoteTitle.KeepsEditingWhenFocusMovesTo(otherBox, box),
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(new Button(), box),
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(foreignMenu, box),
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(foreignItem, box),
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(menuWithoutTarget, box),
+                    // null = nothing has the focus, which is also what happens when the row is removed by a refresh
+                    // while the box has it: that must still save what was typed.
+                    RowNoteTitle.KeepsEditingWhenFocusMovesTo(null, box));
+        });
+        Assert.False(info.Item1);
+        Assert.False(info.Item2);
+        Assert.False(info.Item3);
+        Assert.False(info.Item4);
+        Assert.False(info.Item5);
+        Assert.False(info.Item6);
+    }
+
+    [Fact]
+    public void Opening_the_menu_and_choosing_paste_keeps_the_box_so_the_pasted_text_is_in_it()
+    {
+        // the focus handler itself: LostKeyboardFocus towards the box's menu must not commit
+        var saved = new List<string>();
+        var info = WpfTestSupport.OnSta(() =>
+        {
+            WpfTestSupport.EnsureTheme();
+            var t = new RowNoteTitle("", s => { saved.Add(s); return true; }, NoDiscard);
+            t.BeginEdit();
+            var box = (TextBox)t.Child;
+            box.Text = "Cheater: ";
+            var menu = new ContextMenu { PlacementTarget = box };
+
+            t.OnBoxLostFocus(menu);                 // the menu opens and takes the keyboard focus
+            bool stillEditing = t.IsEditing;
+            box.Text = "Cheater: 76561198000000000"; // Paste ran on the still-open box
+            t.OnBoxLostFocus(new Button());         // later: a click somewhere else
+            return (stillEditing, t.IsEditing, t.Note);
+        });
+
+        Assert.True(info.stillEditing);
+        Assert.False(info.Item2);
+        Assert.Equal("Cheater: 76561198000000000", info.Note);
+        Assert.Equal(new[] { "Cheater: 76561198000000000" }, saved);   // one save, with the pasted ID
     }
 
     [Fact]
@@ -268,7 +418,7 @@ public sealed class RowNoteTitleTests
         var handled = WpfTestSupport.OnSta(() =>
         {
             WpfTestSupport.EnsureTheme();
-            var t = new RowNoteTitle("x", Store);
+            var t = new RowNoteTitle("x", Store, NoDiscard);
             t.BeginEdit();
             return t.HandleKey(Key.A);
         });

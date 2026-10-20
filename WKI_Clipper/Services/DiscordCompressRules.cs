@@ -96,6 +96,58 @@ public static class DiscordCompressRules
         return CompressEncoder.X264;
     }
 
+    /// <summary>
+    /// How much disk an encode attempt can really write, for the free-space check: the video it asks for (a hardware
+    /// encoder may overshoot by a quarter) plus the planned audio and container share - never more than the target,
+    /// which is the limit the result has to meet anyway. NOT the target itself: the video rate is capped at the
+    /// source's own, so a 30 s clip aimed at 500 MB comes out at a few tens of MB, and demanding 500 MB (x 1.1 plus
+    /// the reserve) would refuse it on a small disk for no reason.
+    /// </summary>
+    public static long EstimateOutputBytes(long requestBps, double seconds, long audioBytes, long muxBytes, long targetBytes)
+    {
+        double video = Math.Max(0, requestBps) / 8.0 * Math.Max(0, seconds) * 1.25;
+        long total = (long)Math.Ceiling(video) + Math.Max(0, audioBytes) + Math.Max(0, muxBytes);
+        return Math.Min(Math.Max(0, targetBytes), total);
+    }
+
+    /// <summary>
+    /// Size of the x264 pass-1 statistics: the ".log" (a text line per frame) and the ".mbtree" (2 bytes per
+    /// macroblock per frame - about 16 KB per 1080p frame). 600 MB for ten minutes of 1080p60.
+    /// </summary>
+    public static long EstimatePassLogBytes(int width, int height, int fps, TimeSpan duration)
+    {
+        if (width <= 0 || height <= 0 || fps <= 0 || duration <= TimeSpan.Zero) return 0;
+        long macroblocks = (long)((width + 15) / 16) * ((height + 15) / 16);
+        double frames = fps * duration.TotalSeconds;
+        return (long)Math.Ceiling((macroblocks * 2 + 200) * frames);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex PassStatsName = new(
+        @"^wki_[0-9a-f]{32}-\d+\.log(\.mbtree)?(\.temp)?$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant
+        | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>A file name the 2-pass encode writes next to its prefix "wki_&lt;32 hex&gt;" (and that a crash can leave behind).</summary>
+    public static bool IsPassStatsFile(string fileName) => PassStatsName.IsMatch(fileName);
+
+    /// <summary>
+    /// Whether an ffmpeg failure (its last stderr lines) points at hardware DECODING: the d3d11va device, the
+    /// hwaccel setup. An encoder that cannot start (AMF/NVENC busy), a full disk or a damaged input fail the same
+    /// way for a CPU decode, so they are not a reason to switch decoding off.
+    /// </summary>
+    public static bool LooksLikeHwDecodeFailure(string? stderr)
+    {
+        if (string.IsNullOrEmpty(stderr)) return false;
+        foreach (var marker in HwDecodeMarkers)
+            if (stderr.Contains(marker, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    private static readonly string[] HwDecodeMarkers =
+    {
+        "d3d11va", "hwaccel", "Failed setup for format d3d11", "Device creation failed"
+    };
+
     /// <summary>A hand-edited settings file must not be able to ask for a 0-byte or negative target.</summary>
     public static long EffectiveTarget(long stored, long fallback)
         => stored <= 0 ? fallback : Math.Max(MinimumTarget, stored);

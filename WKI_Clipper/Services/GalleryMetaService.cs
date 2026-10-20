@@ -68,10 +68,15 @@ public static class GalleryMetaKey
 ///   written: rolling back to an older clipper and forward again cannot overwrite the notes.
 ///   Entries an older version added to it in the meantime are merged in, never replacing.
 /// * Writes are atomic (temp file + File.Replace, previous version kept as ".bak").
-/// * An unparsable file is copied aside before anything is written.
-/// * A file that cannot be read (virus scanner, backup tool) is never overwritten. Edits made
-///   meanwhile are kept in memory and laid over the file once it is readable again; every
-///   edit method reports whether the change reached the disk.
+/// * An unparsable file is copied aside before anything is written. An emptied (0-byte) file is
+///   no better than an unparsable one: the backup is tried, and a backup that is itself unusable
+///   is copied aside too. A good backup that is restored is copied aside once as well, since the
+///   next save replaces the ".bak".
+/// * A file that cannot be read (virus scanner, backup tool) is never overwritten - and neither
+///   is a store whose backup cannot be read when it is needed. Edits made meanwhile are kept in
+///   memory and laid over the file once it is readable again, merged into what the file has
+///   (they were typed over an empty-looking store); every edit method reports whether the change
+///   reached the disk. A cancelled editor takes its failed edit back with <see cref="DiscardNoteEdit"/>.
 ///
 /// Pure enough to unit-test: the path is injectable, no WPF/AppHost dependency.
 /// </summary>
@@ -93,6 +98,8 @@ public sealed class GalleryMetaService
     private bool _lastSaveFailed;
     /// <summary>What was edited since the last successful write — laid over the file if it had to be re-read.</summary>
     private readonly Dictionary<string, Fields> _dirty = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The note each unsaved note edit started from, so <see cref="DiscardNoteEdit"/> can take the edit back without writing.</summary>
+    private readonly Dictionary<string, string> _noteBeforeEdit = new(StringComparer.OrdinalIgnoreCase);
 
     [Flags]
     private enum Fields { None = 0, Favorite = 1, Tags = 2, Note = 4, Removed = 8 }
@@ -158,6 +165,8 @@ public sealed class GalleryMetaService
         string? fingerprint = null;
         var pending = NewNames();
 
+        // The main file holds no usable notes (missing, emptied, unparsable): the backup next to it may.
+        bool tryBackup;
         if (File.Exists(_path))
         {
             if (!TryReadAllText(_path, out var text))
@@ -167,41 +176,68 @@ public sealed class GalleryMetaService
                 return new LoadResult(map, null, pending, Incomplete: true);
             }
 
-            if (!string.IsNullOrWhiteSpace(text))
+            if (string.IsNullOrWhiteSpace(text))
             {
-                if (TryParseStore(text, out var parsed, out var fp))
-                {
-                    map = parsed;
-                    fingerprint = fp;
-                }
-                else
-                {
-                    Logger.Warn("GalleryMeta: the notes file is unparsable — keeping a copy and trying the backup.");
-                    if (!KeepCopy(_path, ".v2.corrupt"))
-                        return new LoadResult(map, null, pending, Incomplete: true);
-                    if (TryLoadBackup(out var backup, out var backupFp)) { map = backup; fingerprint = backupFp; }
-                }
+                // A sync tool, a restore or a profile reset can leave a 0-byte file. It holds no notes, but the next
+                // save would move it over the good backup - so the backup is looked at first (nothing to copy aside).
+                Logger.Warn("GalleryMeta: the notes file is empty — trying the backup.");
+                tryBackup = true;
+            }
+            else if (TryParseStore(text, out var parsed, out var fp))
+            {
+                map = parsed;
+                fingerprint = fp;
+                tryBackup = false;
+            }
+            else
+            {
+                Logger.Warn("GalleryMeta: the notes file is unparsable — keeping a copy and trying the backup.");
+                if (!KeepCopy(_path, ".v2.corrupt"))
+                    return new LoadResult(map, null, pending, Incomplete: true);
+                tryBackup = true;
             }
         }
-        else if (TryLoadBackup(out var restored, out var restoredFp))
+        else tryBackup = true;
+
+        if (tryBackup)
         {
-            map = restored;
-            fingerprint = restoredFp;
+            var backupPath = _path + ".bak";
+            switch (TryLoadBackup(out var backup, out var backupFp))
+            {
+                case BakState.Loaded:
+                    map = backup;
+                    fingerprint = backupFp;
+                    KeepCopy(backupPath, ".v2.restored");   // the next save replaces the .bak: the good version stays in a copy (best effort)
+                    break;
+                case BakState.Locked:
+                    // Not "missing": a save now would rotate the main file over a backup nobody has looked at.
+                    Logger.Error("GalleryMeta: the backup exists but cannot be read — nothing is written until it can.");
+                    return new LoadResult(NewMap(), null, pending, Incomplete: true);
+                case BakState.Unusable:
+                    if (!KeepCopy(backupPath, ".v2.bak-corrupt"))
+                        return new LoadResult(NewMap(), null, pending, Incomplete: true);
+                    break;
+                // Missing / Empty: nothing to restore
+            }
         }
 
         ImportOldFile(map, ref fingerprint, pending);
         return new LoadResult(map, fingerprint, pending, Incomplete: false);
     }
 
-    private bool TryLoadBackup(out Dictionary<string, GalleryMetaEntry> map, out string? fingerprint)
+    private enum BakState { Missing, Empty, Loaded, Locked, Unusable }
+
+    private BakState TryLoadBackup(out Dictionary<string, GalleryMetaEntry> map, out string? fingerprint)
     {
         map = NewMap();
         fingerprint = null;
         var backup = _path + ".bak";
-        if (!File.Exists(backup) || !TryReadAllText(backup, out var text) || !TryParseStore(text, out map, out fingerprint))
-            return false;
+        if (!File.Exists(backup)) return BakState.Missing;
+        if (!TryReadAllText(backup, out var text)) return BakState.Locked;
+        if (string.IsNullOrWhiteSpace(text)) return BakState.Empty;
+        if (!TryParseStore(text, out map, out fingerprint)) return BakState.Unusable;
         Logger.Warn("GalleryMeta: restored from " + backup);
-        return true;
+        return BakState.Loaded;
     }
 
     /// <summary>
@@ -395,7 +431,11 @@ public sealed class GalleryMetaService
 
         bool ok = WriteFile();
         _lastSaveFailed = !ok;
-        if (ok) _dirty.Clear();
+        if (ok)
+        {
+            _dirty.Clear();
+            _noteBeforeEdit.Clear();   // on disk now: nothing left to take back
+        }
         return ok;
     }
 
@@ -405,6 +445,9 @@ public sealed class GalleryMetaService
         var fresh = LoadCore();
         if (fresh.Incomplete) return false;
 
+        // What a cancelled edit goes back to is now what the file says, not what the empty-looking store showed.
+        foreach (var key in _noteBeforeEdit.Keys.ToList())
+            _noteBeforeEdit[key] = FindIn(fresh.Map, key)?.Note ?? "";
         ApplyOverlay(fresh.Map, _map, _dirty);
         _map = fresh.Map;
         _v1Fingerprint = fresh.Fingerprint;
@@ -414,7 +457,13 @@ public sealed class GalleryMetaService
         return true;
     }
 
-    /// <summary>Copies only the fields the user touched, so an edit of a note does not wipe a tag the file has.</summary>
+    /// <summary>
+    /// Lays the edits made while the file could not be read over what the file says now. Only the fields the user
+    /// touched are considered, and they are MERGED, never replaced: those edits were typed over an empty-looking
+    /// store, so replacing would silently drop what the file has that nobody saw. A note is appended to the file's
+    /// note (an empty one changes nothing - that is what cancelling an edit writes), tags are added, a star is only
+    /// ever set. Removing something works again once the gallery shows the real values.
+    /// </summary>
     private static void ApplyOverlay(
         Dictionary<string, GalleryMetaEntry> target,
         Dictionary<string, GalleryMetaEntry> edited,
@@ -431,9 +480,12 @@ public sealed class GalleryMetaService
             source ??= new GalleryMetaEntry();
             if (!target.TryGetValue(key, out var entry)) target[key] = entry = new GalleryMetaEntry();
 
-            if (touched.HasFlag(Fields.Favorite)) entry.Favorite = source.Favorite;
-            if (touched.HasFlag(Fields.Tags)) entry.Tags = new List<string>(source.Tags);
-            if (touched.HasFlag(Fields.Note)) entry.Note = source.Note;
+            if (touched.HasFlag(Fields.Favorite)) entry.Favorite |= source.Favorite;
+            if (touched.HasFlag(Fields.Tags))
+                foreach (var tag in source.Tags)
+                    if (!entry.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase)) entry.Tags.Add(tag);
+            if (touched.HasFlag(Fields.Note) && source.Note.Length > 0 && source.Note != entry.Note)
+                entry.Note = entry.Note.Length == 0 ? source.Note : entry.Note + "\n" + source.Note;
             if (entry.IsEmpty && !ShadowsLegacy(target, key)) target.Remove(key);
         }
     }
@@ -524,10 +576,12 @@ public sealed class GalleryMetaService
     // ---------------------------------------------------------------- queries and edits
 
     /// <summary>The entry for a key, falling back to the old file-name entry while no path entry exists.</summary>
-    private GalleryMetaEntry? Find(string key)
+    private GalleryMetaEntry? Find(string key) => FindIn(_map, key);
+
+    private static GalleryMetaEntry? FindIn(Dictionary<string, GalleryMetaEntry> map, string key)
     {
-        if (_map.TryGetValue(key, out var e)) return e;
-        return _map.TryGetValue(GalleryMetaKey.Legacy(GalleryMetaKey.FileNameOf(key)), out var legacy) ? legacy : null;
+        if (map.TryGetValue(key, out var e)) return e;
+        return map.TryGetValue(GalleryMetaKey.Legacy(GalleryMetaKey.FileNameOf(key)), out var legacy) ? legacy : null;
     }
 
     /// <summary>
@@ -640,8 +694,34 @@ public sealed class GalleryMetaService
         lock (_gate)
         {
             var e = GetOrCreate(key);
+            _noteBeforeEdit.TryAdd(key, e.Note);   // the first unsaved edit counts: a retry must not become the "before"
             e.Note = clean;
             return Commit(key, e, Fields.Note);
+        }
+    }
+
+    /// <summary>
+    /// Takes back a note edit whose save failed (the user cancelled the editor): the note in memory goes back to
+    /// what it was before that edit and the edit is no longer pending, so it is neither saved nor laid over the file
+    /// later. Writes nothing - in particular not the value the row happens to show, which after an unreadable file
+    /// is not the stored note. No-op when no unsaved note edit of the file exists.
+    /// </summary>
+    public void DiscardNoteEdit(string key)
+    {
+        lock (_gate)
+        {
+            if (!_noteBeforeEdit.Remove(key, out var before)) return;
+
+            if (_dirty.TryGetValue(key, out var fields))
+            {
+                fields &= ~Fields.Note;
+                if (fields == Fields.None) _dirty.Remove(key); else _dirty[key] = fields;
+            }
+            if (_map.TryGetValue(key, out var e))
+            {
+                e.Note = before;
+                PruneIfEmpty(key, e);
+            }
         }
     }
 
