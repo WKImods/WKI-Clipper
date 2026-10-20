@@ -181,6 +181,8 @@ public partial class App : Application
 
             _widgetHost = new WidgetHost(Host);
             _widgetHost.RestorePinned();
+            // A shortcut start closes the board first - but a hotkey start with the board closed must not touch it (and never open it).
+            Host.CloseBoard = () => { if (_widgetHost.IsBoardOpen) _widgetHost.CloseBoard(); };
             // Own screenshots hide the overlay first (widgets are otherwise capture-visible now).
             Host.Screenshots.OverlayHider = () => _widgetHost.HideDuringCapture();
             Logger.Info("WidgetHost constructed.");
@@ -224,6 +226,13 @@ public partial class App : Application
                 && int.TryParse(action.AsSpan(HotkeyService.StreamButtonPrefix.Length), out int slot))
             {
                 await Host.Obs.ExecuteSlotAsync(slot);
+                return;
+            }
+
+            // Shortcut-bar hotkeys: "App:{entryId}" → start that program like the bar's click would.
+            if (ShortcutHotkeys.TryParse(action, out var shortcutId))
+            {
+                Host.Shortcuts.Launch(shortcutId);
                 return;
             }
 

@@ -272,6 +272,59 @@ internal static class PhillipsPc
     }
 }
 
+/// <summary>
+/// A shell that starts nothing: it records what it was asked (in <see cref="Log"/>, shared with the test's closeBoard lambda
+/// so the ORDER of "close" and "start" is visible) and answers from fixtures. <see cref="ScanGate"/> lets a test hold a scan open.
+/// </summary>
+internal sealed class FakeShell : IShortcutShell
+{
+    public List<string> Log { get; } = new();
+    public IReadOnlyList<ShellLinkInfo> Links { get; set; } = PhillipsPc.StartMenuLinks();
+    public string? DefaultBrowserExe { get; set; } = PhillipsPc.CometPath;
+    public HashSet<string> StoreApps { get; } = new(StringComparer.Ordinal);
+    public List<LaunchTarget> Started { get; } = new();
+    public bool StartSucceeds { get; set; } = true;
+    public string? StartError { get; set; } = "the shell said no";
+    public int ScanCount;
+    /// <summary>When set, a scan blocks here until the test lets it go (after signalling <see cref="ScanEntered"/>).</summary>
+    public System.Threading.ManualResetEventSlim? ScanGate { get; set; }
+    public System.Threading.ManualResetEventSlim ScanEntered { get; } = new(false);
+    /// <summary>Like <see cref="ScanGate"/>, but for the icon step, which runs AFTER the scan took its snapshot of the list. Only the FIRST icon read waits.</summary>
+    public System.Threading.ManualResetEventSlim? IconGate { get => _iconGate; set { _iconGate = value; _iconGateTaken = 0; } }
+    private System.Threading.ManualResetEventSlim? _iconGate;
+    private int _iconGateTaken;
+    public System.Threading.ManualResetEventSlim IconEntered { get; } = new(false);
+
+    public IReadOnlyList<ShellLinkInfo> StartMenuAndDesktopLinks()
+    {
+        System.Threading.Interlocked.Increment(ref ScanCount);
+        lock (Log) Log.Add("scan");
+        ScanEntered.Set();
+        ScanGate?.Wait(TimeSpan.FromSeconds(10));
+        return Links;
+    }
+
+    public ShellLinkInfo? ReadLink(string path) => Links.FirstOrDefault(l => ShortcutPaths.SamePath(l.Path, path));
+    public string? WindowsDefaultBrowserExe() => DefaultBrowserExe;
+    public bool StoreAppInstalled(string aumid) => StoreApps.Contains(aumid);
+
+    public string? IconPng(string sourcePath, string cacheKey)
+    {
+        IconEntered.Set();
+        var gate = _iconGate;
+        if (gate != null && System.Threading.Interlocked.Exchange(ref _iconGateTaken, 1) == 0) gate.Wait(TimeSpan.FromSeconds(10));
+        return string.IsNullOrWhiteSpace(sourcePath) ? null : @"C:\icons\" + cacheKey.Replace(':', '_') + ".png";
+    }
+
+    public bool Start(LaunchTarget target, out string? error)
+    {
+        lock (Log) Log.Add($"start:{target.Kind}:{target.Target}");
+        Started.Add(target);
+        error = StartSucceeds ? null : StartError;
+        return StartSucceeds;
+    }
+}
+
 /// <summary>In-memory registry: case-insensitive keys, "HKLM"/"HKCU" hives, null value name = the key's default value.</summary>
 internal sealed class FakeRegistry : IRegistryView
 {

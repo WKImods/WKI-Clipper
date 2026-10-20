@@ -48,12 +48,13 @@ public sealed class HotkeyService : IDisposable
     public const string StreamButtonPrefix = "StreamButton:";
 
     /// <summary>
-    /// Central collision check across BOTH hotkey worlds (clipper actions + stream-deck
-    /// tiles). Returns a human-readable owner of the conflicting binding, or null when
-    /// the combo is free. Exclusions let the caller skip the entry being edited.
+    /// Central collision check across ALL hotkey worlds (clipper actions, stream-deck
+    /// tiles, shortcut-bar entries). Returns a human-readable owner of the conflicting
+    /// binding, or null when the combo is free. Exclusions let the caller skip the entry
+    /// being edited.
     /// </summary>
     public static string? FindCollision(AppSettings settings, HotkeyBinding candidate,
-        string? excludeAction = null, int? excludeSlot = null)
+        string? excludeAction = null, int? excludeSlot = null, string? excludeShortcutId = null)
     {
         if (candidate.Key == 0) return null;
 
@@ -68,6 +69,12 @@ public sealed class HotkeyService : IDisposable
             if (btn.Slot == excludeSlot || btn.Hotkey is not { Key: not 0 } hb) continue;
             if (hb.Key == candidate.Key && hb.Modifiers == candidate.Modifiers)
                 return L.T($"Streaming-Button \"{btn.Label}\"", $"streaming button \"{btn.Label}\"");
+        }
+        foreach (var entry in settings.Shortcuts.Items)
+        {
+            if (string.Equals(entry.Id, excludeShortcutId, StringComparison.OrdinalIgnoreCase) || entry.Hotkey is not { Key: not 0 } hk) continue;
+            if (hk.Key == candidate.Key && hk.Modifiers == candidate.Modifiers)
+                return L.T($"Verknüpfung \"{entry.DisplayName}\"", $"shortcut \"{entry.DisplayName}\"");
         }
         return null;
     }
@@ -84,6 +91,12 @@ public sealed class HotkeyService : IDisposable
             var btn = settings.Streaming.Buttons.Find(b => b.Slot == slot);
             if (btn != null)
                 return L.T($"Streaming-Button \"{btn.Label}\"", $"streaming button \"{btn.Label}\"");
+        }
+        if (ShortcutHotkeys.TryParse(action, out var shortcutId))
+        {
+            var entry = settings.Shortcuts.Items.Find(e => string.Equals(e.Id, shortcutId, StringComparison.OrdinalIgnoreCase));
+            if (entry != null)
+                return L.T($"Verknüpfung \"{entry.DisplayName}\"", $"shortcut \"{entry.DisplayName}\"");
         }
         return action;
     }
@@ -103,6 +116,10 @@ public sealed class HotkeyService : IDisposable
             if (btn.Hotkey is { Key: not 0 } hk)
                 RegisterOne(StreamButtonPrefix + btn.Slot, hk);
         }
+
+        // Shortcut-bar entries with a hotkey ("App:<id>"): same mechanism again. Unbound entries (the default) register nothing.
+        foreach (var (action, binding) in ShortcutHotkeys.Bindings(_settings.Current))
+            RegisterOne(action, binding);
     }
 
     /// <summary>

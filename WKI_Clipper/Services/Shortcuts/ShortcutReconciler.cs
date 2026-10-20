@@ -178,8 +178,9 @@ public static class ShortcutReconciler
     /// <param name="ownExePath">The running clipper; its file name is excluded wherever a copy runs from (dev builds). Null = the default name.</param>
     public static Func<string, bool> ExclusionFilter(IReadOnlySet<string> launcherExeNames, IReadOnlyList<BrowserInfo> browsers, string? ownExePath)
     {
+        // The running exe (a dev build under "dotnet" or a test host has another name) and always the real name.
         var ownName = ShortcutPaths.FileName(ownExePath);
-        if (ownName.Length == 0) ownName = "WKI_Clipper.exe";
+        const string ClipperExe = "WKI_Clipper.exe";
         var browserPaths = browsers.Where(b => b.ExePath != null).Select(b => ShortcutPaths.Normalize(b.ExePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return exePath =>
@@ -187,7 +188,8 @@ public static class ShortcutReconciler
             var normalized = ShortcutPaths.Normalize(exePath);
             if (normalized.Length == 0) return true;
             var leaf = ShortcutPaths.FileName(normalized);
-            return leaf.Equals(ownName, StringComparison.OrdinalIgnoreCase)
+            return leaf.Equals(ClipperExe, StringComparison.OrdinalIgnoreCase)
+                || (ownName.Length > 0 && leaf.Equals(ownName, StringComparison.OrdinalIgnoreCase))
                 || launcherExeNames.Any(n => n.Equals(leaf, StringComparison.OrdinalIgnoreCase))
                 || BrowserCatalog.BrowserExeNames.Contains(leaf)
                 || browserPaths.Contains(normalized);

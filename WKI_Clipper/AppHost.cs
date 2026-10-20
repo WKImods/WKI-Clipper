@@ -91,8 +91,43 @@ public sealed class AppHost : IDisposable
     {
         _frameTimes?.SetTargetProcess(game?.Pid ?? 0);
         LogProfileChange(game);
+        RememberShortcutGame(game);
         try { GameChanged?.Invoke(game); }
         catch (Exception ex) { Logger.Warn("GameChanged handler threw: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// A game came to the front: its exe becomes a suggestion in the shortcut bar's edit dialog. The path is read from the pid the
+    /// way the game folders do it (query-only rights); a game that cannot be read (elevated, already gone) is skipped silently.
+    /// </summary>
+    private void RememberShortcutGame(GameInfo? game)
+    {
+        if (game is null) return;
+        try
+        {
+            var exePath = GameContext.ImagePath(game.Pid);
+            if (string.IsNullOrEmpty(exePath)) return;
+            Shortcuts.RememberGame(exePath, game.DisplayName);
+        }
+        catch (Exception ex) { Logger.Warn("Remembering the game for the shortcut bar failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// Re-registers the global hotkeys when - and only when - a shortcut entry's hotkey changed since they were last registered.
+    /// Marshals to the UI thread, which owns the hotkey window. The editor calls this after it changed a hotkey.
+    /// </summary>
+    public void RefreshShortcutHotkeys()
+    {
+        var signature = ShortcutHotkeys.Signature(Settings.Current.Shortcuts.Items);
+        lock (_shortcutHotkeyGate)
+        {
+            if (signature == _shortcutHotkeySignature) return;
+            _shortcutHotkeySignature = signature;
+        }
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null) return;
+        if (dispatcher.CheckAccess()) Hotkeys.RegisterAll();
+        else dispatcher.BeginInvoke(new Action(Hotkeys.RegisterAll));
     }
 
     /// <summary>Key of the game profile whose values apply right now (null = the standard settings); what the log last said.</summary>
@@ -136,6 +171,22 @@ public sealed class AppHost : IDisposable
     public SpotifyMediaService Spotify { get; } = new();
     /// <summary>Controller combos (hold View+Menu etc.): polls XInput in the background, raises the hotkey action names.</summary>
     public GamepadService Gamepad { get; }
+
+    /// <summary>
+    /// The shortcut bar's service: items, scans, start. Scans only when asked (board open, "Neu suchen"); nothing runs on its
+    /// own, so it costs nothing while a game is in front.
+    /// </summary>
+    public ShortcutService Shortcuts { get; }
+
+    /// <summary>
+    /// Set by App once the widget host exists: closes the board, and does nothing while it is closed (a hotkey start).
+    /// Keeps the UI-owning host out of AppHost, like <see cref="CrosshairRefresh"/>.
+    /// </summary>
+    public Action? CloseBoard { get; set; }
+
+    /// <summary>What the global hotkeys of the shortcut entries looked like when they were last registered.</summary>
+    private string _shortcutHotkeySignature = "";
+    private readonly object _shortcutHotkeyGate = new();
 
     /// <summary>
     /// Set by the widget host: re-applies the crosshair overlay (image, sliders,
@@ -222,6 +273,12 @@ public sealed class AppHost : IDisposable
 
         // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
         Gamepad = new GamepadService(Settings);
+
+        Shortcuts = new ShortcutService(Settings, new Win32ShortcutShell(), new DiskFileSystemView(), new WindowsRegistryView(),
+            closeBoard: () => CloseBoard?.Invoke(),
+            toast: msg => ToastService.Show(ToastKind.Warning, L.T("Verknüpfungsleiste", "Shortcut bar"), msg, durationSeconds: 6));
+        // A hotkey of an entry changed (editor, prune): the global registration follows. Other changes (icons, order) do not touch it.
+        Shortcuts.ItemsChanged += (_, _) => RefreshShortcutHotkeys();
 
         WireCaptureExclusivity();
         WireGameFolders();
@@ -363,6 +420,7 @@ public sealed class AppHost : IDisposable
     {
         LogFolderWarnings();
         Hotkeys.Initialize();
+        lock (_shortcutHotkeyGate) _shortcutHotkeySignature = ShortcutHotkeys.Signature(Settings.Current.Shortcuts.Items);   // what Initialize just registered
         // Codec detection runs async; not blocking startup.
         _ = DetectCodecsAsync();
         // A crash mid-encode leaves "*.mp4.part" behind; sweep those off the UI thread.
@@ -541,6 +599,7 @@ public sealed class AppHost : IDisposable
         Sounds.Dispose();
         Spotify.Dispose();
         Gamepad.Dispose();
+        Shortcuts.Dispose();
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

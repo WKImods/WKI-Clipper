@@ -441,6 +441,9 @@ public sealed class WidgetHost : IDisposable
 
     // ---- Public entry points ----
 
+    /// <summary>The board is on screen. The shortcut bar closes it before starting a program, but only if it is open.</summary>
+    public bool IsBoardOpen => _boardOpen;
+
     public void ToggleBoard()
     {
         if (_boardOpen) CloseBoard();
