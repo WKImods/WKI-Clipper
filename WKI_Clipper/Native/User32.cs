@@ -20,6 +20,17 @@ internal static class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    /// <summary>ASFW_ANY: any process may take the foreground (the program we are about to start).</summary>
+    public const uint ASFW_ANY = 0xFFFFFFFF;
+
+    /// <summary>
+    /// Lets another process bring its window to the front. Called right before the shortcut bar starts a
+    /// program, so the launcher/game appears in front instead of blinking in the taskbar. Never touches a window.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }
 
