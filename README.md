@@ -10,9 +10,10 @@ on your controller. No account, no telemetry, no cloud.
 
 ![The widget board: sidebar on the left, widgets over the dimmed desktop](docs/screenshots/board.png)
 
-<sub>The widget board with `Ctrl+Alt+G`. The empty space in the middle is the WhatsApp widget —
-it is invisible to every capture, this screenshot included. The UI starts in German;
-switch to English under Settings → About.</sub>
+<sub>The widget board with `Ctrl+Alt+G`. The empty space at the top right is the WhatsApp
+widget — it is invisible to every capture, this screenshot included; the numbers in the
+corner are the performance overlay. The UI starts in German; switch to English under
+Settings → About.</sub>
 
 ## Hotkeys
 
@@ -29,12 +30,12 @@ switch to English under Settings → About.</sub>
 
 All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks).
 
-<img src="docs/screenshots/settings.png" height="320" alt="Settings widget, Hotkeys tab">
-
 ### Controller
 
 Hold a button combination on an Xbox controller to run the same action as the hotkey —
 also while the game has focus. Out of the box, **View + Menu** saves a clip like `F9`.
+
+<img src="docs/screenshots/hotkeys.png" height="360" alt="Settings → Hotkeys → Controller: combos per action, hold time and Learn combo">
 
 - **Actions:** save clip (`F9`), screenshot (`F10`) and recording start/stop (`Ctrl+F9`),
   each with its own combo.
@@ -88,13 +89,14 @@ switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 | | **Stream music** | Music player for the stream with separate stream/monitor levels |
 | | **Spotify** | Your Spotify app: compact player or the full Spotify interface |
 
-![Gallery widget: clips, recordings, GIFs and screenshots sorted by game](docs/screenshots/gallery.png)
+![Gallery widget: favourites, notes and the row menu with Trim and Discord compress](docs/screenshots/gallery.png)
 
 ## Capture
 
 <p>
-  <img src="docs/screenshots/capture.png" height="320" alt="Capture widget: what gets clipped next">
-  <img src="docs/screenshots/audio.png" height="320" alt="Audio widget: sync offset and game-only audio">
+  <img src="docs/screenshots/capture.png" height="340" alt="Capture widget: target, audio coupling and the live buffer status (here 2 min in RAM)">
+  <img src="docs/screenshots/audio.png" height="340" alt="Audio widget: separate mic track, sync offset and game-only audio">
+  <img src="docs/screenshots/sounds.png" height="340" alt="Audio widget: sound cues with volume, output device and own WAV per cue">
 </p>
 
 | Mode | Behaviour |
@@ -135,6 +137,8 @@ because it ignores Windows' capture exclusion.
 `F9` saves the last **15 seconds to 30 minutes** — pick the length under Settings → Video →
 Replay buffer. The same page shows a live estimate of what that length costs in RAM or on
 disk (about 6–7 GB for 30 minutes at the default quality, up to ~25 GB at *Very high*).
+
+<img src="docs/screenshots/replay.png" height="360" alt="Settings → Video → Replay buffer: length with RAM estimate, own length per game, buffer storage">
 
 - **Buffer storage:** *Automatic* keeps the lookback in **RAM** — no files, no SSD wear,
   nothing in Explorer — while it fits the RAM budget (the smaller of 2 GB and 15 % of your
@@ -200,6 +204,8 @@ sit in the `…` menu of each row (also on right-click).
   (10 MB – 1 GB) and *Only compress while no game is in the foreground* (off by default —
   compressing costs FPS) are under Settings → About → Discord.
 
+<img src="docs/screenshots/trim.png" height="420" alt="Trim… editor: preview, timeline with start and end marks, fast or exact cut">
+
 ## Performance overlay
 
 Bare numbers — no window, a soft shadow for legibility — in a screen corner over the game,
@@ -232,13 +238,13 @@ clock, voltage and VRAM clock come from the same interface and appear only when 
 reports a value. CPU temperature is deliberately not shown: Windows only exposes it
 through a kernel driver.
 
-<img src="docs/screenshots/performance.png" height="480" alt="Performance widget with the overlay settings">
+<img src="docs/screenshots/performance.png" height="360" alt="Performance widget: FPS (once a game is detected), CPU and GPU load, GPU temperature and fan, GPU and VRAM clock">
 
 ## Crosshair
 
 Import your own PNGs into a small library, pick one, place it, toggle it with `Ctrl+Alt+C`.
 
-<img src="docs/screenshots/crosshair.png" align="right" height="420" alt="Crosshair widget: library, grid and image adjustments">
+<img src="docs/screenshots/crosshair.png" align="right" height="420" alt="Crosshair widget: Applies to (per-game profile), library, grid and image adjustments">
 
 - **Never in the footage** — excluded from every capture, while you still see it.
 - **Click-through while playing**; draggable only while the board is open.
