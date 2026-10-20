@@ -30,14 +30,21 @@ public sealed class TwitchChatService : IDisposable
     private volatile bool _connected;
     private string _joinedChannel = "";
     private long _lastRxTicks;
+    private readonly ChannelJoinWatch _joinWatch = new();
+    private int _joinGeneration;
 
     /// <summary>New chat line (worker thread!).</summary>
     public event Action<ChatMessage>? MessageReceived;
     /// <summary>Connection state or channel changed (worker thread!).</summary>
     public event Action? StatusChanged;
+    /// <summary>Twitch never confirmed the joined channel — typo or renamed channel (worker thread!).</summary>
+    public event Action<string>? ChannelNotFound;
 
     public bool IsConnected => _connected;
     public string Channel => _joinedChannel;
+
+    /// <summary>True when Twitch did not answer the JOIN: the channel does not exist (anymore).</summary>
+    public bool ChannelMissing { get { lock (_gate) return _joinWatch.Missing; } }
 
     /// <summary>
     /// When the last byte arrived from Twitch, or null before the first one. A socket can
@@ -87,6 +94,8 @@ public sealed class TwitchChatService : IDisposable
         _cts?.Dispose();
         _cts = null;
         _loop = null;
+        Interlocked.Increment(ref _joinGeneration);   // a pending join check belongs to the old run
+        lock (_gate) _joinWatch.Start("", DateTime.UtcNow);
         if (_connected) { _connected = false; StatusChanged?.Invoke(); }
     }
 
@@ -109,6 +118,8 @@ public sealed class TwitchChatService : IDisposable
                 _joinedChannel = channel;
                 _connected = true;
                 backoffSec = 2;
+                lock (_gate) _joinWatch.Start(channel, DateTime.UtcNow);
+                _ = WatchJoinAsync(channel, Interlocked.Increment(ref _joinGeneration), ct);
                 StatusChanged?.Invoke();
                 Logger.Info($"Twitch chat connected to #{channel}");
 
@@ -178,6 +189,15 @@ public sealed class TwitchChatService : IDisposable
                     await SendAsync(ws, IrcParser.PongFor(l), ct).ConfigureAwait(false);
                     continue;
                 }
+                bool confirmed;
+                string? roomId;
+                lock (_gate) { confirmed = _joinWatch.OnLine(l); roomId = _joinWatch.RoomId; }
+                if (confirmed)
+                {
+                    Logger.Info($"Twitch chat: #{_joinedChannel} confirmed (room-id {roomId ?? "?"})");
+                    StatusChanged?.Invoke();
+                    continue;
+                }
                 var msg = IrcParser.ParseLine(l);
                 if (msg is null) continue;
 
@@ -190,6 +210,26 @@ public sealed class TwitchChatService : IDisposable
                 MessageReceived?.Invoke(msg);
             }
         }
+    }
+
+    /// <summary>
+    /// Twitch answers a JOIN to an unknown login with silence, so the only way to notice a typo or
+    /// a renamed channel is the missing ROOMSTATE. A newer join (reconnect, channel change) makes
+    /// this check obsolete via the generation number.
+    /// </summary>
+    private async Task WatchJoinAsync(string channel, int generation, CancellationToken ct)
+    {
+        try { await Task.Delay(ChannelJoinWatch.Timeout + TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        if (generation != Volatile.Read(ref _joinGeneration)) return;
+
+        bool missing;
+        lock (_gate) missing = _joinWatch.CheckMissing(DateTime.UtcNow);
+        if (!missing) return;
+
+        Logger.Warn($"Twitch chat: #{channel} did not answer the JOIN within {ChannelJoinWatch.Timeout.TotalSeconds:0} s — the channel does not exist or was renamed");
+        StatusChanged?.Invoke();
+        ChannelNotFound?.Invoke(channel);
     }
 
     private static Task SendAsync(ClientWebSocket ws, string line, CancellationToken ct)

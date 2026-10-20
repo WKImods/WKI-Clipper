@@ -105,10 +105,23 @@ public partial class ChatView : UserControl
 
         Color color;
         string tip;
+        bool missing = host.Chat.IsConnected && host.Chat.ChannelMissing;
+        if (missing)
+            ShowChannelWarning(L.T(
+                $"Twitch kennt den Kanal #{host.Chat.Channel} nicht (mehr) — wurde er umbenannt oder ist er falsch geschrieben? Oben den neuen Namen oder den Link (twitch.tv/…) eintragen und Enter drücken.",
+                $"Twitch does not know the channel #{host.Chat.Channel} (anymore) — was it renamed or misspelled? Enter the new name or the link (twitch.tv/…) above and press Enter."));
+        else if (!_invalidInputShown)
+            ShowChannelWarning(null);
+
         if (!host.Chat.IsConnected)
         {
             color = Color.FromRgb(0x55, 0x55, 0x55);
             tip = L.T("Nicht verbunden — versucht es weiter.", "Not connected — keeps retrying.");
+        }
+        else if (missing)
+        {
+            color = Color.FromRgb(0xE5, 0x48, 0x4D);
+            tip = L.T($"Kanal #{host.Chat.Channel} nicht gefunden", $"Channel #{host.Chat.Channel} not found");
         }
         else if (host.Chat.LastReceivedUtc is not { } last)
         {
@@ -265,12 +278,36 @@ public partial class ChatView : UserControl
     {
         var host = App.Host;
         if (host is null) return;
-        var ch = ChannelBox.Text.Trim().TrimStart('#');
-        if (ch.Length == 0 || string.Equals(ch, Cfg.Channel, StringComparison.OrdinalIgnoreCase)) return;
+        if (ChannelBox.Text.Trim().Length == 0) return;
+        // Names, #name, @name and twitch.tv links all work — a pasted channel URL is the usual case.
+        var ch = TwitchChannelName.Normalize(ChannelBox.Text);
+        if (ch is null)
+        {
+            _invalidInputShown = true;
+            ShowChannelWarning(L.T("Das ist kein gültiger Twitch-Kanal (3–25 Zeichen: Buchstaben, Ziffern, _) und auch kein twitch.tv-Link.",
+                                   "That is not a valid Twitch channel (3–25 characters: letters, digits, _) nor a twitch.tv link."));
+            return;
+        }
+        _invalidInputShown = false;
+        ChannelBox.Text = ch;
+        if (string.Equals(ch, Cfg.Channel, StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateStatus();
+            return;
+        }
         Cfg.Channel = ch;
         host.Settings.Save();
         Messages.Children.Clear();
         host.Chat.Restart();
+        UpdateStatus();
+    }
+
+    private bool _invalidInputShown;
+
+    private void ShowChannelWarning(string? text)
+    {
+        ChannelWarning.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+        if (text is not null) ChannelWarningText.Text = text;
     }
 
     private void OnReconnect(object sender, RoutedEventArgs e) => App.Host?.Chat.Restart();

@@ -192,6 +192,19 @@ public sealed class AppHost : IDisposable
                 m.Kind == ChatKind.Raid ? L.T("Raid!", "Raid!") : L.T("Sub-Geschenk", "Gifted subs"),
                 m.SystemText ?? m.User, durationSeconds: 8);
         };
+        // A typo or a renamed channel leaves the socket open and silent; say so once per channel
+        // (the silent-socket check reconnects every few minutes and would repeat it).
+        string? missingChannelShown = null;
+        Chat.ChannelNotFound += ch =>
+        {
+            if (string.Equals(missingChannelShown, ch, StringComparison.OrdinalIgnoreCase)) return;
+            missingChannelShown = ch;
+            ToastService.Show(ToastKind.Warning,
+                L.T("Twitch-Chat: Kanal nicht gefunden", "Twitch chat: channel not found"),
+                L.T($"#{ch} gibt es nicht (mehr) — umbenannt? Im Chat-Widget den neuen Namen oder Link eintragen.",
+                    $"#{ch} does not exist (anymore) — renamed? Enter the new name or link in the chat widget."),
+                durationSeconds: 10);
+        };
         Music = new MusicPlayerService(Settings);
         Crosshairs = new CrosshairLibraryService();
         Sounds = new SoundCueService(Settings);
