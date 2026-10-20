@@ -666,6 +666,86 @@ public sealed class ShortcutServiceTests : IDisposable
         Assert.DoesNotContain(Reload().Load().Shortcuts.Items, e => e.Id == gameId);
     }
 
+    // ---- bar state (collapsed or open) ----
+
+    [Fact]
+    public void The_bar_starts_expanded_and_remembers_collapsing()
+    {
+        var svc = Create();
+        Assert.True(svc.Expanded);
+        int raised = 0;
+        svc.ItemsChanged += (_, _) => raised++;
+
+        svc.SetExpanded(false);
+
+        Assert.False(svc.Expanded);
+        Assert.Equal(1, raised);
+        Assert.False(Reload().Load().Shortcuts.Expanded);   // survives a restart
+        svc.SetExpanded(false);
+        Assert.Equal(1, raised);                            // the same value again changes nothing
+    }
+
+    // ---- when the board asks for a rescan ----
+
+    [Fact]
+    public async Task Rescan_if_stale_scans_on_the_first_open_and_after_a_minute_but_not_in_between()
+    {
+        var svc = Create();
+        var now = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        svc.Clock = () => now;
+
+        Assert.Null(svc.LastScanUtc);
+        await svc.RescanIfStale();                      // never scanned: first open
+        Assert.Equal(1, _shell.ScanCount);
+        Assert.Equal(now, svc.LastScanUtc);
+
+        now = now.AddSeconds(59);
+        await svc.RescanIfStale();                      // opened again right away: nothing to do
+        Assert.Equal(1, _shell.ScanCount);
+
+        now = now.AddSeconds(2);                        // 61 s after the scan
+        await svc.RescanIfStale();
+        Assert.Equal(2, _shell.ScanCount);
+        Assert.Equal(now, svc.LastScanUtc);
+    }
+
+    [Fact]
+    public async Task A_failed_scan_does_not_count_as_fresh()
+    {
+        var svc = Create();
+        svc.Clock = () => new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        _shell.Links = null!;
+
+        await svc.RescanIfStale();
+
+        Assert.Null(svc.LastScanUtc);                   // the next open tries again
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(0, false)]
+    [InlineData(60, false)]
+    [InlineData(61, true)]
+    public void The_staleness_rule_is_a_minute(int? ageSeconds, bool stale)
+    {
+        var now = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        DateTime? last = ageSeconds is { } a ? now.AddSeconds(-a) : null;
+
+        Assert.Equal(stale, ShortcutService.IsStale(last, now));
+    }
+
+    // ---- icon of something that is not an entry (the game chip) ----
+
+    [Fact]
+    public void IconFor_reads_through_the_shell_and_gives_null_for_nothing()
+    {
+        var svc = Create();
+
+        Assert.Equal(@"C:\icons\game_current.png", svc.IconFor(@"D:\SteamLibrary\steamapps\common\Arma Reforger\ArmaReforgerSteam.exe", "game_current"));
+        Assert.Null(svc.IconFor("", "game_current"));
+        Assert.Null(svc.IconFor(null, "game_current"));
+    }
+
     // ---- recent games ----
 
     [Fact]

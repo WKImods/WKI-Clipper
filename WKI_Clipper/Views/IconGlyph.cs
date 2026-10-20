@@ -24,6 +24,9 @@ internal static class IconGlyph
     /// <summary>Pencil (edit) and the horizontal ellipsis ("more actions").</summary>
     public const string Edit = "", More = "";
 
+    /// <summary>The shortcut bar's fold arrows and its gear.</summary>
+    public const string ChevronLeft = "", ChevronRight = "", Settings = "";
+
     public static TextBlock Make(string glyph, double size = 14) => new()
     {
         Text = glyph,

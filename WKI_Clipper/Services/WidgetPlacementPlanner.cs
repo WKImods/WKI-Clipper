@@ -73,6 +73,28 @@ public sealed class WidgetPlacementPlanner
         return moves;
     }
 
+    /// <summary>
+    /// Widgets that really intersect the shortcut bar move straight down below it (<see cref="BarLayout.PushBelow"/>), kept inside
+    /// the work area. The result lists only windows that actually end up somewhere else, in whole pixels. UNLIKE the sidebar clearance
+    /// this move is marked as the user's: the pushed place is meant to be saved, so the widget is below the bar the next time the
+    /// board opens instead of being pushed again on every open - the host commits it right after moving.
+    /// </summary>
+    public IReadOnlyList<(WidgetId Id, LayoutRect Rect)> ClearOfBar(
+        IEnumerable<(WidgetId Id, LayoutRect Rect)> windows, LayoutRect bar, LayoutRect area, double scale)
+    {
+        var all = new List<(WidgetId Id, LayoutRect Rect)>(windows);
+        var moves = new List<(WidgetId Id, LayoutRect Rect)>();
+        foreach (var (id, pushed) in BarLayout.PushBelow(bar, all, GapDip * scale))
+        {
+            var (x, y) = WidgetLayout.Clamp(pushed.X, pushed.Y, pushed.W, pushed.H, area.X, area.Y, area.Right, area.Bottom, EdgeMarginDip * scale);
+            var moved = pushed.At(Math.Round(x), Math.Round(y));
+            if (all.Exists(w => w.Id == id && w.Rect == moved)) continue;   // nowhere lower to go
+            _ledger.MarkUser(id);
+            moves.Add((id, moved));
+        }
+        return moves;
+    }
+
     /// <summary>The user dragged or resized the window, or re-arranged it on purpose (grid / overlap switch).</summary>
     public void UserChanged(WidgetId id) => _ledger.MarkUser(id);
 

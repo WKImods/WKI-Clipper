@@ -23,6 +23,7 @@ public sealed class WidgetHost : IDisposable
 
     private WidgetBackdropWindow? _backdrop;
     private WidgetSidebarWindow? _sidebar;
+    private ShortcutBarWindow? _bar;
     private readonly Dictionary<WidgetId, SidebarEntry> _entries = new();
     private bool _boardOpen;
     private bool _suppressToggle;
@@ -392,6 +393,7 @@ public sealed class WidgetHost : IDisposable
             _windows.Remove(id);
         }
         if (_sidebar != null) { try { _sidebar.Close(); } catch { } _sidebar = null; }
+        if (_bar != null) { try { _bar.Close(); } catch { } _bar = null; }
         _entries.Clear();
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
         _boardOpen = false;
@@ -471,6 +473,12 @@ public sealed class WidgetHost : IDisposable
         EnsureSidebar();
         _sidebar!.ShowOn(screen);
 
+        // The shortcut bar next, for the same reason: it is an obstacle the widgets have to know about. Opening the board
+        // is also when the PC is looked at again - at most once a minute, in the background; the bar follows its changes.
+        EnsureBar();
+        _bar!.ShowOn(screen);
+        _ = _host.Shortcuts.RescanIfStale();
+
         int i = 0;
         foreach (var id in Order)
         {
@@ -479,8 +487,11 @@ public sealed class WidgetHost : IDisposable
             SyncToggle(id, st.Visible);
             i++;
         }
+        // Bar first: its push is saved as the user's place, so it must not carry the sidebar's sideways (system) move along.
+        KeepWidgetsClearOfBar();
         KeepWidgetsClearOfSidebar();
         BumpTopmost(_sidebar);
+        BumpTopmost(_bar);
 
         // Crosshair becomes draggable while the board is open.
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
@@ -532,7 +543,7 @@ public sealed class WidgetHost : IDisposable
         }
 
         // Backdrop + sidebar are part of the first-open cost too; construct them now.
-        try { _backdrop ??= CreateBackdrop(); EnsureSidebar(); } catch { }
+        try { _backdrop ??= CreateBackdrop(); EnsureSidebar(); EnsureBar(); } catch { }
 
         Logger.Info($"Widget prewarm done: {built} windows built in {sw.ElapsedMilliseconds} ms.");
     }
@@ -557,6 +568,7 @@ public sealed class WidgetHost : IDisposable
 
         _backdrop?.Hide();
         _sidebar?.Hide();
+        _bar?.Hide();
         // Crosshair goes click-through so it never intercepts a shot in-game.
         _crosshair?.SetInteractive(false);
         _host.Settings.Save();
@@ -595,7 +607,7 @@ public sealed class WidgetHost : IDisposable
     private bool IsBoardWindow(IntPtr hwnd)
     {
         bool Is(Window? w) => w != null && new System.Windows.Interop.WindowInteropHelper(w).Handle == hwnd;
-        if (Is(_backdrop) || Is(_sidebar)) return true;
+        if (Is(_backdrop) || Is(_sidebar) || Is(_bar)) return true;
         foreach (var w in _windows.Values) if (Is(w)) return true;
         return false;
     }
@@ -922,6 +934,7 @@ public sealed class WidgetHost : IDisposable
             if (b.Overlaps(area)) list.Add(b);
         }
         if (SidebarRect() is { } sb && sb.Overlaps(area)) list.Add(sb);
+        if (BarRect() is { } bar && bar.Overlaps(area)) list.Add(bar);
         return list;
     }
 
@@ -961,6 +974,51 @@ public sealed class WidgetHost : IDisposable
             RecordSystemPlacement(w);
         }
         if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false, reason: "sidebar");
+    }
+
+    /// <summary>
+    /// The shortcut bar's rectangle while it is on screen - computed from the monitor and the bar's content width, so it is right
+    /// even in the moment a display change has not yet reached the bar's own HWND.
+    /// </summary>
+    private LayoutRect? BarRect() => _bar is { IsVisible: true, Rect: { } rect } ? rect : null;
+
+    /// <summary>
+    /// Widgets that really intersect the shortcut bar are pushed straight down below it. Unlike the sidebar clearance this is saved:
+    /// the pushed place is the widget's place from now on, so a second open moves nothing (the planner marks it as the user's, the
+    /// geometry is committed here and written with the board's save when it closes). Widgets that do not intersect are never touched.
+    /// </summary>
+    private void KeepWidgetsClearOfBar()
+    {
+        if (BarRect() is not { } bar) return;
+        var screen = DisplayGeometry.ScreenOf(bar);
+        double s = DisplayGeometry.ScaleOf(screen);
+        var area = DisplayGeometry.WorkArea(screen);
+        var visible = new List<(WidgetId Id, LayoutRect Rect)>();
+        foreach (var w in _windows.Values)
+            if (w.IsVisible && DisplayGeometry.BoundsOf(w) is { } b) visible.Add((w.Id, b));
+        foreach (var (id, moved) in _planner.ClearOfBar(visible, bar, area, s))
+        {
+            var w = _windows[id];
+            DisplayGeometry.MoveTo(w, moved.X, moved.Y);
+            double dipW = w.ActualWidth > 0 ? w.ActualWidth : w.Width, dipH = w.ActualHeight > 0 ? w.ActualHeight : w.Height;
+            CaptureGeometry(id, w, "shortcut-bar", (moved, dipW, dipH));
+        }
+    }
+
+    // ---- Shortcut bar ----
+
+    private void EnsureBar()
+    {
+        if (_bar != null) return;
+        _bar = new ShortcutBarWindow(_host.Shortcuts, () => _host.CurrentGame);
+        _bar.EditRequested += OpenShortcutEditor;
+        // Folding or unfolding the bar (or new items) changes its width: widgets under it move down, like at the open.
+        _bar.RectChanged += () => { if (_boardOpen) KeepWidgetsClearOfBar(); };
+    }
+
+    private void OpenShortcutEditor()
+    {
+        // The edit dialog arrives with the next step of the shortcut bar; until then the gear has nothing to open.
     }
 
     private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)
@@ -1021,6 +1079,7 @@ public sealed class WidgetHost : IDisposable
         if (DisplayGeometry.BoundsOf(grown) is not { } b) return;
         var fixedObstacles = new List<LayoutRect> { b };
         if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
+        if (BarRect() is { } bar) fixedObstacles.Add(bar);
         RearrangeOn(DisplayGeometry.ScreenOf(b), except: grown, snapToGrid: false, fixedObstacles, persist: true, reason: "make-room");
     }
 
@@ -1043,6 +1102,7 @@ public sealed class WidgetHost : IDisposable
         {
             var fixedObstacles = new List<LayoutRect>();
             if (SidebarRect() is { } sb) fixedObstacles.Add(sb);
+            if (BarRect() is { } bar) fixedObstacles.Add(bar);
             RearrangeOn(screen, except: null, snapToGrid, fixedObstacles, persist, reason);
         }
     }
@@ -1156,6 +1216,7 @@ public sealed class WidgetHost : IDisposable
             var screen = _boardScreen ?? PrimaryScreen();
             _backdrop?.Cover(screen);
             _sidebar?.Reposition(screen);
+            _bar?.Reposition(screen);
         }
         if (KeepApart) ArrangeVisible(snapToGrid: false, persist: false, reason: "display-change");
         ApplyCrosshair();
@@ -1318,6 +1379,7 @@ public sealed class WidgetHost : IDisposable
             if (!w.ExcludeFromCapture) HideIfVisible(w);
         HideIfVisible(_backdrop);
         HideIfVisible(_sidebar);
+        HideIfVisible(_bar);
         return hidden.Count == 0 ? null : new CaptureRestore(hidden);
     }
 
@@ -1363,6 +1425,7 @@ public sealed class WidgetHost : IDisposable
         }
         _windows.Clear();
         try { _sidebar?.Close(); } catch { }
+        try { _bar?.Close(); } catch { }
         try { _backdrop?.Close(); } catch { }
         try { _crosshair?.Close(); } catch { }
     }

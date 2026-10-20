@@ -42,8 +42,18 @@ public sealed class ShortcutService : IDisposable
     /// <summary>The list or something the bar shows (order, hidden, missing, icons) changed. Not raised for the recent-games list.</summary>
     public event EventHandler? ItemsChanged;
 
-    /// <summary>When the last scan finished (UTC), null before the first one. The board rescans when this is older than a minute.</summary>
+    /// <summary>When the last scan finished (UTC), null before the first one - or after only failed ones. The board rescans when this is older than a minute.</summary>
     public DateTime? LastScanUtc { get { lock (_gate) return _lastScanUtc; } }
+
+    /// <summary>The clock behind <see cref="LastScanUtc"/>; tests set it.</summary>
+    internal Func<DateTime> Clock { get; set; } = () => DateTime.UtcNow;
+
+    /// <summary>How old a scan may get before opening the board scans again.</summary>
+    public static readonly TimeSpan ScanFreshFor = TimeSpan.FromSeconds(60);
+
+    /// <summary>Never scanned, or the last scan is more than <see cref="ScanFreshFor"/> old.</summary>
+    public static bool IsStale(DateTime? lastScanUtc, DateTime nowUtc)
+        => lastScanUtc is not { } last || nowUtc - last > ScanFreshFor;
 
     /// <param name="closeBoard">Closes the widget board. Must be harmless while the board is closed (a hotkey launch).</param>
     /// <param name="toast">Shows a short notice to the user.</param>
@@ -99,7 +109,32 @@ public sealed class ShortcutService : IDisposable
     private ShortcutEntry? Find(string id)
         => Section.Items.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>True while the groups are shown; false = only the game chip (the bar's saved state).</summary>
+    public bool Expanded { get { lock (_gate) return Section.Expanded; } }
+
+    public void SetExpanded(bool expanded)
+    {
+        lock (_gate)
+        {
+            if (Section.Expanded == expanded) return;
+            Section.Expanded = expanded;
+        }
+        Commit();
+    }
+
+    /// <summary>
+    /// The icon of something that is not an entry - the bar's game chip (the exe of the game in front). Cached like every icon;
+    /// null for a blank path or an unreadable file.
+    /// </summary>
+    public string? IconFor(string? sourcePath, string cacheKey) => TryIcon(sourcePath, cacheKey);
+
     // ---------------------------------------------------------------- scanning
+
+    /// <summary>
+    /// What the board calls on every open: scans when there was no scan yet or the last one is older than a minute
+    /// (<see cref="IsStale"/>), otherwise does nothing. Fire and forget is fine - the bar listens to <see cref="ItemsChanged"/>.
+    /// </summary>
+    public Task RescanIfStale() => IsStale(LastScanUtc, Clock()) ? RescanAsync() : Task.CompletedTask;
 
     /// <summary>
     /// Looks at this PC again (Start menu, registry, browsers) on a background thread and merges the result into the list:
@@ -163,7 +198,7 @@ public sealed class ShortcutService : IDisposable
                 _icons = kept;
 
                 _browsers = browsers;
-                _lastScanUtc = DateTime.UtcNow;
+                _lastScanUtc = Clock();
             }
 
             if (changed) _settings.Save();
