@@ -16,7 +16,7 @@ public static class HotkeyEntryViewModel
         if (b.Key == 0) return "—";
 
         var sb = new StringBuilder();
-        if ((b.Modifiers & HotkeyModifier.Control) != 0) sb.Append("Strg + ");
+        if ((b.Modifiers & HotkeyModifier.Control) != 0) sb.Append(Services.L.T("Strg + ", "Ctrl + "));
         if ((b.Modifiers & HotkeyModifier.Alt) != 0)     sb.Append("Alt + ");
         if ((b.Modifiers & HotkeyModifier.Shift) != 0)   sb.Append("Shift + ");
         if ((b.Modifiers & HotkeyModifier.Win) != 0)     sb.Append("Win + ");
