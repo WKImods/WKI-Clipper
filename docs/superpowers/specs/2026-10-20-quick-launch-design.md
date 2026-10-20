@@ -1,3 +1,5 @@
+> **VERWORFEN (2026-10-20):** Phillip hat die Fenster-holen/parken-Variante verworfen. Gültig ist docs/superpowers/specs/2026-10-20-shortcut-bar-design.md.
+
 # Schnellstart: Spiele-Clients und Browser aus dem Clipper holen — Design
 
 Stand 2026-10-20 · Projekt WKI Clipper (.NET 8 WPF) · Autor: Claude (Opus) mit Phillip
