@@ -202,8 +202,7 @@ public sealed class ShortcutBarView : Border
     public void SetGame(string? name, string? icon)
     {
         _chipShowsGame = !string.IsNullOrWhiteSpace(name);
-        var source = BarIcons.Load(icon);
-        _chipHost.Child = _chipShowsGame && source != null ? IconImage(source) : _chipShowsGame ? LetterTile(name!) : WkiLogo();
+        _chipHost.Child = _chipShowsGame ? BarIcons.Tile(name!, icon, IconSize) : WkiLogo();
         _chip.ToolTip = _chipShowsGame ? name : "WKI Clipper";
     }
 
@@ -217,9 +216,7 @@ public sealed class ShortcutBarView : Border
 
     private BarButton MakeItem(BarItem item)
     {
-        var source = BarIcons.Load(item.IconPng);
-        var content = source != null ? IconImage(source) : LetterTile(item.Name);
-        var button = new BarButton(content)
+        var button = new BarButton(BarIcons.Tile(item.Name, item.IconPng, IconSize))
         {
             ToolTip = item.Missing ? $"{item.Name} - {L.T("nicht gefunden", "not found")}" : item.Name,
             Opacity = item.Missing ? 0.38 : 1.0,   // a greyed-out entry: its program is gone, but it can still be tried or removed
@@ -227,31 +224,6 @@ public sealed class ShortcutBarView : Border
         var id = item.Id;
         button.Clicked += () => ItemClicked?.Invoke(id);
         return button;
-    }
-
-    private static FrameworkElement IconImage(BitmapSource source)
-    {
-        var image = new Image { Source = source, Width = IconSize, Height = IconSize, Stretch = Stretch.Uniform, IsHitTestVisible = false };
-        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
-        return image;
-    }
-
-    /// <summary>No icon (yet, or its cache file is gone): the first letter on a soft tile, so the entry is still recognisable.</summary>
-    private static FrameworkElement LetterTile(string name)
-    {
-        var trimmed = (name ?? "").Trim();
-        var tile = new Border
-        {
-            Width = IconSize, Height = IconSize, CornerRadius = new CornerRadius(8), IsHitTestVisible = false,
-            Background = (Brush)Application.Current.FindResource("SoftFillHoverBrush"),
-            Child = new TextBlock
-            {
-                Text = trimmed.Length > 0 ? trimmed[..1].ToUpperInvariant() : "?",
-                FontSize = 16, FontWeight = FontWeights.SemiBold,
-                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-            },
-        };
-        return tile;
     }
 
     /// <summary>The same accent disc with a "W" the sidebar's header wears.</summary>
@@ -308,9 +280,39 @@ public sealed class ShortcutBarView : Border
     internal void ClickChip() { if (!Expanded) _chip.RaiseClick(); }
 }
 
-/// <summary>Loads the cached icon PNGs for the bar. A file that is gone or unreadable is simply "no icon" (the bar shows a letter).</summary>
+/// <summary>Loads the cached icon PNGs for the bar and the edit dialog. A file that is gone or unreadable is simply "no icon" (a letter tile is shown).</summary>
 internal static class BarIcons
 {
+    /// <summary>The picture of an entry: its icon, or - when there is none (yet) or its cache file is gone - the first letter on a soft tile.</summary>
+    public static FrameworkElement Tile(string name, string? pngPath, double size)
+    {
+        var source = Load(pngPath);
+        return source != null ? Picture(source, size) : Letter(name, size);
+    }
+
+    public static FrameworkElement Picture(BitmapSource source, double size)
+    {
+        var image = new Image { Source = source, Width = size, Height = size, Stretch = Stretch.Uniform, IsHitTestVisible = false };
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+        return image;
+    }
+
+    public static FrameworkElement Letter(string name, double size)
+    {
+        var trimmed = (name ?? "").Trim();
+        return new Border
+        {
+            Width = size, Height = size, CornerRadius = new CornerRadius(Math.Max(4, size / 4)), IsHitTestVisible = false,
+            Background = (Brush)Application.Current.FindResource("SoftFillHoverBrush"),
+            Child = new TextBlock
+            {
+                Text = trimmed.Length > 0 ? trimmed[..1].ToUpperInvariant() : "?",
+                FontSize = size / 2, FontWeight = FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
     // The cache file name carries a hash of the source file's timestamp: the same path is always the same picture.
     private static readonly Dictionary<string, BitmapSource?> Cache = new(StringComparer.OrdinalIgnoreCase);
 

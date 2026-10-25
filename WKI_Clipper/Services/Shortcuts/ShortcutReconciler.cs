@@ -61,7 +61,7 @@ public static class ShortcutReconciler
 
         foreach (var original in saved)
         {
-            var e = Clone(original);
+            var e = CloneEntry(original);
             switch (e.Group)
             {
                 case ShortcutGroup.Game:
@@ -199,7 +199,8 @@ public static class ShortcutReconciler
     private static bool IsManaged(ShortcutEntry e, string idPrefix)
         => e.Id.StartsWith(idPrefix, StringComparison.OrdinalIgnoreCase);
 
-    private static ShortcutEntry Clone(ShortcutEntry e) => new()
+    /// <summary>A copy that shares nothing with the original (the hotkey is copied, too).</summary>
+    internal static ShortcutEntry CloneEntry(ShortcutEntry e) => new()
     {
         Id = e.Id,
         Group = e.Group,

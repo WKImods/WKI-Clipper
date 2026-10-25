@@ -27,6 +27,9 @@ internal static class IconGlyph
     /// <summary>The shortcut bar's fold arrows and its gear.</summary>
     public const string ChevronLeft = "", ChevronRight = "", Settings = "";
 
+    /// <summary>Move up / move down / remove, for the shortcut edit dialog's rows.</summary>
+    public const string ChevronUp = "", ChevronDown = "", Cancel = "";
+
     public static TextBlock Make(string glyph, double size = 14) => new()
     {
         Text = glyph,

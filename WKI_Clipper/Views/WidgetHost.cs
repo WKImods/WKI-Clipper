@@ -1016,9 +1016,18 @@ public sealed class WidgetHost : IDisposable
         _bar.RectChanged += () => { if (_boardOpen) KeepWidgetsClearOfBar(); };
     }
 
+    /// <summary>
+    /// The bar's gear: the edit dialog, modal above the board. It changes the lists live; a changed hotkey re-registers the global
+    /// hotkeys through the host. The bar and the widgets under it follow by themselves (ItemsChanged, the bar's rectangle).
+    /// </summary>
     private void OpenShortcutEditor()
     {
-        // The edit dialog arrives with the next step of the shortcut bar; until then the gear has nothing to open.
+        try
+        {
+            var model = ShortcutEditorModel.ForThisPc(_host.Shortcuts, _host.ShortcutShell);
+            new ShortcutEditorWindow(_host.Shortcuts, model, _host.RefreshShortcutHotkeys, _bar).ShowDialog();
+        }
+        catch (Exception ex) { Logger.Warn("The shortcut editor failed: " + ex.Message); }
     }
 
     private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)

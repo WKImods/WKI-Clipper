@@ -178,6 +178,9 @@ public sealed class AppHost : IDisposable
     /// </summary>
     public ShortcutService Shortcuts { get; }
 
+    /// <summary>The shell behind <see cref="Shortcuts"/> (the edit dialog reads Start-menu shortcuts through it, too).</summary>
+    public IShortcutShell ShortcutShell { get; }
+
     /// <summary>
     /// Set by App once the widget host exists: closes the board, and does nothing while it is closed (a hotkey start).
     /// Keeps the UI-owning host out of AppHost, like <see cref="CrosshairRefresh"/>.
@@ -274,7 +277,8 @@ public sealed class AppHost : IDisposable
         // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
         Gamepad = new GamepadService(Settings);
 
-        Shortcuts = new ShortcutService(Settings, new Win32ShortcutShell(), new DiskFileSystemView(), new WindowsRegistryView(),
+        ShortcutShell = new Win32ShortcutShell();
+        Shortcuts = new ShortcutService(Settings, ShortcutShell, new DiskFileSystemView(), new WindowsRegistryView(),
             closeBoard: () => CloseBoard?.Invoke(),
             toast: msg => ToastService.Show(ToastKind.Warning, L.T("Verknüpfungsleiste", "Shortcut bar"), msg, durationSeconds: 6));
         // A hotkey of an entry changed (editor, prune): the global registration follows. Other changes (icons, order) do not touch it.

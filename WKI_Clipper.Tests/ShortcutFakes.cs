@@ -24,6 +24,14 @@ internal sealed class FakeFileSystem : IFileSystemView
         return this;
     }
 
+    /// <summary>Everything the other fake holds, too (several fixtures make up one PC).</summary>
+    public FakeFileSystem Merge(FakeFileSystem other)
+    {
+        foreach (var (path, content) in other._files) Add(path, content);
+        foreach (var dir in other._dirs) _dirs.Add(dir);
+        return this;
+    }
+
     public FakeFileSystem AddDir(string path)
     {
         _dirs.Add(ShortcutPaths.Normalize(path));

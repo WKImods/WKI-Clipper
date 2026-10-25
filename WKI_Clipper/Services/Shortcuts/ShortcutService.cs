@@ -480,6 +480,87 @@ public sealed class ShortcutService : IDisposable
         _settings.Save();
     }
 
+    // ---------------------------------------------------------------- for the edit dialog
+
+    /// <summary>Every entry - hidden and greyed-out ones included - as copies: the dialog reads them and changes them only through this class.</summary>
+    public IReadOnlyList<ShortcutEntry> Entries()
+    {
+        lock (_gate) return Section.Items.Select(ShortcutReconciler.CloneEntry).ToList();
+    }
+
+    /// <summary>The cached icon of an entry (hidden ones too), or null while there is none.</summary>
+    public string? IconOf(string id)
+    {
+        lock (_gate) return _icons.GetValueOrDefault(id);
+    }
+
+    /// <summary>The browser behind the standard-browser button; null = the Windows default.</summary>
+    public string? DefaultBrowserId { get { lock (_gate) return Section.DefaultBrowserId; } }
+
+    public void SetDefaultBrowser(string? browserId)
+    {
+        var id = string.IsNullOrWhiteSpace(browserId) ? null : browserId;
+        lock (_gate)
+        {
+            if (string.Equals(Section.DefaultBrowserId, id, StringComparison.Ordinal)) return;
+            Section.DefaultBrowserId = id;
+        }
+        Commit();
+    }
+
+    /// <summary>
+    /// Sets or clears an entry's global hotkey (null or Key 0 = none). Does not check for collisions - the dialog does that
+    /// with <see cref="HotkeyService.FindCollision"/> - and does not register anything: the host re-registers when the hotkeys changed.
+    /// </summary>
+    public void SetHotkey(string id, HotkeyBinding? hotkey)
+    {
+        lock (_gate)
+        {
+            var entry = Find(id);
+            if (entry == null) return;
+            entry.Hotkey = hotkey is { Key: not 0 } ? new HotkeyBinding { Modifiers = hotkey.Modifiers, Key = hotkey.Key } : null;
+        }
+        Commit();
+    }
+
+    /// <summary>The owner of a hotkey combo that is already taken (the clipper, a stream-deck tile, another shortcut), or null when it is free for entry <paramref name="id"/>.</summary>
+    public string? HotkeyCollision(string id, HotkeyBinding candidate)
+        => HotkeyService.FindCollision(_settings.Current, candidate, excludeShortcutId: id);
+
+    /// <summary>The browsers installed now (a fresh look at the registry - a handful of reads), plus the four named candidates with their download pages.</summary>
+    public IReadOnlyList<BrowserInfo> DetectBrowsers() => BrowserCatalog.Detect(_reg, _fs);
+
+    /// <summary>The exe the Windows default browser starts, or null.</summary>
+    public string? WindowsDefaultBrowserExe() => _shell.WindowsDefaultBrowserExe();
+
+    /// <summary>
+    /// Puts a browser the user picked on the bar (end of the browsers). True when it is on the bar afterwards - also when it already
+    /// was; false for a browser that is not installed (the missing-browser dialog handles that, nothing is added).
+    /// </summary>
+    public bool AddBrowser(BrowserInfo browser)
+    {
+        if (!browser.Installed || string.IsNullOrWhiteSpace(browser.ExePath)) return false;
+        var id = ShortcutReconciler.BrowserEntryId(browser.Id);
+        lock (_gate)
+        {
+            if (Find(id) != null) return true;
+            var entry = ShortcutReconciler.NewBrowserEntry(browser);
+            var list = Section.Items.ToList();
+            list.Add(entry);
+            Section.Items = list;
+        }
+        var icon = TryIcon(browser.ExePath, ShortcutReconciler.BrowserEntryId(browser.Id));
+        if (icon != null) lock (_gate) _icons[id] = icon;
+        Commit();
+        return true;
+    }
+
+    /// <summary>The games the clipper has seen in front, newest first (a copy).</summary>
+    public IReadOnlyList<SeenGame> RecentGames()
+    {
+        lock (_gate) return Section.RecentGames.ToList();
+    }
+
     // ---------------------------------------------------------------- plumbing
 
     private void Commit()

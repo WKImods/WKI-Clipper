@@ -666,6 +666,111 @@ public sealed class ShortcutServiceTests : IDisposable
         Assert.DoesNotContain(Reload().Load().Shortcuts.Items, e => e.Id == gameId);
     }
 
+    // ---- what the edit dialog needs ----
+
+    [Fact]
+    public async Task Entries_snapshot_includes_hidden_ones_and_cannot_change_the_live_list()
+    {
+        var svc = Create();
+        await svc.RescanAsync();
+        svc.SetHidden("launcher:gog", true);
+
+        var snapshot = svc.Entries();
+
+        Assert.Equal(_settings.Current.Shortcuts.Items.Select(e => e.Id).ToArray(), snapshot.Select(e => e.Id).ToArray());
+        Assert.True(snapshot.Single(e => e.Id == "launcher:gog").Hidden);      // hidden ones are listed (the dialog shows them unticked)
+        snapshot.Single(e => e.Id == "launcher:gog").Hidden = false;           // editing the copy ...
+        snapshot.Single(e => e.Id == "launcher:steam").DisplayName = "changed";
+        Assert.True(Entry("launcher:gog").Hidden);                             // ... changes nothing of the real thing
+        Assert.Equal("Steam", Entry("launcher:steam").DisplayName);
+    }
+
+    [Fact]
+    public async Task IconOf_gives_the_cached_icon_of_any_entry_hidden_or_not()
+    {
+        var svc = Create();
+        await svc.RescanAsync();
+        svc.SetHidden("launcher:steam", true);
+
+        Assert.Equal(@"C:\icons\launcher_steam.png", svc.IconOf("launcher:steam"));
+        Assert.Null(svc.IconOf("game.nothing"));
+    }
+
+    [Fact]
+    public void SetHotkey_sets_clears_and_persists()
+    {
+        var svc = Create();
+        svc.AddGame(Link(WotLnk), "World of Tanks", WotLnk);
+        var id = _settings.Current.Shortcuts.Items.First(e => e.Group == ShortcutGroup.Game).Id;
+        int raised = 0;
+        svc.ItemsChanged += (_, _) => raised++;
+
+        svc.SetHotkey(id, new HotkeyBinding { Modifiers = HotkeyModifier.Control | HotkeyModifier.Alt, Key = 0x31 });
+
+        Assert.Equal(1, raised);
+        var saved = Reload().Load().Shortcuts.Items.Single(e => e.Id == id);
+        Assert.Equal(0x31u, saved.Hotkey!.Key);
+        Assert.Equal(HotkeyModifier.Control | HotkeyModifier.Alt, saved.Hotkey.Modifiers);
+
+        svc.SetHotkey(id, null);
+        Assert.Null(Entry(id).Hotkey);
+        Assert.Null(Reload().Load().Shortcuts.Items.Single(e => e.Id == id).Hotkey);
+
+        svc.SetHotkey(id, new HotkeyBinding { Key = 0 });   // "not bound" is the same as none
+        Assert.Null(Entry(id).Hotkey);
+
+        svc.SetHotkey("game.unknown", new HotkeyBinding { Key = 0x32 });   // an unknown id changes nothing
+    }
+
+    [Fact]
+    public void SetDefaultBrowser_persists_and_null_means_the_windows_default()
+    {
+        var svc = Create();
+        Assert.Null(svc.DefaultBrowserId);
+
+        svc.SetDefaultBrowser("chrome");
+
+        Assert.Equal("chrome", svc.DefaultBrowserId);
+        Assert.Equal("chrome", Reload().Load().Shortcuts.DefaultBrowserId);
+        svc.SetDefaultBrowser(null);
+        Assert.Null(Reload().Load().Shortcuts.DefaultBrowserId);
+    }
+
+    [Fact]
+    public void AddBrowser_adds_an_installed_browser_once_and_refuses_one_that_is_missing()
+    {
+        var svc = Create();
+        var browsers = svc.DetectBrowsers();
+        var chrome = browsers.Single(b => b.Id == "chrome");
+        var opera = browsers.Single(b => b.Id == "opera");
+
+        Assert.True(svc.AddBrowser(chrome));
+        Assert.True(svc.AddBrowser(chrome));      // again: still "there", but not twice
+        Assert.False(svc.AddBrowser(opera));      // not installed: that is the missing-browser dialog's business
+
+        var entries = _settings.Current.Shortcuts.Items.Where(e => e.Group == ShortcutGroup.Browser).ToArray();
+        Assert.Equal(new[] { "browser:default", "browser:chrome" }, entries.Select(e => e.Id).ToArray());
+        var added = entries[1];
+        Assert.Equal(ShortcutKind.Browser, added.Kind);
+        Assert.Equal(PhillipsPc.ChromePath, added.Target);
+        Assert.Equal("Google Chrome", added.DisplayName);
+        Assert.False(added.Missing);
+        Assert.True(svc.Launch("browser:chrome"));
+        Assert.Equal(new LaunchTarget(ShortcutKind.Browser, PhillipsPc.ChromePath, null), _shell.Started.Last());
+    }
+
+    [Fact]
+    public void Recent_games_are_handed_out_as_a_copy()
+    {
+        var svc = Create();
+        svc.RememberGame(@"C:\Games\World_of_Tanks_EU\WorldOfTanks.exe", "World of Tanks");
+
+        var recent = svc.RecentGames();
+
+        Assert.Equal("World of Tanks", Assert.Single(recent).DisplayName);
+        Assert.Equal(PhillipsPc.CometPath, svc.WindowsDefaultBrowserExe());
+    }
+
     // ---- bar state (collapsed or open) ----
 
     [Fact]
