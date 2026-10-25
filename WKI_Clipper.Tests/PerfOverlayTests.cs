@@ -12,11 +12,11 @@ public sealed class PerfOverlayTests
     private static readonly LayoutRect Screen = new(0, 0, 3440, 1440);
 
     [Theory]
-    [InlineData(ScreenCorner.TopLeft, 10, 10)]
-    [InlineData(ScreenCorner.TopRight, 3440 - 10 - 200, 10)]
-    [InlineData(ScreenCorner.BottomLeft, 10, 1440 - 10 - 100)]
-    [InlineData(ScreenCorner.BottomRight, 3440 - 10 - 200, 1440 - 10 - 100)]
-    public void The_overlay_sits_in_the_chosen_corner(ScreenCorner corner, double x, double y)
+    [InlineData(OverlayAnchor.TopLeft, 10, 10)]
+    [InlineData(OverlayAnchor.TopRight, 3440 - 10 - 200, 10)]
+    [InlineData(OverlayAnchor.BottomLeft, 10, 1440 - 10 - 100)]
+    [InlineData(OverlayAnchor.BottomRight, 3440 - 10 - 200, 1440 - 10 - 100)]
+    public void The_overlay_sits_in_the_chosen_corner(OverlayAnchor corner, double x, double y)
         => Assert.Equal((x, y), PerfOverlayLayout.Place(corner, 200, 100, Screen, 10));
 
     [Theory]
@@ -89,7 +89,7 @@ public sealed class PerfOverlayTests
         var s = new PerfOverlaySettings();
         Assert.False(s.Enabled);
         Assert.True(s.HideFromCapture);
-        Assert.Equal(ScreenCorner.TopRight, s.Corner);
+        Assert.Equal(OverlayAnchor.TopRight, s.Anchor);
         Assert.Equal(0u, new AppSettings().Hotkeys[HotkeyActions.TogglePerfOverlay].Key);   // unbound
     }
 

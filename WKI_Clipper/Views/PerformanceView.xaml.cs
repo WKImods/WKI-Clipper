@@ -195,16 +195,16 @@ public partial class PerformanceView : UserControl
                                "The overlay appears while a game is in front (fullscreen, or your window target) and goes away afterwards.");
         OverlayPanel.Children.Add(onlyGame);
 
-        // Corner
-        (ScreenCorner Value, string Text)[] corners =
+        // Corner (the full position list with "Free" follows with the drag mode)
+        (OverlayAnchor Value, string Text)[] corners =
         {
-            (ScreenCorner.TopLeft, L.T("Oben links", "Top left")),
-            (ScreenCorner.TopRight, L.T("Oben rechts", "Top right")),
-            (ScreenCorner.BottomLeft, L.T("Unten links", "Bottom left")),
-            (ScreenCorner.BottomRight, L.T("Unten rechts", "Bottom right")),
+            (OverlayAnchor.TopLeft, L.T("Oben links", "Top left")),
+            (OverlayAnchor.TopRight, L.T("Oben rechts", "Top right")),
+            (OverlayAnchor.BottomLeft, L.T("Unten links", "Bottom left")),
+            (OverlayAnchor.BottomRight, L.T("Unten rechts", "Bottom right")),
         };
         OverlayPanel.Children.Add(Labeled(L.T("Ecke", "Corner"),
-            Combo(corners, Cfg.Corner, v => Cfg.Corner = v)));
+            Combo(corners, Cfg.Anchor, v => Cfg.Anchor = v)));
 
         OverlayPanel.Children.Add(Labeled(L.T("Größe", "Size"),
             SliderRow(0.75, 2.0, PerfOverlayLayout.ClampScale(Cfg.Scale), v => $"{v * 100:F0} %",

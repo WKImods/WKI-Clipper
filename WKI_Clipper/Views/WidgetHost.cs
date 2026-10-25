@@ -332,14 +332,18 @@ public sealed class WidgetHost : IDisposable
         if (justShown) _perfOverlay.Show();
         _perfOverlay.UpdateLayout();
 
-        // Corner of the primary monitor's full area — in a fullscreen game that IS the corner.
-        var screen = PrimaryScreen();
-        var bounds = DisplayGeometry.Bounds(screen);
-        double dpi = DisplayGeometry.ScaleOf(screen);
-        var (x, y) = PerfOverlayLayout.Place(s.Corner, _perfOverlay.ActualWidth * dpi, _perfOverlay.ActualHeight * dpi,
-                                             bounds, 10 * dpi);
-        if (DisplayGeometry.BoundsOf(_perfOverlay) is not { } cur || Math.Abs(cur.X - x) > 0.5 || Math.Abs(cur.Y - y) > 0.5)
-            DisplayGeometry.MoveTo(_perfOverlay, x, y);
+        // One of eight places on the primary monitor's full area (in a fullscreen game that IS the screen edge) or a
+        // dragged-to spot on the monitor it was dropped on; a monitor that is gone means the primary one.
+        var monitors = ScreenBoxes();
+        if (PerfOverlayPlacement.ResolveMonitor(s.Anchor, s.Free, monitors, null) is { } monitor)
+        {
+            var area = monitor.WorkArea;
+            double dpi = DisplayGeometry.ScaleAt(area.X + area.W / 2, area.Y + area.H / 2);
+            var at = PerfOverlayPlacement.Place(s.Anchor, s.Free, _perfOverlay.ActualWidth * dpi, _perfOverlay.ActualHeight * dpi,
+                                                monitors, null, PerfOverlayPlacement.MarginDip * dpi);
+            if (DisplayGeometry.BoundsOf(_perfOverlay) is not { } cur || Math.Abs(cur.X - at.X) > 0.5 || Math.Abs(cur.Y - at.Y) > 0.5)
+                DisplayGeometry.MoveTo(_perfOverlay, at.X, at.Y);
+        }
         // Only when it appears — re-asserting z-order every second would churn the desktop.
         if (justShown) BumpTopmost(_perfOverlay);
     }
@@ -1363,6 +1367,10 @@ public sealed class WidgetHost : IDisposable
     // ---- Screen helpers (physical pixels; see DisplayGeometry) ----
 
     private static WinForms.Screen PrimaryScreen() => WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens[0];
+
+    /// <summary>Every monitor as the overlay placement sees it: device name, full bounds (physical pixels), primary flag.</summary>
+    private static List<MonitorBox> ScreenBoxes()
+        => WinForms.Screen.AllScreens.Select(sc => new MonitorBox(sc.DeviceName, DisplayGeometry.Bounds(sc), sc.Primary)).ToList();
 
     private static WinForms.Screen? ScreenByDeviceName(string? name)
         => string.IsNullOrEmpty(name) ? null : WinForms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == name);

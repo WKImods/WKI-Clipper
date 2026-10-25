@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Text.Json.Serialization;
 
 namespace WKI_Clipper.Models;
@@ -383,7 +384,32 @@ public sealed class SpotifySettings
     public double Zoom { get; set; } = 1.0;
 }
 
+/// <summary>
+/// The four corners the overlay could sit in before 0.17.0. Kept only so a settings.json written back then still
+/// loads (see <see cref="PerfOverlaySettings.LegacyCorner"/>); the overlay itself uses <see cref="OverlayAnchor"/>.
+/// </summary>
 public enum ScreenCorner { TopLeft, TopRight, BottomLeft, BottomRight }
+
+/// <summary>Where the performance overlay sits: eight fixed places on the monitor, or <see cref="Free"/> (dragged there).</summary>
+public enum OverlayAnchor { TopLeft, TopCenter, TopRight, MiddleLeft, MiddleRight, BottomLeft, BottomCenter, BottomRight, Free }
+
+/// <summary>
+/// A dragged-to place of the overlay. Stored relative to ONE edge of ONE monitor, so a resolution change keeps its
+/// proportions and a growing overlay (more values, bigger scale) keeps that edge where it is.
+/// </summary>
+public sealed class OverlayFreePlace
+{
+    /// <summary>Device name of the monitor (<c>\\.\DISPLAY1</c>). A monitor that is gone means the primary one.</summary>
+    public string Monitor { get; set; } = "";
+    /// <summary>Which horizontal edge the distance is measured from: 0 left, 1 centre, 2 right.</summary>
+    public int HEdge { get; set; }
+    /// <summary>Which vertical edge the distance is measured from: 0 top, 1 middle, 2 bottom.</summary>
+    public int VEdge { get; set; }
+    /// <summary>Distance from that edge as a fraction of the monitor's width (from the centre: signed, to the right).</summary>
+    public double RelDX { get; set; }
+    /// <summary>Distance from that edge as a fraction of the monitor's height (from the middle: signed, downwards).</summary>
+    public double RelDY { get; set; }
+}
 
 /// <summary>Panel behind the overlay numbers (Aus / Schwarz / Violett).</summary>
 public enum OverlayBackground { Off, Black, Violet }
@@ -402,7 +428,33 @@ public enum OverlayColor { White, Gray, Orange, Green, Cyan, Yellow, Red }
 public sealed class PerfOverlaySettings
 {
     public bool Enabled { get; set; }
-    public ScreenCorner Corner { get; set; } = ScreenCorner.TopRight;
+    /// <summary>One of eight places on the primary monitor, or <see cref="OverlayAnchor.Free"/> (then <see cref="Free"/> holds the spot).</summary>
+    public OverlayAnchor Anchor { get; set; } = OverlayAnchor.TopRight;
+    /// <summary>Only meaningful while <see cref="Anchor"/> is <see cref="OverlayAnchor.Free"/>; null otherwise.</summary>
+    public OverlayFreePlace? Free { get; set; }
+
+    /// <summary>
+    /// Reads the "Corner" key of a settings.json written before 0.17.0 into <see cref="Anchor"/> (the four corners map
+    /// to the same places). Never written back: the getter is always null and null is not serialised.
+    /// </summary>
+    [JsonPropertyName("Corner")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public ScreenCorner? LegacyCorner
+    {
+        get => null;
+        set
+        {
+            if (value is { } c)
+                Anchor = c switch
+                {
+                    ScreenCorner.TopLeft => OverlayAnchor.TopLeft,
+                    ScreenCorner.BottomLeft => OverlayAnchor.BottomLeft,
+                    ScreenCorner.BottomRight => OverlayAnchor.BottomRight,
+                    _ => OverlayAnchor.TopRight
+                };
+        }
+    }
     /// <summary>0.75 … 2.0.</summary>
     public double Scale { get; set; } = 1.0;
     public bool ShowGraphs { get; set; } = true;

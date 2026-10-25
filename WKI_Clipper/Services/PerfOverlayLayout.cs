@@ -19,14 +19,14 @@ public readonly record struct Rgba(byte A, byte R, byte G, byte B);
 /// </summary>
 public static class PerfOverlayLayout
 {
-    /// <summary>Top-left of an overlay of the given size in a corner of the area (all physical pixels).</summary>
-    public static (double X, double Y) Place(ScreenCorner corner, double width, double height, LayoutRect area, double margin)
+    /// <summary>
+    /// Top-left of an overlay of the given size at a fixed anchor of one area (all physical pixels). The single-monitor
+    /// form of <see cref="PerfOverlayPlacement.Place"/>, which also knows the free place and several monitors.
+    /// </summary>
+    public static (double X, double Y) Place(OverlayAnchor anchor, double width, double height, LayoutRect area, double margin)
     {
-        bool right = corner is ScreenCorner.TopRight or ScreenCorner.BottomRight;
-        bool bottom = corner is ScreenCorner.BottomLeft or ScreenCorner.BottomRight;
-        double x = right ? area.Right - margin - width : area.X + margin;
-        double y = bottom ? area.Bottom - margin - height : area.Y + margin;
-        return (x, y);
+        var r = PerfOverlayPlacement.Place(anchor, null, width, height, new[] { new MonitorBox("", area, true) }, null, margin);
+        return (r.X, r.Y);
     }
 
     public static double ClampScale(double scale) => Math.Clamp(double.IsFinite(scale) ? scale : 1.0, 0.75, 2.0);
