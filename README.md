@@ -2,18 +2,19 @@
 
 Replay clipper, screen recorder and gaming overlay for Windows — one tray app instead of a
 pile of tools. Instant replay of up to 30 minutes, a gallery with notes, trimming and
-one-click Discord compression, an Xbox-style widget board with OBS control, Spotify and
-WhatsApp, a performance overlay with FPS, a crosshair with per-game profiles and clip combos
-on your controller. No account, no telemetry, no cloud.
+one-click Discord compression, an Xbox-style widget board with a shortcut bar for your games,
+launchers and browsers, OBS control, Spotify and WhatsApp, a performance overlay with FPS that
+you can place anywhere, your own accent and glass colours, a crosshair with per-game profiles
+and clip combos on your controller. No account, no telemetry, no cloud.
 
 **[Download the latest release](https://github.com/WKImods/WKI-Clipper/releases/latest)**
 
-![The widget board: sidebar on the left, widgets over the dimmed desktop](docs/screenshots/board.png)
+![The widget board: shortcut bar at the top, sidebar on the left, widgets over the dimmed desktop](docs/screenshots/board.png)
 
-<sub>The widget board with `Ctrl+Alt+G`. The empty space at the top right is the WhatsApp
-widget — it is invisible to every capture, this screenshot included; the numbers in the
-corner are the performance overlay. The UI starts in German; switch to English under
-Settings → About.</sub>
+<sub>The widget board with `Ctrl+Alt+G`. The shortcut bar is at the top centre. The empty
+space at the top right is the WhatsApp widget — it is invisible to every capture, this
+screenshot included; the small dashed box at the bottom left is the performance overlay in
+drag mode. The UI starts in German; switch to English under Settings → About.</sub>
 
 ## Hotkeys
 
@@ -26,7 +27,7 @@ Settings → About.</sub>
 | `Ctrl+F10` | Pause/resume the replay buffer |
 | `Ctrl+Alt+G` | Open/close the widget board |
 | `Ctrl+Alt+C` | Show/hide the crosshair |
-| *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off |
+| *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off · any [shortcut bar](#shortcut-bar) entry (bound in its edit dialog) |
 
 All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks).
 
@@ -53,15 +54,17 @@ also while the game has focus. Out of the box, **View + Menu** saves a clip like
 
 <img src="docs/screenshots/sidebar.png" align="right" width="180" alt="Sidebar, expanded and collapsed to an icon rail">
 
-`Ctrl+Alt+G` opens the board over the game: a dimmed backdrop, a **sidebar** on the left
-and the widgets you have open. Every widget is its own frameless window — drag it, resize
-it, **pin** it to keep it on screen while you play, or close it. A transparency slider in
-each title bar dials a pinned widget down; it turns fully opaque again under the pointer.
+`Ctrl+Alt+G` opens the board over the game: a dimmed backdrop, a **sidebar** on the left, a
+[shortcut bar](#shortcut-bar) at the top centre and the widgets you have open. Every widget
+is its own frameless window — drag it, resize it, **pin** it to keep it on screen while you
+play, or close it. A transparency slider in each title bar dials a pinned widget down; it
+turns fully opaque again under the pointer.
 
 **Sidebar.** Widgets are grouped into *Capture*, *Stream* and *Apps*; open ones are
 highlighted, the WhatsApp unread count shows as a pill. The header shows what the capture
 is doing right now (buffer active · 60 s / paused / recording with its running time), the
-footer holds the layout switches, settings and the clock. It collapses to an icon rail.
+footer holds the layout switches, the [*Colours*](#colours) chip, settings and the clock. It
+collapses to an icon rail.
 
 **Grid.** With *Grid* on, widgets snap to a grid and to each other's edges while you drag
 or resize them (hold `Shift` to place freely). By default they never overlap — a dropped
@@ -156,7 +159,8 @@ disk (about 6–7 GB for 30 minutes at the default quality, up to ~25 GB at *Ver
   names every gap. Footage of another window or with other encoding settings is never
   joined. For gap-free evidence use *Whole monitor* or *Specific window*.
 - **Long clips:** saving 30 minutes takes 20–90 s depending on the disk, with a progress
-  toast; `F8` and `F9` are blocked until it is done.
+  toast; `F8` and `F9` are blocked until it is done. Clips stitched from the disk ring join
+  frame-exactly at 60 fps — no dropped frame at a segment boundary, audio in sync.
 
 ### Per-game profiles
 
@@ -206,16 +210,89 @@ sit in the `…` menu of each row (also on right-click).
 
 <img src="docs/screenshots/trim.png" height="420" alt="Trim… editor: preview, timeline with start and end marks, fast or exact cut">
 
+## Shortcut bar
+
+A strip at the top centre of the board, in the style of the Xbox Game Bar. Click a game, a
+launcher or a browser: the board closes and the program starts the way the Start menu would
+start it — nothing is embedded, moved or parked, the program just opens.
+
+![Expanded shortcut bar: games, launchers, browsers and the gear](docs/screenshots/shortcut-bar.png)
+
+<img src="docs/screenshots/shortcut-bar-collapsed.png" width="300" alt="Collapsed shortcut bar: a chip with the game in front, or the WKI logo">
+
+- **Collapsed or expanded:** collapsed, it is a chip with the game in front — or the WKI
+  logo — and a `›`; expanded, it shows games | launchers | browsers | gear. The state is
+  remembered.
+- **How things start:**
+  - *Steam and Epic games* through their launcher links, so DRM and updates run as usual.
+  - *Other games* through the vendor's own shortcut — never an uninstaller or a side tool such
+    as a server or an editor. A game hosted by a launcher (Riot, Ubisoft …) starts through that
+    launcher's shortcut for the game; without any shortcut, the exe.
+  - *Launchers* through their official start path: Steam, EA app, Epic Games, GOG GALAXY,
+    Ubisoft Connect, Battle.net, Rockstar Games, Wargaming.net Game Center and Xbox — the
+    installed ones only.
+  - Nothing is started as administrator. A program that has been uninstalled turns grey and a
+    notice says so.
+- **Logos** are the programs' own icons; a letter tile stands in when there is none.
+- **Detection:** launchers are found from your Start-menu and desktop shortcuts, in a
+  background scan whenever the board opens (at most once a minute). The game chip and the
+  *Add game…* suggestions come from the clipper's own [game detection](#per-game-profiles).
+- **Browsers:** the *Default browser* button starts the Windows default — never Internet
+  Explorer — or another installed browser of your choice. Opera, Chrome, Comet and Firefox, and
+  any other browser Windows lists, go on the bar with *Add browser…*. A browser that is not
+  installed opens a dialog: its official download page, or another browser to use instead.
+- **Only starts programs:** no window management, no controller combos for shortcuts — a
+  keyboard hotkey per entry works. A widget that sits under the bar is moved below it once.
+
+The gear opens **Edit shortcuts**; every change shows on the bar at once.
+
+<p>
+  <img src="docs/screenshots/shortcut-editor.png" height="420" alt="Edit shortcuts: games, launchers and browsers with show tick, optional hotkey, order and remove">
+  <img src="docs/screenshots/shortcut-library.png" height="420" alt="Add game… → Steam library: pick several games, those already on the bar are greyed out">
+</p>
+
+- **Per entry:** a tick to show or hide it, up/down to reorder, an optional global hotkey
+  (unbound by default; it starts the program even while the board is closed) and, for games
+  and browsers you added, remove.
+- **Add game…:** suggestions from recently detected games, your Steam library or Epic Games
+  (several at once), or *Pick a shortcut or exe…* — an uninstall shortcut is refused.
+- **Rescan** looks at the PC again and removes launchers and browsers that are gone.
+
+## Colours
+
+The **Colours** chip in the sidebar footer opens a panel with two tabs, *Accent* and *Glass*,
+that you combine freely. A click on a swatch applies it at once — no restart — and is saved.
+
+![Colours panel: the Accent and Glass tabs side by side](docs/screenshots/colours.png)
+
+- **Accent:** WKI orange (default), Epic blue, Crimson, Emerald, Royal violet, Gold, Ice
+  blue, Magenta.
+- **Glass:** Violet (default), Night blue, Graphite, Bordeaux, Forest green, Black (OLED).
+- **Custom colour:** hue and saturation sliders or a hex value on either tab; *Default*
+  resets the tab.
+- **Stays readable:** text on a light accent turns dark, an accent too dark for the glass is
+  lightened, and the signal colours — red, green, amber — never change.
+
+<img src="docs/screenshots/theme-blue.png" width="720" alt="The whole board in Epic blue on Night blue glass">
+
 ## Performance overlay
 
-Bare numbers — no window, a soft shadow for legibility — in a screen corner over the game,
-always click-through. Pick the corner, the size (75–200 %) and the values — FPS, frame
-time, 1 % / 0.1 % lows, micro-stutter, CPU, GPU, GPU clock and voltage, GPU temperature,
-fan, RAM, VRAM, VRAM clock, time of day — optionally with 60-second history graphs. For an
-Adrenalin-style look there are 1–3 columns, a graph size, a black or violet backdrop with
-adjustable transparency and colour presets for names and values; *Only show while a game is
-detected* keeps the desktop clean. **Hidden from stream and clips by default**; a tick
-shows it for benchmark videos.
+Bare numbers — no window, a soft shadow for legibility — over the game, click-through while
+you play. Pick the position, the size (75–200 %) and the values — FPS, frame time, 1 % /
+0.1 % lows, micro-stutter, CPU, GPU, GPU clock and voltage, GPU temperature, fan, RAM, VRAM,
+VRAM clock, time of day — optionally with 60-second history graphs. For an Adrenalin-style
+look there are 1–3 columns, a graph size, a black or violet backdrop with adjustable
+transparency and colour presets for names and values; *Only show while a game is detected*
+keeps the desktop clean. **Hidden from stream and clips by default**; a tick shows it for
+benchmark videos.
+
+**Position:** the four corners and the middle of each edge — eight anchors — or *Free*
+(Performance widget → On-screen overlay → *Position*). To place it freely, open the board:
+the overlay gets a dashed outline and can be dragged, and close to one of the eight anchors it
+snaps there. A free spot is stored relative to its monitor's edge, so the overlay stays
+anchored when it grows (more values, a larger size) and stays on screen after a monitor or
+resolution change — a monitor that is gone falls back to the primary one. With the board
+closed it is click-through again. Corner settings from before 0.17.0 keep working.
 
 **FPS, frame time, 1 % / 0.1 % lows and micro-stutter** come from a passive ETW session —
 the same approach as AMD Adrenalin's overlay and the Xbox Game Bar: Windows' graphics
@@ -298,9 +375,11 @@ DPAPI-encrypted. OBS may start after the clipper — the connection re-establish
   (uptime, bitrate, frames dropped *right now*) with a warning even when the widget is
   closed, and a confirmed start sequence: start scene → stream → replay buffer → countdown
   → target scene, aborting honestly if OBS rejects the start.
-- **Chat:** anonymous read-only Twitch chat — no OAuth, just the channel name. Colours and
-  badges, raids/subs/gifts as highlighted blocks, messages addressing you tinted, a pop-up
-  for raids and gifted subs, and a status dot that turns amber when the chat goes silent.
+- **Chat:** anonymous read-only Twitch chat — no OAuth, just the channel name (a `twitch.tv`
+  link works too). Colours and badges, raids/subs/gifts as highlighted blocks, messages
+  addressing you tinted, a pop-up for raids and gifted subs, and a status dot that turns amber
+  when the chat goes silent. A renamed or misspelled channel — Twitch gives no answer within
+  10 s — gets a red notice in the widget and a one-time toast.
 - **Stream music:** plays a folder into the stream device (e.g. a virtual cable) with an
   optional monitor output at its own level; writes "now playing" for an OBS text source.
 
@@ -355,6 +434,9 @@ Everything is configurable in the board. The file behind it is
   "Output":       { "SortByGame": true },
   "Sounds":       { "Enabled": true, "Volume": 0.6 },
   "Gamepad":      { "Enabled": true, "HoldMs": 500 },
+  "PerfOverlay":  { "Enabled": true, "Anchor": "TopRight" },  // 8 anchors | Free (then "Free" holds the spot)
+  "Shortcuts":    { "Expanded": true, "DefaultBrowserId": null },  // plus "Items", the bar's entries
+  "Theme":        { "AccentPreset": "wki-orange", "GlassPreset": "violet" },  // "AccentCustom" / "GlassCustom": "#RRGGBB"
   "Discord":      { "SmallTargetBytes": 20000000, "LargeTargetBytes": 500000000, "OnlyWhenNoGame": false },
   "GameProfiles": { "armareforgersteam.exe": { "DisplayName": "Arma Reforger", "ClipSeconds": 300 } },
   "Behavior":     { "Language": "Deutsch" }
@@ -371,7 +453,9 @@ Everything is configurable in the board. The file behind it is
 | Buffer, clips and screenshots folders | Settings → Paths |
 | Discord sizes, *Only compress while no game is in the foreground* | Settings → About → Discord |
 | Sound cues: switches, volume, output device, own WAVs | Audio widget → Sound cues |
-| FPS values, overlay look | Performance widget → On-screen overlay |
+| FPS values, overlay look and position | Performance widget → On-screen overlay (drag it with the board open for *Free*) |
+| Shortcut bar: entries, order, hotkeys, default browser | Gear on the shortcut bar |
+| Accent and glass colours | Sidebar footer → *Colours* |
 | Crosshair per game | Crosshair widget → *Applies to* |
 
 **Folder rules.** The buffer folder must be a full path — not a bare drive (`D:`), not a
@@ -421,6 +505,9 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
   +-- WebAppHost               WebView2 for WhatsApp/Spotify (one browser, separate profiles)
   +-- SpotifyMediaService      Spotify via the Windows media session + per-app volume
   +-- PerformanceMonitorService  counters + GPU sensors (D3DKMT), only while visible
+  +-- PerfOverlayPlacement     eight anchors or a free spot on one monitor (pure, tested)
+  +-- ShortcutService          shortcut bar: scan, start paths, hotkeys (resolver and catalogs tested)
+  +-- ThemeService             accent + glass palettes applied live (ThemePaletteBuilder tested)
   Streaming
   +-- ObsWebSocketService      OBS control via obs-websocket v5 (auto-reconnect, events)
   +-- TwitchChatService        anonymous Twitch IRC over WebSocket
@@ -448,6 +535,9 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
   rate, resolution or the captured window's size (for example toggling fullscreen), ends
   the earlier lookback.
 - **Controllers:** Xbox/XInput only — no PlayStation pads yet, no Share or Guide button.
+- **Shortcuts only start programs:** the bar neither moves nor embeds windows, and there are no
+  controller combos for it — a keyboard hotkey per entry works.
+- **Colours:** the theme does not change the tray menu and tray icon.
 - **CPU temperature** is not shown (needs a kernel driver).
 - **Flicker with the board open?** Windows' *content adaptive brightness* reacts to the dim
   backdrop and can make the whole screen flicker on OLED/VRR displays — turn it off in
