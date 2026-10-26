@@ -207,6 +207,69 @@ public sealed class Mp4IndexTests
         Assert.Equal((512 + 1024) / Ts, index.FileSeconds[1], 9);
     }
 
+    // ---- 7b: the end of the last video frame (what the concat list pins per disk segment) ----
+
+    [Fact]
+    public void Video_end_is_the_last_frame_plus_its_own_duration()
+    {
+        var index = Must(SimpleVideo(10));
+
+        Assert.Equal(10 / 30.0, index.VideoEndSeconds, 9);
+    }
+
+    [Fact]
+    public void The_duration_of_the_last_frame_comes_from_its_own_stts_entry()
+    {
+        var b = SimpleVideo(10);
+        b.Tracks[0].Stts = new[] { (9u, 512u), (1u, 256u) };     // the last frame is only half a frame long
+
+        Assert.Equal((9 * 512 + 256) / Ts, Must(b).VideoEndSeconds, 9);
+    }
+
+    [Fact]
+    public void A_segment_zero_like_file_ends_after_its_video_start_offset_not_at_the_audio_end()
+    {
+        // 480 frames at 60 fps, the video starts 21 ms after the audio (empty edit, rounded to 323 ticks like ffmpeg),
+        // the movie header already says 8.0213 s because the audio runs one AAC frame longer than the video.
+        var b = new Mp4Builder { MovieDuration = 8021 };
+        var video = Mp4Builder.Video(480, delta: 256);
+        video.Elst = new[] { (21L, -1L, (short)1), (8000L, 0L, (short)1) };
+        b.Tracks.Add(video);
+        b.Tracks.Add(Mp4Builder.Audio(samples: 376));
+
+        var index = Must(b);
+
+        Assert.Equal(323 / Ts, index.FileSeconds[0], 9);
+        Assert.Equal((323 + 480 * 256) / Ts, index.VideoEndSeconds, 9);     // 8.0210286 s
+    }
+
+    [Fact]
+    public void A_later_segment_ends_at_its_video_length_when_only_the_audio_starts_late()
+    {
+        var b = new Mp4Builder { MovieDuration = 4000 };
+        b.Tracks.Add(Mp4Builder.Video(240, delta: 256));
+        var audio = Mp4Builder.Audio(samples: 187);
+        audio.Elst = new[] { (10L, -1L, (short)1) };              // the audio starts 10 ms late, the file at the video (0)
+        b.Tracks.Add(audio);
+
+        Assert.Equal(240 * 256 / Ts, Must(b).VideoEndSeconds, 9);   // exactly 4 s
+    }
+
+    [Fact]
+    public void B_frames_use_the_duration_of_the_last_frame_in_display_order()
+    {
+        // BFrames(): decode order I0 P3 B1 B2 P6 B4 B5, so P6 (decode sample 4) is the last one on screen.
+        // Its duration is the stts delta of sample 4 (256), not that of the last sample in decode order (512).
+        var b = BFrames();
+        b.Tracks[0].Stts = new[] { (4u, 512u), (1u, 256u), (2u, 512u) };
+        b.Tracks[0].Ctts = new[] { (1u, 1024), (1u, 2048), (2u, 512), (1u, 2048), (2u, 768) };   // same display times as BFrames()
+
+        var index = Must(b);
+
+        Assert.Equal(6 / 30.0, index.FileSeconds[6], 9);
+        Assert.Equal(6 / 30.0 + 256 / Ts, index.VideoEndSeconds, 9);
+    }
+
     // ---- 8 / 9: keyframes and sizes ----
 
     [Fact]

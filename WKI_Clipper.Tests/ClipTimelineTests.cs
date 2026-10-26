@@ -27,7 +27,7 @@ public sealed class ClipTimelineTests
             t += 1.0 / fps;
         }
         var keys = Enumerable.Range(0, (frames + keyEvery - 1) / keyEvery).Select(k => k * keyEvery).ToArray();
-        return new Mp4VideoIndex("avc1", 1920, 1080, preview, file, keys, bframes, frames * 1000L, 1, t);
+        return new Mp4VideoIndex("avc1", 1920, 1080, preview, file, keys, bframes, frames * 1000L, 1, t, fileStart + t);
     }
 
     // ---- basics ----

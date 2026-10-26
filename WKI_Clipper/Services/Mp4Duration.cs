@@ -5,10 +5,14 @@ using System.Text;
 namespace WKI_Clipper.Services;
 
 /// <summary>
-/// Reads the movie duration (<c>moov/mvhd</c>) of a finished MP4. A 30-minute clip is stitched from 360 segments,
-/// and neither the wall clock nor "segment count x 5 s" tells how long each really is (a segment ends at a
-/// keyframe, and its audio overhangs the video by up to one AAC frame) - chapter positions and the saved length
-/// have to come from the files. Reading the header is a few KB per file, ffmpeg would cost a process per segment.
+/// Reads how long a finished MP4 segment is. A 30-minute clip is stitched from 360 segments, and neither the wall
+/// clock nor "segment count x 5 s" tells how long each really is (a segment ends at a keyframe, and its audio
+/// overhangs the video by up to one AAC frame) - chapter positions and the saved length have to come from the files.
+/// Reading the header is a few KB per file, ffmpeg would cost a process per segment.
+///
+/// Two different numbers, on purpose: <see cref="TryRead"/> is the movie duration (<c>moov/mvhd</c>, the longer one of
+/// video and audio); <see cref="TryReadConcatDuration"/> is the end of the last video frame, which is what the
+/// concat list has to pin (see <see cref="ClipStitcher.ConcatListLines"/> for the measurement behind it).
 /// </summary>
 public static class Mp4Duration
 {
@@ -16,11 +20,32 @@ public static class Mp4Duration
     private const int MaxMoovChildren = 64;
 
     /// <summary>
-    /// Walks the top-level boxes (32-bit size + type; size 1 = 64-bit largesize; size 0 = to end of file), finds
-    /// moov then mvhd (v0: 4-byte creation/modification/timescale/duration; v1: 8/8/4/8) and returns
-    /// duration/timescale. False for a missing moov (segment still being written), timescale 0, an all-ones
-    /// duration, box sizes below 8 or past the end of the file, and more than 64 top-level boxes.
-    /// Opens with FileShare.ReadWrite | FileShare.Delete. Never throws.
+    /// The duration to pin for this segment in the concat list: where the last video frame ends, from the sample
+    /// tables (<see cref="Mp4Index"/>; start offset of the video and edit list included, relative to the file start
+    /// like ffmpeg's time axis). A segment whose video the index cannot read (no video track, fragmented file, an edit
+    /// list it does not support) gives the movie duration instead - a readable segment is never dropped because of
+    /// this. False when neither can be read (no moov yet: the segment is still being written). Never throws.
+    /// </summary>
+    public static bool TryReadConcatDuration(string path, out TimeSpan duration)
+    {
+        if (Mp4Index.TryRead(path) is { } index
+            && double.IsFinite(index.VideoEndSeconds) && index.VideoEndSeconds > 0
+            && index.VideoEndSeconds < TimeSpan.MaxValue.TotalSeconds)
+        {
+            // Rounded to one tick (100 ns), never to milliseconds: the chapters add up 360 of these.
+            duration = TimeSpan.FromTicks((long)Math.Round(index.VideoEndSeconds * TimeSpan.TicksPerSecond));
+            return true;
+        }
+        return TryRead(path, out duration);
+    }
+
+    /// <summary>
+    /// The movie duration, i.e. the longer one of video and audio (NOT what the concat list pins, see
+    /// <see cref="TryReadConcatDuration"/>). Walks the top-level boxes (32-bit size + type; size 1 = 64-bit
+    /// largesize; size 0 = to end of file), finds moov then mvhd (v0: 4-byte creation/modification/timescale/duration;
+    /// v1: 8/8/4/8) and returns duration/timescale. False for a missing moov (segment still being written),
+    /// timescale 0, an all-ones duration, box sizes below 8 or past the end of the file, and more than 64 top-level
+    /// boxes. Opens with FileShare.ReadWrite | FileShare.Delete. Never throws.
     /// </summary>
     public static bool TryRead(string path, out TimeSpan duration)
     {
