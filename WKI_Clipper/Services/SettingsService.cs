@@ -115,6 +115,7 @@ public sealed class SettingsService
         s.Shortcuts ??= new ShortcutSettings();
         s.Shortcuts.Items ??= new();
         s.Shortcuts.RecentGames ??= new();
+        s.Theme ??= new ThemeSettings();
         // Per-game profiles: keys of a hand-edited file may differ in case/path form from the ones the lookup uses.
         s.GameProfiles = GameProfiles.Normalize(s.GameProfiles);
     }

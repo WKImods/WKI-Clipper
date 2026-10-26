@@ -32,6 +32,7 @@ public sealed class AppSettings
     public DiscordCompressSettings Discord { get; set; } = new();
     public GamepadSettings Gamepad { get; set; } = new();
     public ShortcutSettings Shortcuts { get; set; } = new();
+    public ThemeSettings Theme { get; set; } = new();
 
     /// <summary>
     /// Per-game overrides (F9 length, crosshair look), keyed by the lower-case exe file name. Keys are cleaned up
@@ -382,6 +383,19 @@ public sealed class SpotifySettings
     public double FullHeight { get; set; } = 680;
     /// <summary>Page zoom of the web view (Ctrl + mouse wheel).</summary>
     public double Zoom { get; set; } = 1.0;
+}
+
+/// <summary>
+/// The colour theme: one accent and one glass tint, picked independently. A preset is named by its id; a custom colour ("#RRGGBB")
+/// wins over the preset while it is a valid hex. Every field has an initializer, so a settings file written before the section
+/// existed simply loads today's theme - no schema migration needed.
+/// </summary>
+public sealed class ThemeSettings
+{
+    public string AccentPreset { get; set; } = "wki-orange";
+    public string? AccentCustom { get; set; }
+    public string GlassPreset { get; set; } = "violet";
+    public string? GlassCustom { get; set; }
 }
 
 /// <summary>
