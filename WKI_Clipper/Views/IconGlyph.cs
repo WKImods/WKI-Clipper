@@ -24,6 +24,9 @@ internal static class IconGlyph
     /// <summary>Pencil (edit) and the horizontal ellipsis ("more actions").</summary>
     public const string Edit = "", More = "";
 
+    /// <summary>The colour palette (the board's "Farben" button).</summary>
+    public const string Palette = "\uE790";
+
     /// <summary>The shortcut bar's fold arrows and its gear.</summary>
     public const string ChevronLeft = "", ChevronRight = "", Settings = "";
 

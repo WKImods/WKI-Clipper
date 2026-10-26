@@ -444,6 +444,7 @@ public sealed class WidgetHost : IDisposable
     /// </summary>
     private void RebuildUi(string reason)
     {
+        if (reason == "language") CloseThemePicker();   // its texts are built once, in the old language
         bool wasOpen = _boardOpen;
         var plan = WidgetRebuildPlan.For(_windows.Select(kv => new WidgetWindowInfo(kv.Key, kv.Value.WidgetContent is IWebWidget)), wasOpen);
 
@@ -566,6 +567,8 @@ public sealed class WidgetHost : IDisposable
         // So does the performance overlay: above the backdrop, grabbable, dashed outline.
         SyncPerfOverlayDrag();
         if (_perfOverlay is { IsVisible: true }) BumpTopmost(_perfOverlay);
+        // The colour picker stays on top of the board that a theme switch just rebuilt around it.
+        if (_picker is { IsVisible: true }) BumpTopmost(_picker);
         // An open crosshair widget previews the look it edits, not the game's (see ApplyCrosshair).
         if (_host.CrosshairEditing is not null) ApplyCrosshair();
         // The duration is the whole point of the prewarm work — keep it measurable.
@@ -637,6 +640,7 @@ public sealed class WidgetHost : IDisposable
             }
         }
 
+        CloseThemePicker();
         _backdrop?.Hide();
         _sidebar?.Hide();
         _bar?.Hide();
@@ -1321,6 +1325,71 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
     }
 
+    // ---- Colour picker ----
+
+    private ThemePickerWindow? _picker;
+    private System.Windows.Controls.Primitives.ToggleButton? _themeChip;
+    private bool _syncingThemeChip;
+
+    /// <summary>Opens the colour picker next to the sidebar. Choices go on at once and are saved (see <see cref="ThemePickerState"/>).</summary>
+    private void OpenThemePicker()
+    {
+        if (_picker is { IsVisible: true } || _sidebar is null) return;
+        var state = new ThemePickerState(_host.Settings.Current.Theme, p => _host.Theme.Apply(p), () => _host.Settings.Save());
+        _picker = new ThemePickerWindow(state);
+        _picker.CloseRequested += CloseThemePicker;
+        _picker.ShowNextTo(_sidebar, _boardScreen ?? PrimaryScreen());
+        BumpTopmost(_picker);
+        System.Windows.Input.InputManager.Current.PreProcessInput += OnPickerPreProcessInput;
+        SyncThemeChip(true);
+    }
+
+    private void CloseThemePicker()
+    {
+        System.Windows.Input.InputManager.Current.PreProcessInput -= OnPickerPreProcessInput;
+        if (_picker is { } p)
+        {
+            _picker = null;
+            p.CloseRequested -= CloseThemePicker;
+            try { p.Close(); } catch { }
+        }
+        SyncThemeChip(false);
+    }
+
+    private void SyncThemeChip(bool open)
+    {
+        if (_themeChip is null) return;
+        _syncingThemeChip = true;
+        try { _themeChip.IsChecked = open; }
+        finally { _syncingThemeChip = false; }
+    }
+
+    /// <summary>
+    /// A click anywhere else on the board closes the picker - except on its own chip (which toggles it) and inside pop-ups that
+    /// belong to it (the text box's own menu). A click on the backdrop closes the board, and the picker with it.
+    /// </summary>
+    private void OnPickerPreProcessInput(object sender, System.Windows.Input.PreProcessInputEventArgs e)
+    {
+        if (e.StagingItem.Input is not System.Windows.Input.MouseButtonEventArgs { ButtonState: System.Windows.Input.MouseButtonState.Pressed } click
+            || click.RoutedEvent != System.Windows.Input.Mouse.PreviewMouseDownEvent) return;
+        if (_picker is null || click.OriginalSource is not DependencyObject hit) return;
+
+        var window = Window.GetWindow(hit);
+        if (window is null || window == _picker) return;                  // a pop-up (no window of its own) or the picker itself
+        if (_themeChip is not null && IsInside(hit, _themeChip)) return;  // the chip decides by itself
+
+        Application.Current.Dispatcher.BeginInvoke(new Action(CloseThemePicker));
+    }
+
+    private static bool IsInside(DependencyObject element, DependencyObject ancestor)
+    {
+        for (var d = element; d is not null; d = d is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                                                   ? System.Windows.Media.VisualTreeHelper.GetParent(d) ?? LogicalTreeHelper.GetParent(d)
+                                                   : LogicalTreeHelper.GetParent(d))
+            if (ReferenceEquals(d, ancestor)) return true;
+        return false;
+    }
+
     // ---- Sidebar ----
 
     /// <summary>
@@ -1368,6 +1437,13 @@ public sealed class WidgetHost : IDisposable
         _overlapToggle.Checked += (_, _) => SetAllowOverlap(true);
         _overlapToggle.Unchecked += (_, _) => SetAllowOverlap(false);
         UpdateOverlapToggle();
+
+        // The colour picker: checked while it is open. A rebuilt sidebar (a theme switch rebuilds it) shows the state it finds.
+        _themeChip = _sidebar.AddFooterChip(IconGlyph.Make(IconGlyph.Palette, 13), L.T("Farben", "Colours"));
+        _themeChip.ToolTip = L.T("Farben", "Colours");
+        _themeChip.IsChecked = _picker is { IsVisible: true };
+        _themeChip.Checked += (_, _) => { if (!_syncingThemeChip) OpenThemePicker(); };
+        _themeChip.Unchecked += (_, _) => { if (!_syncingThemeChip) CloseThemePicker(); };
 
         WireEntry(WidgetId.Settings,
             _sidebar.AddFooterEntry(IconGlyph.ForWidget(WidgetId.Settings, 15, textBrush), Label(WidgetId.Settings)));
@@ -1492,6 +1568,7 @@ public sealed class WidgetHost : IDisposable
     {
         L.LanguageChanged -= OnLanguageChanged;
         _host.Theme.Changed -= OnThemeChanged;
+        CloseThemePicker();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _displayTimer?.Stop();
         _host.PerfOverlayRefresh = null;

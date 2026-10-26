@@ -236,6 +236,9 @@ public static class ThemePaletteBuilder
         return "#" + t.ToUpperInvariant();
     }
 
+    /// <summary>The colour of a hex text (see <see cref="NormalizeHex"/>), or null when it is not one.</summary>
+    public static Color? ParseColor(string? input) => ParseHex(input);
+
     private static Color? ParseHex(string? input)
     {
         if (NormalizeHex(input) is not { } hex) return null;
