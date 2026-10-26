@@ -58,9 +58,24 @@ public sealed class WidgetBackdropWindow : Window
         Dismissed?.Invoke();
     }
 
+    /// <summary>
+    /// Esc. The host decides what it closes (the colour picker first, the board only when nothing sits on it); without a listener the
+    /// board is dismissed as before.
+    /// </summary>
+    public event Action? EscapePressed;
+
+    /// <summary>Esc is taken here and goes no further (true); any other key is not ours (false).</summary>
+    internal bool HandleKey(Key key)
+    {
+        if (key != Key.Escape) return false;
+        if (EscapePressed is { } escape) escape();
+        else Dismissed?.Invoke();
+        return true;
+    }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.Key == Key.Escape) Dismissed?.Invoke();
+        if (HandleKey(e.Key)) e.Handled = true;
         base.OnKeyDown(e);
     }
 }

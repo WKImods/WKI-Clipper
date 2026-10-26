@@ -347,22 +347,20 @@ public sealed class WidgetHost : IDisposable
         if (justShown)
         {
             BumpTopmost(_perfOverlay);
-            if (_boardOpen)
-            {
-                RaiseBarAboveOverlay();
-                if (_picker is { IsVisible: true }) BumpTopmost(_picker);   // it was above the overlay before, too
-            }
+            if (_boardOpen) RaiseBoardAboveOverlay();
         }
     }
 
     /// <summary>
-    /// While the board is open the shortcut bar wins over the performance overlay: the overlay is grabbable then, and an anchor like "top
-    /// centre" lies exactly where the bar sits - on top it would take every click meant for the bar's chip and tiles and drag instead.
-    /// The overlay stays grabbable wherever it sticks out from under the bar.
+    /// While the board is open the sidebar, the shortcut bar and the colour picker win over the performance overlay: the overlay is
+    /// grabbable then, and an anchor like "top centre" lies exactly where the bar sits, one at the bottom left where the sidebar's footer
+    /// chips are - on top it would take every click meant for them and drag instead. The overlay stays grabbable wherever it sticks out
+    /// from under them. The order is that of <see cref="BoardZOrder"/>.
     /// </summary>
-    private void RaiseBarAboveOverlay()
+    private void RaiseBoardAboveOverlay()
     {
-        if (_bar is { IsVisible: true }) BumpTopmost(_bar);
+        foreach (var layer in BoardZOrder.RaisedAboveOverlay(_sidebar is { IsVisible: true }, _bar is { IsVisible: true }, _picker is { IsVisible: true }))
+            BumpTopmost(layer switch { BoardLayer.Sidebar => _sidebar!, BoardLayer.Bar => _bar!, _ => _picker! });
     }
 
     /// <summary>
@@ -610,7 +608,7 @@ public sealed class WidgetHost : IDisposable
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
         // So does the performance overlay: above the backdrop, grabbable, dashed outline.
         SyncPerfOverlayDrag();
-        if (_perfOverlay is { IsVisible: true }) { BumpTopmost(_perfOverlay); RaiseBarAboveOverlay(); }
+        if (_perfOverlay is { IsVisible: true }) { BumpTopmost(_perfOverlay); RaiseBoardAboveOverlay(); }
         // The colour picker stays on top of the board that a theme switch just rebuilt around it.
         if (_picker is { IsVisible: true }) BumpTopmost(_picker);
         // An open crosshair widget previews the look it edits, not the game's (see ApplyCrosshair).
@@ -1570,10 +1568,18 @@ public sealed class WidgetHost : IDisposable
         _suppressToggle = false;
     }
 
+    /// <summary>Esc on the board: the colour picker closes first - and only it, the board stays - the board the next time.</summary>
+    private void OnBoardEscape()
+    {
+        if (BoardEscape.Target(_picker is { IsVisible: true }) == EscapeTarget.ColourPicker) CloseThemePicker();
+        else CloseBoard();
+    }
+
     private WidgetBackdropWindow CreateBackdrop()
     {
         var b = new WidgetBackdropWindow();
         b.Dismissed += CloseBoard;
+        b.EscapePressed += OnBoardEscape;
         return b;
     }
 

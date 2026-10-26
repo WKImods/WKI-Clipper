@@ -610,10 +610,12 @@ internal sealed class GameChoiceDialog : Window
     /// <summary>What the user ticked and confirmed (empty after cancel).</summary>
     public IReadOnlyList<GameChoice> Selected { get; private set; } = Array.Empty<GameChoice>();
 
+    internal ListBox ChoiceList => _list;
+
     public GameChoiceDialog(string title, IReadOnlyList<GameChoice> choices, Window owner)
     {
         _choices = choices;
-        Owner = owner;
+        if (owner.IsVisible) Owner = owner;   // a window that was never shown cannot own one
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Title = title;
         SizeToContent = SizeToContent.WidthAndHeight;

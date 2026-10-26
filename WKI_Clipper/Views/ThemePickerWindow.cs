@@ -98,7 +98,9 @@ public sealed class ThemePickerWindow : Window
             Padding = new Thickness(16),
             Child = stack
         };
-        surface.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
+        // The solid glass, not the see-through one of the widgets: it lies over widgets (Performance, Spotify, ...) whose text would
+        // otherwise show through and cut into the swatch names and sliders.
+        surface.SetResourceReference(Border.BackgroundProperty, "SurfaceSolidBrush");
         Content = surface;
 
         PreviewKeyDown += (_, e) => { if (HandleKey(e.Key)) e.Handled = true; };
