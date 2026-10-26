@@ -42,6 +42,7 @@ public sealed class ShortcutEditorView : Border
     private readonly Button _rescan, _addGame, _addBrowser, _done;
     private IReadOnlyList<BrowserOption> _browserOptions = Array.Empty<BrowserOption>();
     private bool _updating;
+    private bool _rebuildPending;
 
     /// <summary>"Neu suchen": scan again and remove launchers and browsers that are still missing.</summary>
     public event Action? RescanRequested;
@@ -171,9 +172,20 @@ public sealed class ShortcutEditorView : Border
 
     // ---- rows ----
 
-    /// <summary>Reads everything from the model again. Cheap; called after every change and when the service reports one.</summary>
+    /// <summary>
+    /// Reads everything from the model again. Cheap; called after every change and when the service reports one. While a hotkey button
+    /// is capturing, the rebuild waits until it is over: replacing the rows would remove the capturing button from the tree, which
+    /// silently aborts the capture (a scan that ends just then is enough) and throws the pressed combination away.
+    /// </summary>
     public void Rebuild()
     {
+        if (IsCapturing)
+        {
+            _rebuildPending = true;
+            return;
+        }
+        _rebuildPending = false;
+
         _rows.Clear();
         foreach (var group in _sectionOrder)
         {
@@ -253,6 +265,7 @@ public sealed class ShortcutEditorView : Border
         remove.Click += (_, _) => { _model.Remove(data.Id); Rebuild(); };
         clear.Click += (_, _) => hotkey.Clear();
         hotkey.Notice += message => ShowStatus(message);
+        hotkey.CaptureEnded += OnCaptureEnded;
         hotkey.BindingChanged += binding =>
         {
             _model.SetHotkey(data.Id, binding);
@@ -261,6 +274,14 @@ public sealed class ShortcutEditorView : Border
             HotkeysChanged?.Invoke();
         };
         return grid;
+    }
+
+    /// <summary>A capture ended: a rebuild that was held back runs now - after the key handler that ended the capture has finished with its button.</summary>
+    private void OnCaptureEnded()
+    {
+        if (!_rebuildPending) return;
+        try { Dispatcher.BeginInvoke(new Action(Rebuild)); }
+        catch (InvalidOperationException) { /* shutting down */ }
     }
 
     private static void Place(Grid grid, UIElement element, int column)
@@ -304,6 +325,8 @@ public sealed class ShortcutEditorView : Border
     internal HotkeyBinding? HotkeyOf(string id) => _rows[id].Hotkey.Binding;
     internal string StatusText => _status.Text;
     internal bool RescanEnabled => _rescan.IsEnabled;
+    internal bool IsCapturing => _rows.Values.Any(r => r.Hotkey.IsCapturing);
+    internal bool RebuildPending => _rebuildPending;
 
     /// <summary>What a click on the tick does - the box is flipped first, as the mouse would.</summary>
     internal void ClickShown(string id)
@@ -467,10 +490,23 @@ public sealed class ShortcutEditorWindow : Window
         View.ShowStatus("");
         var dialog = new GameChoiceDialog(title, choices, this);
         dialog.ShowDialog();
-        foreach (var choice in dialog.Selected) _model.AddGame(choice);
+        var picked = dialog.Selected.ToList();
+        if (picked.Count > 0) await AddGamesAsync(picked);
         View.Rebuild();
-        if (dialog.Selected.Count > 0)
-            View.ShowStatus(L.T($"{dialog.Selected.Count} Spiel(e) hinzugefügt.", $"{dialog.Selected.Count} game(s) added."));
+        if (picked.Count > 0)
+            View.ShowStatus(L.T($"{picked.Count} Spiel(e) hinzugefügt.", $"{picked.Count} game(s) added."));
+    }
+
+    /// <summary>
+    /// Adds the picked games off the UI thread: every add reads the game's icon from the shell (a new STA thread, a cold disk, a shell
+    /// extension) - a long pick would freeze the board, the bar and every pinned overlay, which all share this dispatcher.
+    /// The service is safe to call from any thread, and the editor and the bar refresh themselves from its ItemsChanged.
+    /// </summary>
+    private async Task AddGamesAsync(IReadOnlyList<GameChoice> picked)
+    {
+        View.ShowStatus(L.T("Füge hinzu …", "Adding …"));
+        try { await Task.Run(() => { foreach (var choice in picked) _model.AddGame(choice); }); }
+        catch (Exception ex) { Logger.Warn("Adding games failed: " + ex.Message); }
     }
 
     private async Task PickFileAsync()
@@ -517,14 +553,22 @@ public sealed class ShortcutEditorWindow : Window
         foreach (var browser in browsers)
         {
             var info = browser;
-            AddItem(menu, info.Installed ? info.Name : $"{info.Name}  ({L.T("nicht installiert", "not installed")})", () => PickBrowser(info));
+            AddItem(menu, info.Installed ? info.Name : $"{info.Name}  ({L.T("nicht installiert", "not installed")})", () => _ = PickBrowserAsync(info));
         }
         menu.IsOpen = true;
     }
 
-    private void PickBrowser(BrowserInfo browser)
+    private async Task PickBrowserAsync(BrowserInfo browser)
     {
-        var pick = _model.PickBrowser(browser);
+        // Off the UI thread: adding a browser reads its icon from the shell (see AddGamesAsync).
+        BrowserPick pick;
+        try { pick = await Task.Run(() => _model.PickBrowser(browser)); }
+        catch (Exception ex)
+        {
+            Logger.Warn("Adding a browser failed: " + ex.Message);
+            View.ShowStatus(L.T("Der Browser konnte nicht hinzugefügt werden.", "The browser could not be added."));
+            return;
+        }
         if (pick.Added)
         {
             View.Rebuild();
@@ -540,7 +584,9 @@ public sealed class ShortcutEditorWindow : Window
                 View.ShowStatus(L.T($"Nach der Installation von {pick.Missing!.Name} \"Neu suchen\" drücken.", $"After installing {pick.Missing!.Name}, press \"Rescan\"."));
                 break;
             case BrowserMissingOutcome.UseOther when dialog.Other != null:
-                _model.AddBrowser(dialog.Other);
+                var other = dialog.Other;
+                try { await Task.Run(() => _model.AddBrowser(other)); }
+                catch (Exception ex) { Logger.Warn("Adding the other browser failed: " + ex.Message); }
                 View.Rebuild();
                 break;
         }

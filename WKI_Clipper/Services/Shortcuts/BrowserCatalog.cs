@@ -131,11 +131,19 @@ public static class BrowserCatalog
     {
         var leaf = ShortcutPaths.FileName(exe).ToLowerInvariant();
         var hint = ShortcutPaths.Fold(exe + " " + subKey + " " + registryName);
+        // What the registry says about itself, without the path: a user called "operator" must not turn another browser into Opera.
+        var registryHint = ShortcutPaths.Fold(subKey + " " + registryName);
 
         switch (leaf)
         {
             case "opera.exe":
-                return hint.Contains("operagx", StringComparison.Ordinal) ? ("operagx", "Opera GX") : ("opera", "Opera");
+            // Opera and Opera GX register their entry point, %LOCALAPPDATA%\Programs\Opera[ GX]\launcher.exe, not opera.exe
+            // (that one lives in a version folder). "launcher" alone says nothing, so only the registry name decides.
+            case "launcher.exe" when registryHint.Contains("opera", StringComparison.Ordinal):
+                // GX is told apart by the registry name or - for launcher.exe - by its own folder ("...\Programs\Opera GX").
+                var folder = ShortcutPaths.Fold(ShortcutPaths.FileName(ShortcutPaths.DirectoryOf(exe)));
+                return (leaf == "opera.exe" ? hint : registryHint + folder).Contains("operagx", StringComparison.Ordinal)
+                    ? ("operagx", "Opera GX") : ("opera", "Opera");
             case "chrome.exe":   return ("chrome", "Google Chrome");
             case "firefox.exe":  return ("firefox", "Mozilla Firefox");
             case "comet.exe":    return ("comet", "Comet");

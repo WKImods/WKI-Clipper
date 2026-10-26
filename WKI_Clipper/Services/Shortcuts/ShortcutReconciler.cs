@@ -29,6 +29,18 @@ public static class ShortcutReconciler
         DisplayName = "Default browser",
     };
 
+    /// <summary>
+    /// The name of an entry as the user reads it: the standard browser localized (its stored name is only a fallback), else the display name,
+    /// else the file name of the target, else the id. One place for the bar, the edit dialog and every hotkey message.
+    /// </summary>
+    public static string DisplayNameOf(ShortcutEntry e)
+    {
+        if (e.Kind == ShortcutKind.DefaultBrowser) return L.T("Standard-Browser", "Default browser");
+        if (!string.IsNullOrWhiteSpace(e.DisplayName)) return e.DisplayName;
+        var file = ShortcutPaths.FileName(e.Target);
+        return file.Length > 0 ? file : e.Id;
+    }
+
     /// <summary>An entry for a browser the user picked (<see cref="Reconcile"/> never adds one by itself).</summary>
     public static ShortcutEntry NewBrowserEntry(BrowserInfo browser) => new()
     {

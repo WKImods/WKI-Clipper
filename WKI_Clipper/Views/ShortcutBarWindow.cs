@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -352,8 +353,11 @@ public sealed class ShortcutBarWindow : Window
 {
     private readonly ShortcutService _service;
     private readonly Func<GameInfo?> _currentGame;
+    private readonly Func<LayoutRect?>? _sidebarRect;
     private WinForms.Screen? _screen;
     private LayoutRect? _rect;
+    private string? _chipKey, _chipExe, _chipIcon;   // the game on the chip: its cache key, exe and the icon read for it so far
+    private int _chipRequest;
 
     public ShortcutBarView View { get; }
 
@@ -366,10 +370,15 @@ public sealed class ShortcutBarWindow : Window
     /// <summary>Where the bar is (physical pixels), computed from the monitor and the content - null before the first placement.</summary>
     public LayoutRect? Rect => _rect;
 
-    public ShortcutBarWindow(ShortcutService service, Func<GameInfo?> currentGame)
+    /// <summary>The icon the game chip shows now (test seam), null while it is not (yet) read.</summary>
+    internal string? ChipIcon => _chipIcon;
+
+    /// <param name="sidebarRect">Where the board's sidebar is (physical pixels), or null when there is none: a wide bar keeps to the right of it.</param>
+    public ShortcutBarWindow(ShortcutService service, Func<GameInfo?> currentGame, Func<LayoutRect?>? sidebarRect = null)
     {
         _service = service;
         _currentGame = currentGame;
+        _sidebarRect = sidebarRect;
 
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -414,14 +423,48 @@ public sealed class ShortcutBarWindow : Window
         var game = _currentGame();
         if (game is null)
         {
+            _chipKey = null;
+            _chipExe = null;
+            _chipIcon = null;
             View.SetGame(null, null);
         }
         else
         {
             var exe = GameContext.ImagePath(game.Pid);   // query-only rights, like the game folders; null for an elevated or exited game
-            View.SetGame(game.DisplayName, _service.IconFor(exe, "gamechip_" + ShortcutPaths.Fold(game.ExeName)));
+            var key = "gamechip_" + ShortcutPaths.Fold(game.ExeName);
+            // The icon of THIS game that is already known stays on the chip while a fresh one is read; another game starts without one.
+            if (!string.Equals(key, _chipKey, StringComparison.Ordinal)) _chipIcon = null;
+            _chipKey = key;
+            View.SetGame(game.DisplayName, _chipIcon);
+
+            bool known = _chipIcon != null && string.Equals(exe, _chipExe, StringComparison.OrdinalIgnoreCase);
+            _chipExe = exe;
+            if (!known && !string.IsNullOrWhiteSpace(exe)) LoadChipIconAsync(game.DisplayName, key, exe);
         }
         if (_screen != null && IsVisible) Place();
+    }
+
+    /// <summary>
+    /// Reads the game chip's icon off the UI thread (a cache miss is a new STA thread and the shell; that dispatcher also drives the board
+    /// and every pinned overlay) and puts it on the chip when it is there - if the same game is still in front by then.
+    /// </summary>
+    private void LoadChipIconAsync(string name, string key, string exe)
+    {
+        int request = ++_chipRequest;
+        Task.Run(() => _service.IconFor(exe, key)).ContinueWith(task =>
+        {
+            if (task.IsFaulted || task.Result is not { } icon) return;
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (request != _chipRequest || !string.Equals(key, _chipKey, StringComparison.Ordinal)) return;   // another game, or a newer read
+                    _chipIcon = icon;
+                    View.SetGame(name, icon);
+                }));
+            }
+            catch (InvalidOperationException) { /* the dispatcher is shutting down */ }
+        }, TaskScheduler.Default);
     }
 
     /// <summary>Top centre of the screen's work area; the width follows the content.</summary>
@@ -448,7 +491,8 @@ public sealed class ShortcutBarWindow : Window
         var area = DisplayGeometry.WorkArea(_screen);
         double scale = DisplayGeometry.ScaleOf(_screen);
 
-        var rect = BarLayout.BarRect(area, View.NaturalWidthDip(), scale);
+        double leftLimit = _sidebarRect?.Invoke() is { } sidebar ? sidebar.Right + BarLayout.SideMarginDip * scale : double.NegativeInfinity;
+        var rect = BarLayout.BarRect(area, View.NaturalWidthDip(), scale, leftLimit);
         Width = rect.W / scale;
         Height = rect.H / scale;
         DisplayGeometry.MoveTo(this, rect.X, rect.Y);

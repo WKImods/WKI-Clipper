@@ -74,7 +74,7 @@ public sealed class HotkeyService : IDisposable
         {
             if (string.Equals(entry.Id, excludeShortcutId, StringComparison.OrdinalIgnoreCase) || entry.Hotkey is not { Key: not 0 } hk) continue;
             if (hk.Key == candidate.Key && hk.Modifiers == candidate.Modifiers)
-                return L.T($"Verknüpfung \"{entry.DisplayName}\"", $"shortcut \"{entry.DisplayName}\"");
+                return ShortcutLabel(entry);
         }
         return null;
     }
@@ -96,9 +96,16 @@ public sealed class HotkeyService : IDisposable
         {
             var entry = settings.Shortcuts.Items.Find(e => string.Equals(e.Id, shortcutId, StringComparison.OrdinalIgnoreCase));
             if (entry != null)
-                return L.T($"Verknüpfung \"{entry.DisplayName}\"", $"shortcut \"{entry.DisplayName}\"");
+                return ShortcutLabel(entry);
         }
         return action;
+    }
+
+    /// <summary>A shortcut-bar entry as a message names it - with the name the user sees on the bar and in the editor (the standard browser localized).</summary>
+    private static string ShortcutLabel(ShortcutEntry entry)
+    {
+        var name = ShortcutReconciler.DisplayNameOf(entry);
+        return L.T($"Verknüpfung \"{name}\"", $"shortcut \"{name}\"");
     }
 
     public void RegisterAll()

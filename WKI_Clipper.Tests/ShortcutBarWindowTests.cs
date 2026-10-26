@@ -436,6 +436,138 @@ public sealed class ShortcutBarWindowTests
         Assert.Equal("Arma Reforger", r);
     }
 
+    // ---- the game chip's icon is read off the UI thread ----
+
+    private static string ChipPng(string exeName) => @"C:\icons\gamechip_" + ShortcutPaths.Fold(exeName) + ".png";
+
+    private static GameInfo Game(string exeName, string name) => new(Environment.ProcessId, exeName, name);   // our own pid: its image path is readable
+
+    /// <summary>Runs the dispatcher of this STA thread until the condition holds (the chip's icon is posted back to it).</summary>
+    private static bool PumpUntil(Func<bool> done, int seconds = 10)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (!done() && DateTime.UtcNow < deadline)
+        {
+            Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
+            System.Threading.Thread.Sleep(5);
+        }
+        return done();
+    }
+
+    [Fact]
+    public void The_game_chip_icon_arrives_after_the_refresh_instead_of_blocking_it()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new ServiceEnv();
+            using var gate = new System.Threading.ManualResetEventSlim(false);
+            env.Shell.IconGate = gate;   // the shell holds the FIRST icon read, like a cold disk
+            var w = new ShortcutBarWindow(env.Service, () => Game("ArmaReforgerSteam.exe", "Arma Reforger"));
+            try
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                w.Refresh();
+                var refreshTook = clock.Elapsed;
+                var during = w.ChipIcon;
+                var tooltip = w.View.ChipTooltip;
+
+                gate.Set();
+                bool arrived = PumpUntil(() => w.ChipIcon != null);
+                return (refreshTook, during, tooltip, arrived, after: w.ChipIcon);
+            }
+            finally { w.Close(); }
+        });
+
+        Assert.True(r.refreshTook < TimeSpan.FromSeconds(3), $"Refresh waited for the icon: {r.refreshTook}");   // the held read is up to 10 s
+        Assert.Null(r.during);                                 // not there yet ...
+        Assert.Equal("Arma Reforger", r.tooltip);              // ... but the chip already names the game
+        Assert.True(r.arrived);
+        Assert.Equal(ChipPng("ArmaReforgerSteam.exe"), r.after);   // ... and it arrives
+    }
+
+    [Fact]
+    public void A_known_icon_stays_while_the_same_game_is_refreshed_and_is_not_read_again()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new ServiceEnv();
+            var w = new ShortcutBarWindow(env.Service, () => Game("ArmaReforgerSteam.exe", "Arma Reforger"));
+            try
+            {
+                w.Refresh();
+                PumpUntil(() => w.ChipIcon != null);
+                var first = w.ChipIcon;
+
+                env.Shell.IconEntered.Reset();
+                w.Refresh();               // e.g. the service reported a change
+                var rightAfter = w.ChipIcon;
+                PumpUntil(() => false, seconds: 1);   // give a (wrong) second read time to start
+                return (first, rightAfter, secondRead: env.Shell.IconEntered.IsSet);
+            }
+            finally { w.Close(); }
+        });
+
+        Assert.Equal(ChipPng("ArmaReforgerSteam.exe"), r.first);
+        Assert.Equal(r.first, r.rightAfter);   // no flicker back to a letter while refreshing
+        Assert.False(r.secondRead);
+    }
+
+    [Fact]
+    public void Another_game_in_front_does_not_wear_the_old_games_icon_and_a_late_read_is_dropped()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new ServiceEnv();
+            using var gate = new System.Threading.ManualResetEventSlim(false);
+            var game = Game("ArmaReforgerSteam.exe", "Arma Reforger");
+            var w = new ShortcutBarWindow(env.Service, () => game);
+            try
+            {
+                env.Shell.IconGate = gate;   // game A's read is held ...
+                w.Refresh();
+                env.Shell.IconEntered.Wait(TimeSpan.FromSeconds(5));
+
+                game = Game("DayZ_x64.exe", "DayZ");   // ... while game B comes to the front; B's read is not held
+                w.Refresh();
+                bool bArrived = PumpUntil(() => w.ChipIcon != null);
+                var b = w.ChipIcon;
+
+                gate.Set();                            // now A's read finishes - too late
+                PumpUntil(() => false, seconds: 1);
+                return (bArrived, b, afterLate: w.ChipIcon, tooltip: w.View.ChipTooltip);
+            }
+            finally { w.Close(); }
+        });
+
+        Assert.True(r.bArrived);
+        Assert.Equal(ChipPng("DayZ_x64.exe"), r.b);
+        Assert.Equal(ChipPng("DayZ_x64.exe"), r.afterLate);   // A's icon never lands on B's chip
+        Assert.Equal("DayZ", r.tooltip);
+    }
+
+    [Fact]
+    public void Without_a_game_the_chip_icon_is_cleared()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new ServiceEnv();
+            GameInfo? game = Game("ArmaReforgerSteam.exe", "Arma Reforger");
+            var w = new ShortcutBarWindow(env.Service, () => game);
+            try
+            {
+                w.Refresh();
+                PumpUntil(() => w.ChipIcon != null);
+                game = null;
+                w.Refresh();
+                return (icon: w.ChipIcon, shows: w.View.ChipShowsGame);
+            }
+            finally { w.Close(); }
+        });
+
+        Assert.Null(r.icon);
+        Assert.False(r.shows);
+    }
+
     [Fact]
     public void Without_a_game_the_chip_is_the_wki_logo()
     {

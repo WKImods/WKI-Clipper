@@ -283,6 +283,192 @@ public sealed class ShortcutEditorViewTests
         Assert.Equal(3, ids.Count);
     }
 
+    // ---- the hotkey capture ----
+
+    /// <summary>A presentation source that is nothing but a name tag: a key event needs one, and no window (visible or not) is created.</summary>
+    private sealed class TagSource : System.Windows.PresentationSource
+    {
+        protected override System.Windows.Media.CompositionTarget GetCompositionTargetCore() => null!;
+        public override System.Windows.Media.Visual RootVisual { get; set; } = null!;
+        public override bool IsDisposed => false;
+    }
+
+    /// <summary>A key press that goes through the button's real PreviewKeyDown handlers (the modifiers come from the real keyboard state: none are expected).</summary>
+    private static void PressKey(UIElement target, System.Windows.Input.Key key)
+    {
+        var args = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, new TagSource(), Environment.TickCount, key)
+        {
+            RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent,
+        };
+        target.RaiseEvent(args);
+    }
+
+    private static void Click(HotkeyCaptureButton b)
+        => b.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+
+    private const uint Vk24 = 0x87;   // F24: a key no default binding uses
+
+    [Fact]
+    public void A_capture_binds_the_pressed_key_once_and_ends()
+    {
+        var r = OnSta(() =>
+        {
+            var b = new HotkeyCaptureButton(null, _ => null);
+            var bound = new List<HotkeyBinding?>();
+            int ended = 0;
+            b.BindingChanged += bound.Add;
+            b.CaptureEnded += () => ended++;
+
+            Click(b);
+            var capturing = b.IsCapturing;
+            PressKey(b, System.Windows.Input.Key.F24);
+            return (capturing, after: b.IsCapturing, bound, ended, key: b.Binding?.Key);
+        });
+
+        Assert.True(r.capturing);
+        Assert.False(r.after);
+        Assert.Single(r.bound);
+        Assert.Equal(1, r.ended);
+        Assert.Equal(Vk24, r.key);
+    }
+
+    [Fact]
+    public void A_second_click_during_the_capture_leaves_no_hidden_handler_behind()
+    {
+        var r = OnSta(() =>
+        {
+            var b = new HotkeyCaptureButton(null, _ => null);
+            var bound = new List<HotkeyBinding?>();
+            b.BindingChanged += bound.Add;
+
+            Click(b);
+            Click(b);                                              // a double click, or a click to "cancel"
+            PressKey(b, System.Windows.Input.Key.Escape);          // cancels the capture
+            var afterEsc = b.IsCapturing;
+            PressKey(b, System.Windows.Input.Key.Tab);             // a plain key press afterwards must do nothing at all
+            return (afterEsc, bound, binding: b.Binding);
+        });
+
+        Assert.False(r.afterEsc);
+        Assert.Empty(r.bound);          // nothing was bound - before: the stale second handler bound Tab as a global hotkey
+        Assert.Null(r.binding);
+    }
+
+    [Fact]
+    public void Esc_ends_the_capture_and_raises_capture_ended_once()
+    {
+        var r = OnSta(() =>
+        {
+            var b = new HotkeyCaptureButton(null, _ => null);
+            int ended = 0;
+            b.CaptureEnded += () => ended++;
+
+            Click(b);
+            Click(b);
+            PressKey(b, System.Windows.Input.Key.Escape);
+            PressKey(b, System.Windows.Input.Key.Escape);          // nothing is listening any more
+            return (ended, capturing: b.IsCapturing);
+        });
+
+        Assert.Equal(1, r.ended);
+        Assert.False(r.capturing);
+    }
+
+    [Fact]
+    public void A_taken_combination_ends_the_capture_without_binding_and_without_a_hidden_handler()
+    {
+        var r = OnSta(() =>
+        {
+            var b = new HotkeyCaptureButton(null, _ => "clipper action \"SaveReplay\"");   // everything is taken
+            var notices = new List<string>();
+            var bound = new List<HotkeyBinding?>();
+            b.Notice += notices.Add;
+            b.BindingChanged += bound.Add;
+
+            Click(b);
+            Click(b);
+            PressKey(b, System.Windows.Input.Key.F24);             // refused ...
+            PressKey(b, System.Windows.Input.Key.Tab);             // ... and the next key is not captured by a leftover handler
+            return (capturing: b.IsCapturing, notices, bound, binding: b.Binding);
+        });
+
+        Assert.False(r.capturing);
+        Assert.Single(r.notices);       // one refusal, not two
+        Assert.Empty(r.bound);
+        Assert.Null(r.binding);
+    }
+
+    [Fact]
+    public void A_rebuild_during_a_capture_waits_for_the_capture_instead_of_aborting_it()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new Env();
+            var view = new ShortcutEditorView(env.Model);
+            var id = env.FirstGameId;
+            var button = view.HotkeyButton(id);
+
+            Click(button);
+            env.Service.AddGame(new LaunchTarget(ShortcutKind.SteamApp, "221100", null), "DayZ", null);   // a scan or another change lands now
+            view.Rebuild();
+            var during = (same: ReferenceEquals(view.HotkeyButton(id), button), capturing: button.IsCapturing, pending: view.RebuildPending,
+                          games: view.RowIds(ShortcutGroup.Game).Count);
+
+            PressKey(button, System.Windows.Input.Key.F24);                   // the combination is not lost ...
+            var bound = env.Service.Entries().Single(e => e.Id == id).Hotkey;
+            PumpUntil(() => !view.RebuildPending && view.RowIds(ShortcutGroup.Game).Count == 3);
+            return (during, bound, afterGames: view.RowIds(ShortcutGroup.Game).Count, pendingAfter: view.RebuildPending,
+                    newButton: !ReferenceEquals(view.HotkeyButton(id), button), shown: view.HotkeyOf(id));
+        });
+
+        Assert.True(r.during.same);                // the capturing button is still the one on screen
+        Assert.True(r.during.capturing);
+        Assert.True(r.during.pending);
+        Assert.Equal(2, r.during.games);           // the change is shown after the capture
+        Assert.Equal(Vk24, r.bound!.Key);          // ... and was stored
+        Assert.Equal(3, r.afterGames);             // the held-back rebuild ran
+        Assert.False(r.pendingAfter);
+        Assert.True(r.newButton);
+        Assert.Equal(Vk24, r.shown!.Key);          // the rebuilt row shows the new binding
+    }
+
+    [Fact]
+    public void Without_a_capture_a_rebuild_runs_at_once()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new Env();
+            var view = new ShortcutEditorView(env.Model);
+            env.Service.AddGame(new LaunchTarget(ShortcutKind.SteamApp, "221100", null), "DayZ", null);
+            view.Rebuild();
+            return (games: view.RowIds(ShortcutGroup.Game).Count, pending: view.RebuildPending);
+        });
+
+        Assert.Equal(3, r.games);
+        Assert.False(r.pending);
+    }
+
+    [Fact]
+    public void A_cancelled_capture_runs_the_held_back_rebuild_too()
+    {
+        var r = OnSta(() =>
+        {
+            using var env = new Env();
+            var view = new ShortcutEditorView(env.Model);
+            var button = view.HotkeyButton(env.FirstGameId);
+
+            Click(button);
+            env.Service.AddGame(new LaunchTarget(ShortcutKind.SteamApp, "221100", null), "DayZ", null);
+            view.Rebuild();
+            PressKey(button, System.Windows.Input.Key.Escape);
+            PumpUntil(() => view.RowIds(ShortcutGroup.Game).Count == 3);
+            return (games: view.RowIds(ShortcutGroup.Game).Count, pending: view.RebuildPending);
+        });
+
+        Assert.Equal(3, r.games);
+        Assert.False(r.pending);
+    }
+
     // ---- the missing-browser dialog ----
 
     [Fact]

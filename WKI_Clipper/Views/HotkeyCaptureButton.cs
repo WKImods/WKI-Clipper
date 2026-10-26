@@ -26,6 +26,12 @@ public sealed class HotkeyCaptureButton : Button
     /// <summary>Something to tell the user ("taken by ...").</summary>
     public event Action<string>? Notice;
 
+    /// <summary>True from the click until the combination, Esc or a click elsewhere ended the capture.</summary>
+    public bool IsCapturing { get; private set; }
+
+    /// <summary>The capture is over (bound, cancelled or aborted). The owner may rebuild around the button now - not before: removing a capturing button from the tree aborts it.</summary>
+    public event Action? CaptureEnded;
+
     /// <param name="collision">The owner of a combination that is taken, or null when it is free.</param>
     public HotkeyCaptureButton(HotkeyBinding? binding, Func<HotkeyBinding, string?> collision)
     {
@@ -71,6 +77,11 @@ public sealed class HotkeyCaptureButton : Button
 
     private void StartCapture()
     {
+        // A second click (or a double click) must not hang a second handler pair on the button: its Done would never run
+        // (the first handler marks the key handled), and the next plain key press would be bound as a global hotkey unseen.
+        if (IsCapturing) return;
+        IsCapturing = true;
+
         Content = L.T("Drücke Tastenkombi…  (Esc abbrechen)", "Press a key combo…  (Esc to cancel)");
         Background = (System.Windows.Media.Brush)Application.Current.FindResource("AccentBrush");
         Focus();
@@ -80,10 +91,13 @@ public sealed class HotkeyCaptureButton : Button
         KeyboardFocusChangedEventHandler? lost = null;
         void Done()
         {
+            if (!IsCapturing) return;
+            IsCapturing = false;
             if (keys != null) PreviewKeyDown -= keys;
             if (lost != null) LostKeyboardFocus -= lost;
             ClearValue(BackgroundProperty);   // back to the theme's button look
             ShowBinding();
+            CaptureEnded?.Invoke();
         }
 
         keys = (_, e) =>

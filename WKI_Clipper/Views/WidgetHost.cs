@@ -344,7 +344,25 @@ public sealed class WidgetHost : IDisposable
         // Never move it under the user's hand: the 1 Hz refresh would pull it back to the stored place mid-drag.
         if (!_perfOverlay.IsDragging) PlacePerfOverlay(s);
         // Only when it appears - re-asserting z-order every second would churn the desktop.
-        if (justShown) BumpTopmost(_perfOverlay);
+        if (justShown)
+        {
+            BumpTopmost(_perfOverlay);
+            if (_boardOpen)
+            {
+                RaiseBarAboveOverlay();
+                if (_picker is { IsVisible: true }) BumpTopmost(_picker);   // it was above the overlay before, too
+            }
+        }
+    }
+
+    /// <summary>
+    /// While the board is open the shortcut bar wins over the performance overlay: the overlay is grabbable then, and an anchor like "top
+    /// centre" lies exactly where the bar sits - on top it would take every click meant for the bar's chip and tiles and drag instead.
+    /// The overlay stays grabbable wherever it sticks out from under the bar.
+    /// </summary>
+    private void RaiseBarAboveOverlay()
+    {
+        if (_bar is { IsVisible: true }) BumpTopmost(_bar);
     }
 
     /// <summary>
@@ -444,6 +462,7 @@ public sealed class WidgetHost : IDisposable
     /// </summary>
     private void RebuildUi(string reason)
     {
+        CloseShortcutEditor();   // its owner, the bar, is built anew below
         if (reason == "language") CloseThemePicker();   // its texts are built once, in the old language
         bool wasOpen = _boardOpen;
         var plan = WidgetRebuildPlan.For(_windows.Select(kv => new WidgetWindowInfo(kv.Key, kv.Value.WidgetContent is IWebWidget)), wasOpen);
@@ -566,7 +585,7 @@ public sealed class WidgetHost : IDisposable
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
         // So does the performance overlay: above the backdrop, grabbable, dashed outline.
         SyncPerfOverlayDrag();
-        if (_perfOverlay is { IsVisible: true }) BumpTopmost(_perfOverlay);
+        if (_perfOverlay is { IsVisible: true }) { BumpTopmost(_perfOverlay); RaiseBarAboveOverlay(); }
         // The colour picker stays on top of the board that a theme switch just rebuilt around it.
         if (_picker is { IsVisible: true }) BumpTopmost(_picker);
         // An open crosshair widget previews the look it edits, not the game's (see ApplyCrosshair).
@@ -624,6 +643,9 @@ public sealed class WidgetHost : IDisposable
 
     public void CloseBoard()
     {
+        // A modal edit dialog over the board goes with it (before the focus goes back, so the game gets it and not the dialog).
+        CloseShortcutEditor();
+
         // Persist what the user changed and has not been saved yet — never a spot the app chose.
         foreach (var (id, w) in _windows) CaptureGeometry(id, w, "board-close");
 
@@ -684,7 +706,7 @@ public sealed class WidgetHost : IDisposable
     private bool IsBoardWindow(IntPtr hwnd)
     {
         bool Is(Window? w) => w != null && new System.Windows.Interop.WindowInteropHelper(w).Handle == hwnd;
-        if (Is(_backdrop) || Is(_sidebar) || Is(_bar)) return true;
+        if (Is(_backdrop) || Is(_sidebar) || Is(_bar) || Is(_shortcutEditor)) return true;
         foreach (var w in _windows.Values) if (Is(w)) return true;
         return false;
     }
@@ -1087,7 +1109,7 @@ public sealed class WidgetHost : IDisposable
     private void EnsureBar()
     {
         if (_bar != null) return;
-        _bar = new ShortcutBarWindow(_host.Shortcuts, () => _host.CurrentGame);
+        _bar = new ShortcutBarWindow(_host.Shortcuts, () => _host.CurrentGame, SidebarRect);   // a wide bar keeps to the right of the sidebar
         _bar.EditRequested += OpenShortcutEditor;
         // Folding or unfolding the bar (or new items) changes its width: widgets under it move down, like at the open.
         _bar.RectChanged += () => { if (_boardOpen) KeepWidgetsClearOfBar(); };
@@ -1099,12 +1121,30 @@ public sealed class WidgetHost : IDisposable
     /// </summary>
     private void OpenShortcutEditor()
     {
+        if (_shortcutEditor != null) return;
         try
         {
             var model = ShortcutEditorModel.ForThisPc(_host.Shortcuts, _host.ShortcutShell);
-            new ShortcutEditorWindow(_host.Shortcuts, model, _host.RefreshShortcutHotkeys, _bar).ShowDialog();
+            _shortcutEditor = new ShortcutEditorWindow(_host.Shortcuts, model, _host.RefreshShortcutHotkeys, _bar);
+            _shortcutEditor.ShowDialog();
         }
         catch (Exception ex) { Logger.Warn("The shortcut editor failed: " + ex.Message); }
+        finally { _shortcutEditor = null; }   // ShowDialog returns only after whatever closed the editor has finished
+    }
+
+    /// <summary>
+    /// The edit dialog while it is open (it is modal, but the global hotkeys keep working under it: the board's own, a shortcut's, a freshly
+    /// bound one). The board closing - or being rebuilt - closes it, too: hiding its owner (the bar) does not, and a topmost dialog left alone
+    /// over the game or over the program that was just started would also keep the keyboard from going back to the game.
+    /// </summary>
+    private ShortcutEditorWindow? _shortcutEditor;
+
+    private void CloseShortcutEditor()
+    {
+        var editor = _shortcutEditor;   // stays set until ShowDialog returns, so a second call finds it closing and does nothing
+        if (editor == null) return;
+        try { editor.Close(); }
+        catch (Exception ex) { Logger.Warn("Closing the shortcut editor failed: " + ex.Message); }
     }
 
     private LayoutRect SnapWhileMoving(WidgetWindow w, LayoutRect proposed)
@@ -1405,6 +1445,9 @@ public sealed class WidgetHost : IDisposable
             Settings.SidebarCollapsed = collapsed;
             _sidebar!.SetCollapsed(collapsed);
             _host.Settings.Save();
+            // The bar keeps to the right of the sidebar, so its place follows the sidebar's width. First, so that the widgets it pushes
+            // are saved without the sidebar's sideways (system) move (see OpenBoard).
+            if (_boardOpen && _boardScreen != null) _bar?.Reposition(_boardScreen);
             // Expanding can put the sidebar on top of widgets next to it.
             if (_boardOpen) KeepWidgetsClearOfSidebar();
         };

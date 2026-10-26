@@ -61,6 +61,63 @@ public sealed class BarLayoutTests
     public void A_zero_or_missing_scale_counts_as_100_percent()
         => Assert.Equal(56, BarLayout.BarRect(Primary, 400, 0).H);
 
+    // ---- the sidebar's edge ----
+
+    // The expanded sidebar: 16 DIP from the edge, 280 wide -> right edge 296; the bar keeps one side margin (8) of air to it.
+    private const double SidebarLimit = 16 + 280 + BarLayout.SideMarginDip;
+
+    [Fact]
+    public void A_bar_that_fits_beside_the_sidebar_stays_centred()
+    {
+        var plain = BarLayout.BarRect(Primary, 640, 1.0);
+        var limited = BarLayout.BarRect(Primary, 640, 1.0, SidebarLimit);
+
+        Assert.Equal(plain, limited);
+    }
+
+    [Fact]
+    public void A_bar_that_would_cover_the_sidebar_slides_right_of_it()
+    {
+        // 1500 DIP wide, centred at x = 210: its left 94 px would sit on the sidebar's header and fold button.
+        var bar = BarLayout.BarRect(Primary, barWidth: 1500, scale: 1.0, SidebarLimit);
+
+        Assert.Equal(SidebarLimit, bar.X);
+        Assert.Equal(1500, bar.W);                      // still whole: it fits to the right
+        Assert.True(bar.Right <= Primary.Right - BarLayout.SideMarginDip);
+    }
+
+    [Fact]
+    public void A_bar_too_wide_even_when_slid_is_cut_at_the_right_margin()
+    {
+        var bar = BarLayout.BarRect(Primary, barWidth: 1700, scale: 1.0, SidebarLimit);
+
+        Assert.Equal(SidebarLimit, bar.X);
+        Assert.Equal(Primary.Right - BarLayout.SideMarginDip, bar.Right);   // 8 DIP from the right edge, like any cut bar
+        Assert.True(bar.W < 1700);                                          // the scroller takes over
+    }
+
+    [Fact]
+    public void The_limit_is_in_pixels_on_a_scaled_second_monitor()
+    {
+        // 150 %: sidebar right edge = 1920 + (16 + 280) * 1.5; the gap is 8 DIP * 1.5.
+        double limit = Second.X + (16 + 280 + BarLayout.SideMarginDip) * 1.5;
+        var bar = BarLayout.BarRect(Second, barWidth: 1600, scale: 1.5, limit);   // 2400 px wide: centred x = 1920 + 80
+
+        Assert.Equal(limit, bar.X);
+        Assert.Equal(Second.Right - BarLayout.SideMarginDip * 1.5, bar.Right);
+        Assert.Equal(84, bar.H);
+        Assert.Equal(12, bar.Y);
+    }
+
+    [Fact]
+    public void A_limit_left_of_the_centred_bar_changes_nothing_and_a_hopeless_limit_never_gives_a_negative_width()
+    {
+        Assert.Equal(BarLayout.BarRect(Primary, 640, 1.0), BarLayout.BarRect(Primary, 640, 1.0, 10));
+
+        var hopeless = BarLayout.BarRect(Primary, 640, 1.0, leftLimitPx: Primary.Right + 500);
+        Assert.True(hopeless.W >= 0);
+    }
+
     // ---- obstacle ----
 
     private static readonly LayoutRect TheBar = BarLayout.BarRect(Primary, 640, 1.0);   // 640,8 .. 1280,64

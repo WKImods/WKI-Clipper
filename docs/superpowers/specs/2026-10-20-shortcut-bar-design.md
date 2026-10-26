@@ -50,7 +50,9 @@ Layout bei jedem Öffnen umher · Ruckler im Spiel (Scans nur beim Öffnen des B
 ## 4. Verhalten
 ### 4.1 Leiste
 - Eigenes Board-Fenster (topmost, no-activate wie die Widgets), oben mittig auf dem Board-Monitor, Höhe ~56 DIP.
-  Erscheint/verschwindet mit dem Board.
+  Erscheint/verschwindet mit dem Board. Eine breite Leiste rutscht nach rechts, statt die Seitenleiste (Kopf, Einklapp-Knopf) zu
+  überdecken, und wird am rechten Rand abgeschnitten (sie scrollt dann). Bei offenem Board liegt sie über dem Leistungs-Overlay
+  (Anker „Oben Mitte“), damit Chip und Kacheln klickbar bleiben; ein offenes Bearbeiten-Fenster schließt mit dem Board.
 - **Hindernis wie die Seitenleiste:** Widgets, die das Leistenrechteck schneiden, werden beim Öffnen nach unten
   geschoben — mit demselben Mechanismus wie `KeepWidgetsClearOfSidebar`, nur wenn sie wirklich schneiden, und die
   verschobene Position wird gespeichert (kein Umherspringen bei jedem Öffnen).
@@ -74,11 +76,18 @@ greift nicht in fremde Fenster ein.
 ### 4.3 Spiele-Quellen
 - **Zuletzt erkannt:** Bei jedem `GameChanged` mit einem Spiel wird `(ExePath, DisplayName, LastSeenUtc)` in
   `Shortcuts.RecentGames` gemerkt (max. 30, neueste zuerst, ohne Duplikate). Der Bearbeiten-Dialog schlägt sie vor.
-- **Startweg-Auflösung (`GameLaunchResolver`)** für eine Exe: liegt sie unter `<Steam-Bibliothek>\steamapps\common\
-  <installdir>` → Steam-appid; unter einer Epic-`InstallLocation` → Epic-AppName; sonst Hersteller-Verknüpfung aus
-  Startmenü/Desktop, deren Ziel im selben Spielordner (oder einem Elternordner bis zum Spielordner) liegt — aber
-  **nie** Deinstallations-Verknüpfungen (Name/Argumente enthalten „uninstall“, „deinstall“, „unins“) und nie
-  Verknüpfungen auf Launcher; sonst die Exe.
+- **Startweg-Auflösung (`GameLaunchResolver`)** für eine Exe, erster Treffer gewinnt: (1) liegt sie unter `<Steam-Bibliothek>\steamapps\common\
+  <installdir>` → Steam-appid; (2) unter einer Epic-`InstallLocation` → Epic-AppName; (3) sonst eine Startmenü-/Desktop-Verknüpfung, in
+  dieser Rangfolge: **a)** eine, die genau auf die Exe zeigt; **b)** eine, deren Ziel im selben Spielordner (oder einem Elternordner bis
+  zwei Ebenen darüber, mindestens drei Pfadsegmente tief) liegt und deren Name zur Exe oder zum Zielordner passt (der bessere Name
+  vor der kürzeren Entfernung); **c)** eine **Launcher-Verknüpfung außerhalb des Spielordners, die das Spiel per Argument oder URL
+  startet** — eine .lnk mit Argumenten (Riot: `RiotClientServices.exe --launch-product=valorant`) oder eine .url mit eigenem Schema
+  (`uplay://`, `link2ea://`, `steam://`, `com.epicgames.launcher://`; nicht http/https/file) —, sofern ihr Name zum Exe-Namen oder zu
+  einem Ordner über der Exe passt, der das Spiel benennt (mindestens drei Pfadsegmente tief: „C:\Riot Games\VALORANT“ ja, „C:\Riot Games“
+  nein). Eine Launcher-Verknüpfung ohne Argument startet den Launcher, nicht das Spiel, und zählt nie. **Nie** Deinstallations-Verknüpfungen
+  (Name/Argumente/Ziel/URL enthalten „uninstall“, „deinstall“, „unins“), nie Hilfs-Verknüpfungen (Updater, Reporter, Reparatur, Readme)
+  und nie Werkzeuge des Spiels (Server, Dedicated, Editor, Config, Settings, Setup, Benchmark, SDK, Tools, Modkit, Safe Mode), außer die
+  Verknüpfung zeigt genau auf die Exe oder das Wort steckt im Namen der Exe selbst; (4) sonst die Exe.
 - **Bibliotheken:** Steam (alle appmanifests außer 228980; Soundtracks/Tools bleiben wählbar — der Nutzer entscheidet)
   und Epic-Manifeste als Listen im Dialog.
 - **Eigene:** Dateiauswahl (.lnk/.url/.exe).

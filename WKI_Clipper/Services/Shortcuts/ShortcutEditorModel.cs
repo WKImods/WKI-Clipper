@@ -104,13 +104,7 @@ public sealed class ShortcutEditorModel
         return rows;
     }
 
-    private static string RowName(ShortcutEntry e)
-    {
-        if (e.Kind == ShortcutKind.DefaultBrowser) return L.T("Standard-Browser", "Default browser");
-        if (!string.IsNullOrWhiteSpace(e.DisplayName)) return e.DisplayName;
-        var file = ShortcutPaths.FileName(e.Target);
-        return file.Length > 0 ? file : e.Id;
-    }
+    private static string RowName(ShortcutEntry e) => ShortcutReconciler.DisplayNameOf(e);
 
     public void Move(string id, int delta) => _service.Move(id, delta);
     public void SetHidden(string id, bool hidden) => _service.SetHidden(id, hidden);

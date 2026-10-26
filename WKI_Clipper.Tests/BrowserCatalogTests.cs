@@ -105,21 +105,104 @@ public sealed class BrowserCatalogTests
         Assert.Equal("Mozilla Firefox", One(all, "firefox").Name);
     }
 
+    // Opera and Opera GX register their entry point, ...\Programs\Opera[ GX]\launcher.exe - opera.exe lives in a version folder.
+    private const string OperaLauncher = @"C:\Users\cr4zy\AppData\Local\Programs\Opera\launcher.exe";
+    private const string OperaGxLauncher = @"C:\Users\cr4zy\AppData\Local\Programs\Opera GX\launcher.exe";
+
+    private static void AddOpera(FakeRegistry reg, string subKey, string name, string exe)
+    {
+        reg.Set("HKCU", @"Software\Clients\StartMenuInternet\" + subKey, null, name);
+        reg.Set("HKCU", @"Software\Clients\StartMenuInternet\" + subKey + @"\shell\open\command", null, "\"" + exe + "\"");
+    }
+
     [Fact]
     public void Opera_gx_is_not_opera()
     {
         var reg = new FakeRegistry();
-        reg.Set("HKCU", @"Software\Clients\StartMenuInternet\Opera GX Stable", null, "Opera GX Internet Browser");
-        reg.Set("HKCU", @"Software\Clients\StartMenuInternet\Opera GX Stable\shell\open\command", null,
-            "\"C:\\Users\\cr4zy\\AppData\\Local\\Programs\\Opera GX\\opera.exe\"");
-        var fs = new FakeFileSystem().Add(@"C:\Users\cr4zy\AppData\Local\Programs\Opera GX\opera.exe");
+        AddOpera(reg, "Opera GXStable", "Opera GX Internet Browser", OperaGxLauncher);
+        var fs = new FakeFileSystem().Add(OperaGxLauncher);
 
         var all = Detect(reg, fs);
 
         Assert.False(One(all, "opera").Installed);
         var gx = Assert.Single(all, b => b.Installed);
-        Assert.NotEqual("opera", gx.Id);
-        Assert.Contains("GX", gx.Name);
+        Assert.Equal("operagx", gx.Id);
+        Assert.Equal("Opera GX", gx.Name);
+        Assert.Equal(OperaGxLauncher, gx.ExePath);
+    }
+
+    [Fact]
+    public void Opera_registered_through_launcher_exe_is_installed_opera()
+    {
+        // Before: the leaf "launcher.exe" matched nothing, so Opera showed as "not installed" with a download link.
+        var reg = new FakeRegistry();
+        AddOpera(reg, "OperaStable", "Opera Internet Browser", OperaLauncher);
+        var fs = new FakeFileSystem().Add(OperaLauncher);
+
+        var opera = One(Detect(reg, fs), "opera");
+
+        Assert.True(opera.Installed);
+        Assert.Equal("Opera", opera.Name);
+        Assert.Equal(OperaLauncher, opera.ExePath);
+        Assert.DoesNotContain(Detect(reg, fs), b => b.Id == "launcher");
+    }
+
+    [Fact]
+    public void Opera_and_opera_gx_installed_together_are_two_rows_in_either_registry_order()
+    {
+        // "Opera GXStable" is enumerated before "OperaStable": the first one must not swallow the second.
+        var reg = new FakeRegistry();
+        AddOpera(reg, "Opera GXStable", "Opera GX Internet Browser", OperaGxLauncher);
+        AddOpera(reg, "OperaStable", "Opera Internet Browser", OperaLauncher);
+        var fs = new FakeFileSystem().Add(OperaGxLauncher).Add(OperaLauncher);
+
+        var all = Detect(reg, fs);
+
+        var opera = One(all, "opera");
+        var gx = One(all, "operagx");
+        Assert.True(opera.Installed);
+        Assert.True(gx.Installed);
+        Assert.Equal(OperaLauncher, opera.ExePath);
+        Assert.Equal(OperaGxLauncher, gx.ExePath);
+        Assert.Equal(2, all.Count(b => b.Installed));
+        Assert.Contains("Opera GX", gx.Name);
+    }
+
+    [Fact]
+    public void Opera_registered_through_the_classic_opera_exe_still_counts()
+    {
+        var reg = new FakeRegistry();
+        AddOpera(reg, "OperaStable", "Opera Internet Browser", @"C:\Program Files\Opera\opera.exe");
+        AddOpera(reg, "Opera GXStable", "Opera GX Internet Browser", @"C:\Program Files\Opera GX\opera.exe");
+        var fs = new FakeFileSystem().Add(@"C:\Program Files\Opera\opera.exe").Add(@"C:\Program Files\Opera GX\opera.exe");
+
+        var all = Detect(reg, fs);
+
+        Assert.True(One(all, "opera").Installed);
+        Assert.True(One(all, "operagx").Installed);
+    }
+
+    [Fact]
+    public void A_launcher_exe_that_is_not_opera_does_not_become_opera_because_of_the_user_name()
+    {
+        // The word "opera" in the PATH (a user called "operator") must not decide - only the registry's own name does.
+        var reg = new FakeRegistry();
+        AddOpera(reg, "SomeBrowser", "Some Browser", @"C:\Users\operator\AppData\Local\Programs\Some Browser\launcher.exe");
+        var fs = new FakeFileSystem().Add(@"C:\Users\operator\AppData\Local\Programs\Some Browser\launcher.exe");
+
+        var all = Detect(reg, fs);
+
+        Assert.False(One(all, "opera").Installed);
+        Assert.DoesNotContain(all, b => b.Id == "operagx");
+        var other = Assert.Single(all, b => b.Installed);
+        Assert.Equal("Some Browser", other.Name);
+    }
+
+    [Fact]
+    public void The_generic_launcher_exe_is_not_a_browser_exe_name()
+    {
+        // The game detection reads this set: "launcher.exe" there would hide every game that is started through a launcher.exe.
+        Assert.DoesNotContain("launcher.exe", BrowserCatalog.BrowserExeNames);
     }
 
     [Fact]

@@ -98,13 +98,7 @@ public sealed class ShortcutService : IDisposable
         }
     }
 
-    private static string NameOf(ShortcutEntry e)
-    {
-        if (e.Kind == ShortcutKind.DefaultBrowser) return L.T("Standard-Browser", "Default browser");
-        if (!string.IsNullOrWhiteSpace(e.DisplayName)) return e.DisplayName;
-        var file = ShortcutPaths.FileName(e.Target);
-        return file.Length > 0 ? file : e.Id;
-    }
+    private static string NameOf(ShortcutEntry e) => ShortcutReconciler.DisplayNameOf(e);
 
     private ShortcutEntry? Find(string id)
         => Section.Items.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));

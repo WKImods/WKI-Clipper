@@ -247,14 +247,228 @@ public sealed class GameLaunchResolverTests
         Assert.Equal(ShortcutKind.Exe, t.Kind);
     }
 
-    [Fact]
-    public void Url_shortcuts_have_no_folder_and_are_not_candidates()
+    [Theory]
+    [InlineData("https://www.foo-game.example/")]
+    [InlineData("http://foo.example/download")]
+    [InlineData("file:///C:/Games/Foo/foo.exe")]
+    [InlineData("")]
+    public void Url_shortcuts_that_open_a_page_or_a_file_are_not_candidates(string address)
     {
-        var url = new ShellLinkInfo(@"C:\Users\Public\Desktop\Foo.url", "Foo", null, null, null, "steam://rungameid/1");
+        // A .url has no folder to compare, and a web page or file link starts no game: only a launcher scheme counts.
+        var url = new ShellLinkInfo(@"C:\Users\Public\Desktop\Foo.url", "Foo", null, null, null, address);
 
         var t = Resolve(@"C:\Games\Foo\foo.exe", url);
 
         Assert.Equal(ShortcutKind.Exe, t.Kind);
+    }
+
+    // ---- vendor shortcuts: sibling tools (server, editor, settings) are not the game ----
+
+    [Fact]
+    public void A_dedicated_server_shortcut_in_the_exe_folder_does_not_beat_the_games_own_shortcut()
+    {
+        // Foo.exe runs from bin\; the official start sits one level up, the server shortcut next to the exe.
+        var game = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo.lnk", @"C:\Games\Foo\FooLauncher.exe");
+        var server = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Dedicated Server.lnk", @"C:\Games\Foo\bin\FooServer.exe");
+
+        var t = Resolve(@"C:\Games\Foo\bin\Foo.exe", server, game);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, game.Path, null), t);
+    }
+
+    [Theory]
+    [InlineData("Foo Server", @"C:\Games\Foo\bin\FooServer.exe")]
+    [InlineData("Foo Dedicated Server", @"C:\Games\Foo\bin\FooDS.exe")]
+    [InlineData("Foo Editor", @"C:\Games\Foo\bin\FooEditor.exe")]
+    [InlineData("Foo Settings", @"C:\Games\Foo\bin\FooSettings.exe")]
+    [InlineData("Foo Config", @"C:\Games\Foo\bin\FooConfig.exe")]
+    [InlineData("Foo Setup", @"C:\Games\Foo\bin\FooSetup.exe")]
+    [InlineData("Foo Benchmark", @"C:\Games\Foo\bin\FooBench.exe")]
+    [InlineData("Foo SDK", @"C:\Games\Foo\bin\FooSdk.exe")]
+    [InlineData("Foo Tools", @"C:\Games\Foo\bin\FooTools.exe")]
+    [InlineData("Foo Modkit", @"C:\Games\Foo\bin\ModKit.exe")]
+    [InlineData("Foo Safe Mode", @"C:\Games\Foo\bin\FooSafeMode.exe")]
+    [InlineData("Foo", @"C:\Games\Foo\bin\FooServer.exe")]   // a plain name, but the target is the server
+    public void A_tool_shortcut_alone_is_never_the_start_path(string name, string target)
+    {
+        var tool = PhillipsPc.Link(@"C:\Users\Public\Desktop\" + name + ".lnk", target);
+
+        var t = Resolve(@"C:\Games\Foo\bin\Foo.exe", tool);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.Exe, @"C:\Games\Foo\bin\Foo.exe", null), t);
+    }
+
+    [Fact]
+    public void The_tool_shortcut_loses_to_the_game_shortcut_at_the_same_folder_level()
+    {
+        // "Foo Settings" sorts before "Foo" in the same folder (a space is before a dot) - the path must not decide.
+        var settings = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Settings.lnk", @"C:\Games\Foo\FooSettings.exe");
+        var game = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo.lnk", @"C:\Games\Foo\FooLauncher.exe");
+
+        var t = Resolve(@"C:\Games\Foo\Foo.exe", settings, game);
+
+        Assert.Equal(game.Path, t.Target);
+    }
+
+    [Fact]
+    public void A_shortcut_named_exactly_like_the_game_beats_a_looser_one_that_sits_closer()
+    {
+        // "Foo Extras" (not a tool) is level 0, "Foo" is one level up: the name that fits better wins, then the distance.
+        var extras = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Extras.lnk", @"C:\Games\Foo\bin\FooExtras.exe");
+        var game = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo.lnk", @"C:\Games\Foo\FooLauncher.exe");
+
+        var t = Resolve(@"C:\Games\Foo\bin\Foo.exe", extras, game);
+
+        Assert.Equal(game.Path, t.Target);
+    }
+
+    [Fact]
+    public void A_tool_marker_in_the_games_own_exe_name_is_not_a_tool()
+    {
+        // The game IS the server (or the editor): its own shortcut must still be found.
+        var shortcut = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Server.lnk", @"C:\Games\Foo\FooServerLauncher.exe");
+
+        var t = Resolve(@"C:\Games\Foo\FooServer.exe", shortcut);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, shortcut.Path, null), t);
+    }
+
+    [Fact]
+    public void A_shortcut_to_the_exe_itself_wins_even_when_its_name_has_a_tool_word()
+    {
+        var exact = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Settings Free.lnk", @"C:\Games\Foo\foo.exe");
+
+        var t = Resolve(@"C:\Games\Foo\foo.exe", exact);
+
+        Assert.Equal(exact.Path, t.Target);
+    }
+
+    // ---- launcher-hosted games: the third start path ----
+
+    private const string ValorantExe = @"C:\Riot Games\VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe";
+    private const string RiotClient = @"C:\Riot Games\Riot Client\RiotClientServices.exe";
+    private const string RainbowExe = @"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Tom Clancy's Rainbow Six Siege\RainbowSix.exe";
+
+    private static readonly ShellLinkInfo ValorantShortcut = PhillipsPc.Link(
+        @"C:\Users\Public\Desktop\VALORANT.lnk", RiotClient, "--launch-product=valorant --launch-patchline=live", @"C:\Riot Games\Riot Client");
+    private static readonly ShellLinkInfo LeagueShortcut = PhillipsPc.Link(
+        @"C:\Users\Public\Desktop\League of Legends.lnk", RiotClient, "--launch-product=league_of_legends --launch-patchline=live", @"C:\Riot Games\Riot Client");
+    private static readonly ShellLinkInfo RiotClientShortcut = PhillipsPc.Link(
+        @"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Riot Games\Riot Client.lnk", RiotClient, null, @"C:\Riot Games\Riot Client");
+    private static readonly ShellLinkInfo RainbowUrl = new(
+        @"C:\Users\Public\Desktop\Tom Clancy's Rainbow Six Siege.url", "Tom Clancy's Rainbow Six Siege", null, null, null, "uplay://launch/635/0");
+
+    [Fact]
+    public void Valorant_exe_resolves_to_the_riot_client_shortcut_not_the_raw_exe()
+    {
+        // The game exe refuses to run without the Riot Client (and Vanguard); the desktop shortcut starts the client with the product.
+        var t = Resolve(ValorantExe, PhillipsPc.SteamLink, RiotClientShortcut, LeagueShortcut, ValorantShortcut);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, ValorantShortcut.Path, null), t);
+    }
+
+    [Fact]
+    public void Rainbow_six_exe_resolves_to_its_uplay_url_shortcut()
+    {
+        var t = Resolve(RainbowExe, PhillipsPc.UbisoftDesktopLink, PhillipsPc.UbisoftLink, RainbowUrl);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, RainbowUrl.Path, null), t);
+    }
+
+    [Theory]
+    [InlineData("link2ea://launchgame/1234?platform=origin")]
+    [InlineData("com.epicgames.launcher://apps/abc?action=launch")]
+    [InlineData("steam://rungameid/1")]
+    [InlineData("UPLAY://launch/635/0")]
+    public void Any_launcher_scheme_in_a_url_shortcut_named_after_the_game_counts(string address)
+    {
+        var url = new ShellLinkInfo(@"C:\Users\Public\Desktop\Foo.url", "Foo", null, null, null, address);
+
+        var t = Resolve(@"C:\Games\Foo\foo.exe", url);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, url.Path, null), t);
+    }
+
+    [Fact]
+    public void A_launcher_shortcut_that_starts_another_game_is_not_this_games_start()
+    {
+        // Only the League shortcut exists: Valorant must not start League.
+        var t = Resolve(ValorantExe, LeagueShortcut, RiotClientShortcut);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.Exe, ValorantExe, null), t);
+    }
+
+    [Fact]
+    public void A_launcher_shortcut_without_arguments_starts_the_launcher_not_the_game()
+    {
+        // Neither shortcut passes an argument: they open the Riot Client, whatever they are called.
+        var named = PhillipsPc.Link(@"C:\Users\Public\Desktop\VALORANT.lnk", RiotClient, null);
+
+        var t = Resolve(ValorantExe, named, RiotClientShortcut);
+
+        Assert.Equal(ShortcutKind.Exe, t.Kind);
+    }
+
+    [Fact]
+    public void A_shared_parent_folder_name_is_too_shallow_to_name_a_game()
+    {
+        // "Riot Games" sits two segments deep (C:\Riot Games): a launcher shortcut with that name and an argument says nothing about Valorant.
+        var generic = PhillipsPc.Link(@"C:\Users\Public\Desktop\Riot Games.lnk", RiotClient, "--launch-product=league_of_legends");
+
+        var t = Resolve(ValorantExe, generic);
+
+        Assert.Equal(ShortcutKind.Exe, t.Kind);
+    }
+
+    [Fact]
+    public void A_start_shortcut_in_the_games_own_tree_beats_a_launcher_shortcut()
+    {
+        // World of Tanks stays on wgc_api.exe --open even when a launcher-style shortcut with the game's name is around.
+        var launcher = new ShellLinkInfo(@"C:\Users\Public\Desktop\World of Tanks.url", "World of Tanks", null, null, null, "wgc://launch/wot");
+        var vendor = PhillipsPc.Link(@"C:\Users\Public\Desktop\World of Tanks EU.lnk", RiotClient, "--launch-product=world_of_tanks");
+
+        var t = Resolve(@"C:\Games\World_of_Tanks_EU\WorldOfTanks.exe", launcher, vendor, PhillipsPc.WotStart);
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.ShellLink, PhillipsPc.WotStart.Path, null), t);
+    }
+
+    [Fact]
+    public void An_exact_shortcut_beats_an_in_tree_one_which_beats_a_launcher_shortcut()
+    {
+        var exe = @"C:\Games\Foo\bin\Foo.exe";
+        var launcher = new ShellLinkInfo(@"C:\Users\Public\Desktop\Foo.url", "Foo", null, null, null, "uplay://launch/1/0");
+        var inTree = PhillipsPc.Link(@"C:\Users\Public\Desktop\Foo Game.lnk", @"C:\Games\Foo\FooLauncher.exe");
+        var exact = PhillipsPc.Link(@"C:\Users\Public\Desktop\Anything.lnk", exe);
+
+        Assert.Equal(inTree.Path, Resolve(exe, launcher, inTree).Target);
+        Assert.Equal(exact.Path, Resolve(exe, launcher, inTree, exact).Target);
+        Assert.Equal(launcher.Path, Resolve(exe, launcher).Target);
+    }
+
+    [Fact]
+    public void Uninstall_and_helper_filters_still_apply_to_launcher_shortcuts()
+    {
+        var uninstall = PhillipsPc.Link(@"C:\Users\Public\Desktop\VALORANT deinstallieren.lnk", RiotClient, "--uninstall-product=valorant");
+        var updater = PhillipsPc.Link(@"C:\Users\Public\Desktop\VALORANT Updater.lnk", RiotClient, "--update=valorant");
+        var settings = PhillipsPc.Link(@"C:\Users\Public\Desktop\VALORANT Settings.lnk", RiotClient, "--settings=valorant");
+        var urlUninstall = new ShellLinkInfo(@"C:\Users\Public\Desktop\VALORANT.url", "VALORANT", null, null, null, "riot://uninstall/valorant");
+
+        var t = Resolve(ValorantExe, uninstall, updater, settings, urlUninstall);
+
+        Assert.Equal(ShortcutKind.Exe, t.Kind);
+    }
+
+    [Fact]
+    public void Steam_and_epic_still_win_over_a_launcher_shortcut()
+    {
+        var url = new ShellLinkInfo(@"C:\Users\Public\Desktop\Arma Reforger.url", "Arma Reforger", null, null, null, "steam://rungameid/1874880");
+
+        var arma = Resolve(@"D:\SteamLibrary\steamapps\common\Arma Reforger\ArmaReforgerSteam.exe", url);
+        var spider = Resolve(@"D:\Program Files\Epic Games\MarvelsSpiderManRemaster\Spider-Man.exe",
+            new ShellLinkInfo(@"C:\Users\Public\Desktop\Spider-Man.url", "Spider-Man", null, null, null, "com.epicgames.launcher://apps/x?action=launch"));
+
+        Assert.Equal(new LaunchTarget(ShortcutKind.SteamApp, "1874880", null), arma);
+        Assert.Equal(new LaunchTarget(ShortcutKind.EpicApp, "be23672deb69402781cd47cc2919caf4", null), spider);
     }
 
     // ---- fallback ----
