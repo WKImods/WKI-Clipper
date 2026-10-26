@@ -34,7 +34,7 @@ public sealed class SidebarEntry
     {
         _labelText = label;
         _label = new TextBlock { Text = label, FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis };
-        _pillText = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center };
+        _pillText = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = (Brush)Application.Current.FindResource("OnAccentBrush"), HorizontalAlignment = HorizontalAlignment.Center };
         _pill = new Border
         {
             CornerRadius = new CornerRadius(9), MinWidth = 20, Padding = new Thickness(6, 1, 6, 1),
@@ -252,7 +252,7 @@ public sealed class WidgetSidebarWindow : Window
         });
         grid.Children.Add(new TextBlock
         {
-            Text = "W", FontSize = 16, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+            Text = "W", FontSize = 16, FontWeight = FontWeights.Bold, Foreground = (Brush)Application.Current.FindResource("OnAccentBrush"),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
         });
         return grid;

@@ -448,7 +448,14 @@ public sealed class WidgetHost : IDisposable
     /// and the shortcut bar are built in code with the brushes of the moment - they are built anew, like on a language change.
     /// </summary>
     private void OnThemeChanged()
-        => Application.Current.Dispatcher.BeginInvoke(new Action(() => RebuildUi("theme")));
+        => Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            // With the board closed (the picker's last choice went on while the board was being closed) the rebuild waits for the
+            // next opening: no tearing down of pinned widgets over a running game.
+            if (_themeGate.OnThemeChanged(_boardOpen)) RebuildUi("theme");
+        }));
+
+    private readonly ThemeRebuildGate _themeGate = new();
 
     /// <summary>
     /// Widget windows and the launcher build their (localized, coloured) content once. When that content has to change - the
@@ -462,10 +469,32 @@ public sealed class WidgetHost : IDisposable
     /// </summary>
     private void RebuildUi(string reason)
     {
-        CloseShortcutEditor();   // its owner, the bar, is built anew below
+        var plan = TearDownForRebuild(reason);
+
+        // OpenBoard records "where the keyboard was" - during a rebuild that would be one
+        // of our own windows, so keep the game the user actually came from.
+        var returnFocusTo = _returnFocusTo;
+        bool externalLaunch = _externalLaunchDuringBoard;
+        // The board comes back on the monitor it was on, not on the one the mouse is on (a colour is often committed with the mouse elsewhere).
+        var keepScreen = plan.ReopenOnDevice is { } device ? ScreenByDeviceName(device) ?? PrimaryScreen() : null;
+        if (plan.ReopenBoard) OpenBoard(keepScreen);
+        else RestorePinned();
+        _returnFocusTo = returnFocusTo;
+        _externalLaunchDuringBoard = externalLaunch;
+        Logger.Info($"Widgets rebuilt ({reason}).");
+    }
+
+    /// <summary>
+    /// The first half of a rebuild: every window saves its place, the web widgets get their new texts and icon colour, everything else
+    /// - widgets, sidebar, shortcut bar, backdrop - is closed. The board is left closed; what comes back is up to the caller.
+    /// </summary>
+    private WidgetRebuildPlan TearDownForRebuild(string reason)
+    {
+        CloseShortcutEditor();   // its owner, the bar, is built anew
         if (reason == "language") CloseThemePicker();   // its texts are built once, in the old language
         bool wasOpen = _boardOpen;
-        var plan = WidgetRebuildPlan.For(_windows.Select(kv => new WidgetWindowInfo(kv.Key, kv.Value.WidgetContent is IWebWidget)), wasOpen);
+        var plan = WidgetRebuildPlan.For(_windows.Select(kv => new WidgetWindowInfo(kv.Key, kv.Value.WidgetContent is IWebWidget)), wasOpen,
+                                         _boardScreen?.DeviceName, WinForms.Screen.AllScreens.Select(s => s.DeviceName).ToList(), PrimaryScreen().DeviceName);
 
         foreach (var id in plan.CaptureGeometry) CaptureGeometry(id, _windows[id], reason + "-rebuild");
 
@@ -486,16 +515,7 @@ public sealed class WidgetHost : IDisposable
         _entries.Clear();
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
         _boardOpen = false;
-
-        // OpenBoard records "where the keyboard was" - during a rebuild that would be one
-        // of our own windows, so keep the game the user actually came from.
-        var returnFocusTo = _returnFocusTo;
-        bool externalLaunch = _externalLaunchDuringBoard;
-        if (plan.ReopenBoard) OpenBoard();
-        else RestorePinned();
-        _returnFocusTo = returnFocusTo;
-        _externalLaunchDuringBoard = externalLaunch;
-        Logger.Info($"Widgets rebuilt ({reason}).");
+        return plan;
     }
     /// <summary>Sidebar order; also the stagger order for default placement.</summary>
     private static readonly IReadOnlyList<WidgetId> Order = WidgetCatalog.Order;
@@ -540,10 +560,15 @@ public sealed class WidgetHost : IDisposable
         else OpenBoard();
     }
 
-    public void OpenBoard()
+    public void OpenBoard() => OpenBoard(null);
+
+    /// <param name="keepScreen">The monitor to open on; null = the one the mouse is on (the normal case).</param>
+    private void OpenBoard(WinForms.Screen? keepScreen)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var screen = WinForms.Screen.FromPoint(WinForms.Cursor.Position);
+        // A colour that went on while the board was closed rebuilds the windows now, before anything is shown.
+        if (!_boardOpen && _themeGate.TakePending()) TearDownForRebuild("theme");
+        var screen = keepScreen ?? WinForms.Screen.FromPoint(WinForms.Cursor.Position);
         // Remember where the keyboard was (normally the game) before the backdrop takes it.
         if (!_boardOpen)
         {

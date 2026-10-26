@@ -118,8 +118,9 @@ public sealed class TwitchChatService : IDisposable
                 _joinedChannel = channel;
                 _connected = true;
                 backoffSec = 2;
-                lock (_gate) _joinWatch.Start(channel, DateTime.UtcNow);
-                _ = WatchJoinAsync(channel, Interlocked.Increment(ref _joinGeneration), ct);
+                var joinedAt = DateTime.UtcNow;
+                lock (_gate) _joinWatch.Start(channel, joinedAt);
+                _ = WatchJoinAsync(channel, Interlocked.Increment(ref _joinGeneration), joinedAt.Ticks, ct);
                 StatusChanged?.Invoke();
                 Logger.Info($"Twitch chat connected to #{channel}");
 
@@ -131,6 +132,8 @@ public sealed class TwitchChatService : IDisposable
                 Logger.Warn("Twitch chat connection failed: " + ex.Message);
             }
 
+            // This connection is over: a join check still waiting belongs to it, and a dead link says nothing about the channel.
+            Interlocked.Increment(ref _joinGeneration);
             if (_connected) { _connected = false; StatusChanged?.Invoke(); }
             if (ct.IsCancellationRequested) break;
 
@@ -214,17 +217,18 @@ public sealed class TwitchChatService : IDisposable
 
     /// <summary>
     /// Twitch answers a JOIN to an unknown login with silence, so the only way to notice a typo or
-    /// a renamed channel is the missing ROOMSTATE. A newer join (reconnect, channel change) makes
-    /// this check obsolete via the generation number.
+    /// a renamed channel is the missing ROOMSTATE - but silence is also what a dropped or hanging link looks like.
+    /// A newer join (reconnect, channel change) makes this check obsolete via the generation number, and only a link
+    /// that is open and delivered something after the JOIN may say "missing" (see <see cref="ChannelJoinCheck"/>).
     /// </summary>
-    private async Task WatchJoinAsync(string channel, int generation, CancellationToken ct)
+    private async Task WatchJoinAsync(string channel, int generation, long joinedAtTicks, CancellationToken ct)
     {
-        try { await Task.Delay(ChannelJoinWatch.Timeout + TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { return; }
-        if (generation != Volatile.Read(ref _joinGeneration)) return;
-
-        bool missing;
-        lock (_gate) missing = _joinWatch.CheckMissing(DateTime.UtcNow);
+        bool missing = await ChannelJoinCheck.RunAsync(
+            delay: Task.Delay,
+            isCurrent: () => generation == Volatile.Read(ref _joinGeneration),
+            linkAlive: () => ChannelJoinCheck.LinkAlive(_connected, Interlocked.Read(ref _lastRxTicks), joinedAtTicks),
+            checkMissing: () => { lock (_gate) return _joinWatch.CheckMissing(DateTime.UtcNow); },
+            ct).ConfigureAwait(false);
         if (!missing) return;
 
         Logger.Warn($"Twitch chat: #{channel} did not answer the JOIN within {ChannelJoinWatch.Timeout.TotalSeconds:0} s — the channel does not exist or was renamed");

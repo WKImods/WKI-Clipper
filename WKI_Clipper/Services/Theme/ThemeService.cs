@@ -15,7 +15,8 @@ namespace WKI_Clipper.Services;
 /// </summary>
 public sealed class ThemeService
 {
-    private ResourceDictionary? _overlay;
+    /// <summary>Marks the dictionary a theme is applied as, so any service finds and replaces it - there is only ever one overlay.</summary>
+    private const string OverlayMarker = "WKI.ThemeOverlay";
 
     /// <summary>Raised on the calling (UI) thread after a palette has been applied.</summary>
     public event Action? Changed;
@@ -30,14 +31,15 @@ public sealed class ThemeService
     public void Apply(ThemePalette palette)
     {
         var merged = Application.Current.Resources.MergedDictionaries;
-        var next = new ResourceDictionary();
+        var next = new ResourceDictionary { [OverlayMarker] = true };
         ApplyTo(next, palette);
 
-        int at = _overlay is null ? -1 : merged.IndexOf(_overlay);
+        int at = -1;
+        for (int i = 0; i < merged.Count; i++)
+            if (merged[i].Contains(OverlayMarker)) { at = i; break; }
         if (at >= 0) merged[at] = next;
         else merged.Add(next);
 
-        _overlay = next;
         Current = palette;
         Changed?.Invoke();
     }

@@ -84,6 +84,7 @@ public sealed class HotkeyCaptureButton : Button
 
         Content = L.T("Drücke Tastenkombi…  (Esc abbrechen)", "Press a key combo…  (Esc to cancel)");
         Background = (System.Windows.Media.Brush)Application.Current.FindResource("AccentBrush");
+        Foreground = (System.Windows.Media.Brush)Application.Current.FindResource("OnAccentBrush");   // the prompt sits on the accent
         Focus();
         Keyboard.Focus(this);
 
@@ -96,6 +97,7 @@ public sealed class HotkeyCaptureButton : Button
             if (keys != null) PreviewKeyDown -= keys;
             if (lost != null) LostKeyboardFocus -= lost;
             ClearValue(BackgroundProperty);   // back to the theme's button look
+            ClearValue(ForegroundProperty);
             ShowBinding();
             CaptureEnded?.Invoke();
         }

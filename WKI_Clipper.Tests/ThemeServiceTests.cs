@@ -13,6 +13,7 @@ using Xunit;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Border = System.Windows.Controls.Border;
+using CheckBox = System.Windows.Controls.CheckBox;
 using Button = System.Windows.Controls.Button;
 using Color = System.Windows.Media.Color;
 using Point = System.Windows.Point;
@@ -115,6 +116,61 @@ public sealed class ThemeServiceTests
 
         Assert.Equal(C("#33FF7A2C"), r.before);
         Assert.Equal(C("#3314C98B"), r.after);
+    }
+
+    [Fact]
+    public void Text_and_ticks_on_the_accent_follow_the_palette_not_a_fixed_white()
+    {
+        var r = OnSta(() =>
+        {
+            var dict = LoadTheme();
+            var button = new Button { Style = (Style)dict["AccentButton"] };
+            var check = new CheckBox { IsChecked = true };
+            var host = new Grid { Resources = dict };
+            host.Children.Add(button);
+            host.Children.Add(check);
+            host.Measure(new Size(300, 300));
+            host.Arrange(new Rect(0, 0, 300, 300));
+            host.UpdateLayout();
+
+            Color Tick() => SolidOf(((System.Windows.Shapes.Path)check.Template.FindName("Tick", check)).Stroke);
+            var before = (text: SolidOf(button.Foreground), tick: Tick());
+            ThemeService.ApplyTo(dict, Palette("gold"));
+            var after = (text: SolidOf(button.Foreground), tick: Tick());
+            return (before, after);
+        });
+
+        Assert.Equal(Colors.White, r.before.text);                              // today's look
+        Assert.Equal(Colors.White, r.before.tick);
+        var gold = Palette("gold").Colors["OnAccentColor"];
+        Assert.NotEqual(Colors.White, gold);
+        Assert.Equal(gold, r.after.text);                                       // a light accent: dark text and a dark tick
+        Assert.Equal(gold, r.after.tick);
+    }
+
+    [Fact]
+    public void An_opaque_direct_rendering_widget_window_takes_its_glass_from_the_palette()
+    {
+        var service = new ThemeService();
+        var r = OnSta(() =>
+        {
+            var window = new WidgetWindow(WidgetId.WhatsApp, "WhatsApp", new Border(), directRendering: true);
+            try
+            {
+                var before = SolidOf(window.Background);
+                service.Apply(Palette(glass: "graphite"));
+                var after = SolidOf(window.Background);
+                return (before, after);
+            }
+            finally
+            {
+                service.Apply(Palette());
+                window.Close();
+            }
+        });
+
+        Assert.Equal(C("#1A1426"), r.before);                                   // today's violet
+        Assert.Equal(Palette(glass: "graphite").Colors["SurfaceSolidColor"], r.after);   // and it follows a switch, web widget or not
     }
 
     // ---- brushes are replaced, never changed ----
@@ -365,6 +421,44 @@ public sealed class ThemeServiceTests
 
         Assert.Equal(new[] { WidgetId.WhatsApp, WidgetId.Spotify }, plan.Keep);   // their page - and the WhatsApp login with it - stays
         Assert.Equal(new[] { WidgetId.Capture }, plan.Rebuild);
+    }
+
+    [Fact]
+    public void A_rebuilt_board_comes_back_on_the_monitor_it_was_on_not_where_the_mouse_is()
+    {
+        var windows = new[] { new WidgetWindowInfo(WidgetId.Capture, false) };
+        string[] screens = { @"\\.\DISPLAY1", @"\\.\DISPLAY2" };
+
+        var plan = WidgetRebuildPlan.For(windows, boardWasOpen: true, boardDevice: @"\\.\DISPLAY2", screens, primaryDevice: @"\\.\DISPLAY1");
+        Assert.Equal(@"\\.\DISPLAY2", plan.ReopenOnDevice);
+
+        // that monitor was unplugged meanwhile: the primary one
+        var gone = WidgetRebuildPlan.For(windows, true, @"\\.\DISPLAY3", screens, @"\\.\DISPLAY1");
+        Assert.Equal(@"\\.\DISPLAY1", gone.ReopenOnDevice);
+
+        // device names are not case sensitive, and a board that was closed has no monitor to keep
+        Assert.Equal(@"\\.\display2", WidgetRebuildPlan.For(windows, true, @"\\.\display2", screens, @"\\.\DISPLAY1").ReopenOnDevice);
+        Assert.Null(WidgetRebuildPlan.For(windows, false, @"\\.\DISPLAY2", screens, @"\\.\DISPLAY1").ReopenOnDevice);
+        Assert.Null(WidgetRebuildPlan.For(windows, true).ReopenOnDevice);                  // nothing known: the host's usual choice
+    }
+
+    [Fact]
+    public void A_theme_change_with_the_board_closed_waits_for_the_next_opening()
+    {
+        var gate = new ThemeRebuildGate();
+
+        Assert.False(gate.OnThemeChanged(boardOpen: false));    // closed (back in the game): no rebuild over the game ...
+        Assert.True(gate.TakePending());                        // ... it is owed to the board's next opening, once
+        Assert.False(gate.TakePending());
+
+        Assert.True(gate.OnThemeChanged(boardOpen: true));      // open: rebuilt right away, nothing is owed afterwards
+        Assert.False(gate.TakePending());
+
+        // several changes while closed are one rebuild; one that arrives while open settles an older debt
+        gate.OnThemeChanged(false);
+        gate.OnThemeChanged(false);
+        Assert.True(gate.OnThemeChanged(true));
+        Assert.False(gate.TakePending());
     }
 
     [Fact]

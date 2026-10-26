@@ -158,6 +158,41 @@ public sealed class PerfOverlayPlacementTests : IDisposable
     }
 
     [Fact]
+    public void Snapping_on_a_second_monitor_keeps_the_overlay_on_that_monitor()
+    {
+        // A fixed anchor has no monitor of its own (it always means the primary one), so a snap on another monitor is stored as the
+        // free place that sits exactly on that anchor - it would otherwise jump to the primary monitor on the drop.
+        var nearTopRight = new LayoutRect(2560 + 1920 - 10 - 200 - 5, 18, W, H);       // 5 px / 8 px from the anchor (4270, 10)
+
+        var (anchor, free) = PerfOverlayPlacement.FromDrop(nearTopRight, Side, snap: 24, Margin);
+
+        Assert.Equal(OverlayAnchor.Free, anchor);
+        Assert.Equal(Side.Device, free!.Monitor);
+        Assert.Equal(new LayoutRect(4270, 10, W, H), PlaceOn(Both, OverlayAnchor.Free, free));
+
+        // every one of the eight points of the second monitor comes back exactly where it was, and grows from its own edge
+        foreach (var a in new[] { OverlayAnchor.TopLeft, OverlayAnchor.TopCenter, OverlayAnchor.TopRight, OverlayAnchor.MiddleLeft,
+                                  OverlayAnchor.MiddleRight, OverlayAnchor.BottomLeft, OverlayAnchor.BottomCenter, OverlayAnchor.BottomRight })
+        {
+            var spot = PerfOverlayPlacement.Place(a, null, W, H, new[] { Side }, Side.Device, Margin);
+            var (snapped, place) = PerfOverlayPlacement.FromDrop(spot, Side, snap: 24, Margin);
+            Assert.Equal(OverlayAnchor.Free, snapped);
+            var back = PlaceOn(Both, OverlayAnchor.Free, place);
+            Assert.Equal(spot.X, back.X, 3);
+            Assert.Equal(spot.Y, back.Y, 3);
+            AssertInside(back, Side.WorkArea);
+        }
+    }
+
+    [Fact]
+    public void Snapping_on_the_primary_monitor_still_gives_the_fixed_anchor()
+    {
+        var (anchor, free) = PerfOverlayPlacement.FromDrop(new LayoutRect(2350 - 5, 18, W, H), Main, snap: 24, Margin);
+        Assert.Equal(OverlayAnchor.TopRight, anchor);
+        Assert.Null(free);
+    }
+
+    [Fact]
     public void Drop_just_outside_the_snap_distance_stays_free()
     {
         var (anchor, free) = PerfOverlayPlacement.FromDrop(new LayoutRect(1180, 10 + 25, W, H), Main, snap: 24, Margin);

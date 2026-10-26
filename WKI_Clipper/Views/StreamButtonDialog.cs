@@ -212,6 +212,7 @@ public sealed class StreamButtonDialog : Window
         var prev = _hotkeyBtn.Content;
         _hotkeyBtn.Content = L.T("Drücke Tastenkombi…  (Esc abbrechen)", "Press a key combo…  (Esc to cancel)");
         _hotkeyBtn.Background = (Brush)Application.Current.FindResource("AccentBrush");
+        _hotkeyBtn.Foreground = (Brush)Application.Current.FindResource("OnAccentBrush");   // the prompt sits on the accent
         _hotkeyBtn.Focus();
         Keyboard.Focus(_hotkeyBtn);
 
@@ -222,6 +223,7 @@ public sealed class StreamButtonDialog : Window
             if (handler != null) _hotkeyBtn.PreviewKeyDown -= handler;
             if (lost != null) _hotkeyBtn.LostKeyboardFocus -= lost;
             _hotkeyBtn.Background = (Brush)Application.Current.FindResource("PanelBrush");
+            _hotkeyBtn.ClearValue(System.Windows.Controls.Control.ForegroundProperty);
         }
 
         handler = (_, e) =>

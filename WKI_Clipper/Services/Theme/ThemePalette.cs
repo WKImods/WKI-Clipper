@@ -61,12 +61,17 @@ public sealed record GradientSpec(string Key, double[] Offsets, Point Start, Poi
 /// </summary>
 public static class ThemePaletteKeys
 {
-    /// <summary>The colour resources a theme sets. The last four carry an alpha: the halo of the slider thumb, the tooltip's edge and fill.</summary>
+    /// <summary>
+    /// The colour resources a theme sets. The four after the glass are alpha shades: the halo of the slider thumb, the tooltip's edge
+    /// and fill. <c>OnAccentColor</c> is what text and ticks on accent surfaces (primary buttons, check marks, badges) are drawn in;
+    /// <c>SurfaceSolidColor</c> is the glass surface without any see-through (windows that cannot be transparent).
+    /// </summary>
     public static IReadOnlyList<string> ColorKeys { get; } = new[]
     {
         "AccentColor", "AccentLightColor", "AccentDim",
         "BgColor", "PanelColor", "PanelHoverColor", "BorderColor", "MutedColor", "FaintColor",
         "AccentGlowColor", "AccentGlowStrongColor", "AccentEdgeColor", "PopupColor",
+        "OnAccentColor", "SurfaceSolidColor",
     };
 
     /// <summary>The solid brushes of a theme and the colour each one is made of.</summary>
@@ -77,6 +82,7 @@ public static class ThemePaletteKeys
         ("BorderBrush", "BorderColor"), ("MutedBrush", "MutedColor"), ("FaintBrush", "FaintColor"),
         ("AccentGlowBrush", "AccentGlowColor"), ("AccentGlowStrongBrush", "AccentGlowStrongColor"),
         ("AccentEdgeBrush", "AccentEdgeColor"), ("PopupBrush", "PopupColor"),
+        ("OnAccentBrush", "OnAccentColor"), ("SurfaceSolidBrush", "SurfaceSolidColor"),
     };
 
     /// <summary>The gradient brushes, with the offsets and direction they have in Theme.xaml.</summary>
@@ -153,6 +159,13 @@ public static class ThemePaletteBuilder
     /// <summary>Text on the glass is never recoloured, so an accent has to stand out from the panels on its own: WCAG 3:1.</summary>
     public const double MinAccentContrast = 3.0;
 
+    /// <summary>
+    /// White stays the text colour on an accent as long as it reaches this contrast against it. 2:1 keeps today's look (the orange
+    /// button is at 2.6:1) and the accents that look right with white text; below it - gold, ice blue, anything the hue slider can
+    /// make yellow or pale - white would all but vanish, and the near-black of the glass takes over (always far above 4.5:1 there).
+    /// </summary>
+    public const double MinWhiteOnAccentContrast = 2.0;
+
     // ---- today's theme (Views/Theme.xaml): the reference everything else is derived from ----
 
     private static readonly Color RefAccent = Rgb(0xFF, 0x7A, 0x2C);
@@ -183,6 +196,7 @@ public static class ThemePaletteBuilder
         var glass = ResolveGlass(s);
         var accent = LiftForContrast(ResolveAccent(s), glass.Panel);
         var (light, dim, barDeep, activeEnd) = DeriveAccent(accent);
+        var onAccent = Contrast(Colors.White, accent) >= MinWhiteOnAccentContrast ? Colors.White : glass.Bg;
 
         var colors = new Dictionary<string, Color>
         {
@@ -199,6 +213,8 @@ public static class ThemePaletteBuilder
             ["AccentGlowStrongColor"] = ThemeColor.WithAlpha(accent, 0x66),
             ["AccentEdgeColor"] = ThemeColor.WithAlpha(accent, 0x40),
             ["PopupColor"] = ThemeColor.WithAlpha(glass.Popup, 0xF2),
+            ["OnAccentColor"] = onAccent,
+            ["SurfaceSolidColor"] = glass.Surface1,
         };
 
         var stops = new Dictionary<string, Color[]>

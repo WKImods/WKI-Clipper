@@ -76,8 +76,9 @@ public partial class WidgetWindow : Window
             // Must happen before the window handle exists.
             AllowsTransparency = false;
             // Opaque window: a solid surface, and the corner radius Windows itself draws.
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x14, 0x26));
-            Surface.Background = Background;
+            // The glass of the other widgets without the see-through - a reference to the palette, because this window is not rebuilt on a theme switch.
+            SetResourceReference(BackgroundProperty, "SurfaceSolidBrush");
+            Surface.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "SurfaceSolidBrush");
             Surface.CornerRadius = new CornerRadius(8);
         }
         TitleText.Text = title;

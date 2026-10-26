@@ -316,6 +316,90 @@ public sealed class ThemePickerTests
         Assert.Equal("gold", w.Settings.AccentPreset);
     }
 
+    /// <summary>Lets the dispatcher run for a while - a timer that was left behind would fire in here.</summary>
+    private static void Pump(int milliseconds)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(milliseconds) };
+        timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
+        timer.Start();
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    [Fact]
+    public void Closing_the_picker_settles_a_slider_move_that_is_still_waiting_and_leaves_no_timer_behind()
+    {
+        var w = new World();
+        var r = OnSta(() =>
+        {
+            var window = new ThemePickerWindow(w.State);
+            window.MoveSliders(ThemeTab.Accent, 200, 0.9);          // the user lets go of the slider ...
+            bool waiting = window.RestPending(ThemeTab.Accent);
+            window.Close();                                         // ... and the board is closed within the 350 ms
+            var afterClose = (applied: w.Applied.Count, pending: window.RestPending(ThemeTab.Accent));
+            Pump(600);                                              // nothing may fire any more, long after the picker is gone
+            return (waiting, afterClose, applied: w.Applied.Count, saves: w.Saves);
+        });
+
+        Assert.True(r.waiting);
+        Assert.Equal((1, false), r.afterClose);          // taken over while closing - the colour the user saw is not lost - and no timer left
+        Assert.Equal(1, r.applied);                      // and not a second time afterwards
+        Assert.Equal(1, r.saves);
+        Assert.NotNull(w.Settings.AccentCustom);
+    }
+
+    [Fact]
+    public void Closing_a_picker_with_nothing_pending_applies_nothing()
+    {
+        var w = new World();
+        OnSta(() =>
+        {
+            var window = new ThemePickerWindow(w.State);
+            window.Close();
+            Pump(500);
+            return 0;
+        });
+        Assert.Equal((0, 0), (w.Applied.Count, w.Saves));
+    }
+
+    [Fact]
+    public void A_typed_colour_is_applied_once_when_the_picker_closes_not_again_when_the_field_loses_the_focus_in_the_closing_window()
+    {
+        var w = new World();
+        var r = OnSta(() =>
+        {
+            var window = new ThemePickerWindow(w.State);
+            window.SetHexWithoutCommit(ThemeTab.Accent, "#4C7DFF");     // typed, Enter not pressed
+            window.Close();
+            int afterClose = w.Applied.Count;
+            window.LoseHexFocus(ThemeTab.Accent);                       // what the closing window does to the field's focus
+            Pump(500);
+            return (afterClose, applied: w.Applied.Count);
+        });
+
+        Assert.Equal((1, 1), r);
+        Assert.Equal("#4C7DFF", w.Settings.AccentCustom);
+    }
+
+    [Fact]
+    public void A_picker_that_is_closed_and_opened_again_is_not_disturbed_by_the_old_ones_timer()
+    {
+        var w = new World();
+        var r = OnSta(() =>
+        {
+            var old = new ThemePickerWindow(w.State);
+            old.MoveSliders(ThemeTab.Glass, 40, 0.5);
+            old.Close();
+            var fresh = new ThemePickerWindow(w.State);
+            string before = fresh.HexText(ThemeTab.Glass);
+            Pump(600);
+            string after = fresh.HexText(ThemeTab.Glass);
+            fresh.Close();
+            return (before, after);
+        });
+        Assert.Equal(r.before, r.after);
+    }
+
     [Fact]
     public void Escape_asks_the_host_to_close_the_picker()
     {

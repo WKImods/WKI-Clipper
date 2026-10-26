@@ -50,6 +50,10 @@ public sealed class ThemePaletteTests
         Assert.Equal(C("#66FF7A2C"), p.Colors["AccentGlowStrongColor"]);
         Assert.Equal(C("#40FF7A2C"), p.Colors["AccentEdgeColor"]);
         Assert.Equal(C("#F2311F33"), p.Colors["PopupColor"]);
+
+        // what sits ON the accent is white, today's look; the opaque surface of a window that cannot be see-through is the glass' own
+        Assert.Equal(C("#FFFFFF"), p.Colors["OnAccentColor"]);
+        Assert.Equal(C("#1A1426"), p.Colors["SurfaceSolidColor"]);
     }
 
     [Fact]
@@ -279,6 +283,63 @@ public sealed class ThemePaletteTests
             }
     }
 
+    [Theory]
+    [InlineData("wki-orange", true)]       // 2.6:1 - today's look, stays white
+    [InlineData("epic-blue", true)]
+    [InlineData("crimson", true)]
+    [InlineData("emerald", true)]
+    [InlineData("royal-violet", true)]
+    [InlineData("magenta", true)]
+    [InlineData("gold", false)]            // 1.8:1 - white text would all but vanish
+    [InlineData("ice-blue", false)]
+    public void Text_on_the_accent_is_white_while_white_reads_and_dark_where_it_would_vanish(string accent, bool white)
+    {
+        var p = Build(accent: accent);
+        var on = p.Colors["OnAccentColor"];
+        Assert.Equal(white, on == Colors.White);
+        double contrast = ThemePaletteBuilder.Contrast(on, p.Colors["AccentColor"]);
+        Assert.True(contrast >= (white ? 2.0 : 4.5), $"{accent}: {contrast:0.00}:1");
+    }
+
+    [Theory]
+    [InlineData("#FFFF29")]     // the hue slider on yellow
+    [InlineData("#FFFFFF")]
+    [InlineData("#FFE066")]
+    [InlineData("#9DFFB0")]
+    public void A_light_custom_accent_gets_dark_text_that_reads_on_all_of_it(string custom)
+    {
+        var p = Build(accentCustom: custom);
+        var on = p.Colors["OnAccentColor"];
+        Assert.NotEqual(Colors.White, on);
+        Assert.Equal(p.Colors["BgColor"], on);                                   // the glass' own darkest colour
+        Assert.True(ThemePaletteBuilder.Contrast(on, p.Colors["AccentColor"]) >= 4.5);
+        Assert.True(ThemePaletteBuilder.Contrast(on, p.Colors["AccentLightColor"]) >= 4.5);   // the lighter end of the primary button
+    }
+
+    [Fact]
+    public void Text_on_the_accent_reads_for_every_accent_on_every_glass()
+    {
+        foreach (var accent in ThemePresets.Accent)
+            foreach (var glass in ThemePresets.Glass)
+            {
+                var p = Build(accent.Id, glass.Id);
+                var on = p.Colors["OnAccentColor"];
+                double contrast = ThemePaletteBuilder.Contrast(on, p.Colors["AccentColor"]);
+                Assert.True(contrast >= (on == Colors.White ? 2.0 : 4.5), $"{accent.Id} on {glass.Id}: {contrast:0.00}:1");
+            }
+    }
+
+    [Fact]
+    public void The_solid_surface_follows_the_glass()
+    {
+        Assert.Equal(C("#1A1426"), Build().Colors["SurfaceSolidColor"]);
+        var graphite = Build(glass: "graphite").Colors["SurfaceSolidColor"];
+        Assert.NotEqual(C("#1A1426"), graphite);
+        Assert.True(Math.Max(graphite.R, Math.Max(graphite.G, graphite.B)) - Math.Min(graphite.R, Math.Min(graphite.G, graphite.B)) <= 6, "graphite is grey");
+        // it is the dark end of the glass surface - an opaque window shows the same glass as the see-through ones
+        Assert.Equal(Build(glass: "forest").GradientStops["SurfaceBrush"][1].R, Build(glass: "forest").Colors["SurfaceSolidColor"].R);
+    }
+
     [Fact]
     public void Contrast_follows_wcag()
     {
@@ -300,7 +361,7 @@ public sealed class ThemePaletteTests
             Assert.DoesNotContain(key, p.GradientStops.Keys);
             Assert.DoesNotContain(key, ThemePaletteKeys.All);
         }
-        Assert.Equal(29, ThemePaletteKeys.All.Count);
+        Assert.Equal(33, ThemePaletteKeys.All.Count);
         Assert.Equal(ThemePaletteKeys.All.Count, ThemePaletteKeys.All.Distinct().Count());
     }
 

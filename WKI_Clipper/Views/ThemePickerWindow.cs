@@ -37,6 +37,7 @@ public sealed class ThemePickerWindow : Window
     private readonly Dictionary<ThemeTab, TabView> _tabs = new();
     private readonly Dictionary<ThemeTab, RadioButton> _tabButtons = new();
     private ThemeTab _active = ThemeTab.Accent;
+    private bool _closing;
 
     /// <summary>Esc was pressed in the picker: the host closes it.</summary>
     public event Action? CloseRequested;
@@ -239,7 +240,7 @@ public sealed class ThemePickerWindow : Window
             CommitHex(tab);
             e.Handled = true;
         };
-        v.Hex.LostKeyboardFocus += (_, _) => CommitHex(tab);
+        v.Hex.LostKeyboardFocus += (_, _) => HexLostFocus(tab);
 
         return v;
     }
@@ -338,6 +339,37 @@ public sealed class ThemePickerWindow : Window
         finally { v.Syncing = was; }
     }
 
+    /// <summary>Leaving the field applies what it says - unless the window itself is closing: that field loses the focus because the picker goes, and closing has already settled it.</summary>
+    private void HexLostFocus(ThemeTab tab)
+    {
+        if (!_closing) CommitHex(tab);
+    }
+
+    /// <summary>
+    /// Whatever the user chose and the picker has not yet applied (a slider that has not rested for 350 ms, a typed colour not yet
+    /// confirmed) is applied now, as the picker closes - the colour they saw in the preview is not lost - and the timers are stopped,
+    /// so nothing is applied after the picker is gone (over a game, say, when the board was closed by its hotkey).
+    /// </summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_closing)
+        {
+            foreach (var (tab, v) in _tabs)
+            {
+                bool typed = ThemePaletteBuilder.NormalizeHex(v.Hex.Text) is { } hex && hex != _state.CurrentHex(tab);
+                if (v.Rest.IsEnabled || typed) CommitHex(tab);   // stops the timer
+            }
+            _closing = true;
+        }
+        base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        foreach (var v in _tabs.Values) v.Rest.Stop();
+        base.OnClosed(e);
+    }
+
     private bool HandleKey(Key key)
     {
         if (key != Key.Escape) return false;
@@ -395,4 +427,13 @@ public sealed class ThemePickerWindow : Window
         CommitHex(tab);
     }
     internal void PressEscape() => HandleKey(Key.Escape);
+
+    internal void MoveSliders(ThemeTab tab, double hue, double saturation)
+    {
+        _tabs[tab].Hue.Value = hue;
+        _tabs[tab].Saturation.Value = saturation;
+    }
+    internal bool RestPending(ThemeTab tab) => _tabs[tab].Rest.IsEnabled;
+    internal void SetHexWithoutCommit(ThemeTab tab, string text) => _tabs[tab].Hex.Text = text;
+    internal void LoseHexFocus(ThemeTab tab) => HexLostFocus(tab);
 }

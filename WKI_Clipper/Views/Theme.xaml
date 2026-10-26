@@ -28,6 +28,9 @@
     <Color x:Key="AccentGlowStrongColor">#66FF7A2C</Color>
     <Color x:Key="AccentEdgeColor">#40FF7A2C</Color>
     <Color x:Key="PopupColor">#F2311F33</Color>
+    <!-- Text and ticks ON an accent surface (primary buttons, check marks); the opaque glass for windows that cannot be see-through -->
+    <Color x:Key="OnAccentColor">#FFFFFF</Color>
+    <Color x:Key="SurfaceSolidColor">#1A1426</Color>
 
     <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}" />
     <SolidColorBrush x:Key="PanelBrush" Color="{StaticResource PanelColor}" />
@@ -44,6 +47,8 @@
     <SolidColorBrush x:Key="AccentGlowStrongBrush" Color="{StaticResource AccentGlowStrongColor}" />
     <SolidColorBrush x:Key="AccentEdgeBrush" Color="{StaticResource AccentEdgeColor}" />
     <SolidColorBrush x:Key="PopupBrush" Color="{StaticResource PopupColor}" />
+    <SolidColorBrush x:Key="OnAccentBrush" Color="{StaticResource OnAccentColor}" />
+    <SolidColorBrush x:Key="SurfaceSolidBrush" Color="{StaticResource SurfaceSolidColor}" />
     <!-- Hairlines and soft fills on the glass surfaces -->
     <SolidColorBrush x:Key="LineBrush" Color="#16FFFFFF" />
     <SolidColorBrush x:Key="SoftFillBrush" Color="#0BFFFFFF" />
@@ -139,7 +144,7 @@
 
     <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="Background" Value="{DynamicResource AccentGradientBrush}" />
-        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Template">
             <Setter.Value>
@@ -186,7 +191,7 @@
                                 CornerRadius="5"
                                 VerticalAlignment="Center">
                             <Path x:Name="Tick"
-                                  Stroke="White"
+                                  Stroke="{DynamicResource OnAccentBrush}"
                                   StrokeThickness="2"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                   Data="M 4 9 L 7.5 12.5 L 14 5.5"
@@ -404,7 +409,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
         <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="SelectionTextBrush" Value="White" />
+        <Setter Property="SelectionTextBrush" Value="{DynamicResource OnAccentBrush}" />
         <Setter Property="Padding" Value="12,6" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />

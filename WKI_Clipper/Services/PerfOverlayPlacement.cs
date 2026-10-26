@@ -85,7 +85,13 @@ public static class PerfOverlayPlacement
             double distance = Math.Sqrt((dropped.X - at.X) * (dropped.X - at.X) + (dropped.Y - at.Y) * (dropped.Y - at.Y));
             if (distance <= snap && distance < bestDistance) { best = a; bestDistance = distance; }
         }
-        if (best is { } snapped) return (snapped, null);
+        if (best is { } snapped)
+        {
+            // A fixed anchor means "on the primary monitor" and remembers no monitor. Snapped on another one, the place is kept
+            // as the free place that sits exactly on that anchor - else the overlay would jump to the primary monitor.
+            if (monitor.Primary) return (snapped, null);
+            return (OverlayAnchor.Free, FreeFrom(Place(snapped, null, dropped.W, dropped.H, only, monitor.Device, margin), monitor));
+        }
         return (OverlayAnchor.Free, FreeFrom(dropped, monitor));
     }
 
