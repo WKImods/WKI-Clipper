@@ -203,6 +203,10 @@ public sealed class AppHost : IDisposable
     /// <summary>Set by the widget host: re-applies the on-screen performance overlay.</summary>
     public Action? PerfOverlayRefresh { get; set; }
     public void RefreshPerfOverlay() => PerfOverlayRefresh?.Invoke();
+
+    /// <summary>Raised on the UI thread after the user dragged the overlay and dropped it: the settings widget shows the new place.</summary>
+    public event Action? PerfOverlayPlaced;
+    public void NotifyPerfOverlayPlaced() => PerfOverlayPlaced?.Invoke();
     public GameProcessWatcher? GameWatcher { get; private set; }
     public ForegroundTracker? Foreground { get; private set; }
 

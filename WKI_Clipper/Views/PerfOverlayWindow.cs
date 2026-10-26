@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
@@ -17,7 +18,9 @@ namespace WKI_Clipper.Views;
 /// The on-screen performance readout, Adrenalin-style: metric names and values (and small history
 /// graphs) in a screen corner, in 1-3 columns, optionally on a translucent panel, in colours of your
 /// choice. Without a panel there is no frame or background, only a soft shadow for legibility over any
-/// game. Always click-through and never focusable; optionally hidden from every capture (WDA).
+/// game. Click-through and never focusable - except in drag mode, which the host switches on only while the board is
+/// open: then the whole overlay can be grabbed (a dashed outline shows the area) and a drop is reported. Optionally
+/// hidden from every capture (WDA).
 /// All layout decisions (column flow, colours, panel fill) come from the pure <see cref="PerfOverlayLayout"/>.
 /// </summary>
 public sealed class PerfOverlayWindow : Window
@@ -29,8 +32,10 @@ public sealed class PerfOverlayWindow : Window
     private readonly ScaleTransform _scale = new(1, 1);
     private readonly List<Row> _rows = new();
     private int[] _shape = Array.Empty<int>();   // lines per column of the current visual tree
+    private readonly System.Windows.Shapes.Rectangle _dragOutline;
     private IntPtr _hwnd;
     private bool _excluded;
+    private bool _dragMode;
 
     private Brush _nameBrush = Brushes.White;
     private Brush _valueBrush = Brushes.White;
@@ -39,6 +44,16 @@ public sealed class PerfOverlayWindow : Window
 
     private static readonly FontFamily ValueFont = new("Cascadia Mono, Consolas");
     private static readonly Effect Shadow = MakeShadow();
+    // A faint scrim in drag mode: it makes the whole area grabbable (the gaps between the numbers are fully transparent
+    // and would let the click through) and shows where it is.
+    private static readonly Brush DragScrim = MakeScrim();
+
+    private static Brush MakeScrim()
+    {
+        var b = new SolidColorBrush(Color.FromArgb(0x55, 0, 0, 0));
+        b.Freeze();
+        return b;
+    }
 
     private static Effect MakeShadow()
     {
@@ -65,17 +80,83 @@ public sealed class PerfOverlayWindow : Window
 
         _panel.Child = _columnsHost;
         _panel.LayoutTransform = _scale;
-        Content = _panel;
+
+        // Sibling of the panel, never its parent: it must not change the size the window is measured to.
+        _dragOutline = new System.Windows.Shapes.Rectangle
+        {
+            Fill = DragScrim,
+            StrokeThickness = 1.5,
+            StrokeDashArray = new DoubleCollection { 4, 3 },
+            RadiusX = 6,
+            RadiusY = 6,
+            Visibility = Visibility.Collapsed
+        };
+        _dragOutline.SetResourceReference(Shape.StrokeProperty, "AccentBrush");   // DynamicResource: follows a theme switch
+
+        var root = new Grid();
+        root.Children.Add(_panel);
+        root.Children.Add(_dragOutline);
+        Content = root;
+
+        MouseLeftButtonDown += OnGrab;
+    }
+
+    /// <summary>Raised after the user dropped the overlay, with its rectangle in physical pixels. Only in drag mode.</summary>
+    public event Action<LayoutRect>? Dropped;
+
+    /// <summary>True while the overlay can be grabbed (the board is open).</summary>
+    public bool DragMode => _dragMode;
+
+    /// <summary>True from grabbing until the drop. The host must not move the window meanwhile - it would fight the user's hand.</summary>
+    public bool IsDragging { get; private set; }
+
+    internal Shape DragOutline => _dragOutline;
+    internal bool DragOutlineShown => _dragOutline.Visibility == Visibility.Visible;
+
+    /// <summary>
+    /// Board open -> grabbable with a dashed outline. Board closed -> click-through again, so the overlay never
+    /// intercepts a click meant for the game. Safe before the window has a handle: it is applied when it gets one.
+    /// </summary>
+    public void SetDragMode(bool on)
+    {
+        _dragMode = on;
+        IsHitTestVisible = on;
+        _dragOutline.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        Cursor = on ? Cursors.SizeAll : null;
+        if (_hwnd != IntPtr.Zero) ApplyClickThrough();
+    }
+
+    private void ApplyClickThrough()
+    {
+        int ex = User32.GetWindowLong(_hwnd, User32.GWL_EXSTYLE);
+        // Never takes focus, never in Alt-Tab. TRANSPARENT (clicks go to the game underneath) except while dragging.
+        ex |= User32.WS_EX_NOACTIVATE | User32.WS_EX_TOOLWINDOW;
+        if (_dragMode) ex &= ~User32.WS_EX_TRANSPARENT;
+        else ex |= User32.WS_EX_TRANSPARENT;
+        User32.SetWindowLong(_hwnd, User32.GWL_EXSTYLE, ex);
+    }
+
+    private void OnGrab(object sender, MouseButtonEventArgs e)
+    {
+        if (!_dragMode || IsDragging) return;
+        IsDragging = true;
+        try { DragMove(); }
+        catch (InvalidOperationException) { return; }   // the button was already up again
+        finally { IsDragging = false; }
+        if (DisplayGeometry.BoundsOf(this) is { } bounds) ReportDrop(bounds);
+    }
+
+    /// <summary>A finished drag. Ignored unless the overlay is in drag mode: a stray event with the board closed must not move it.</summary>
+    internal void ReportDrop(LayoutRect dropped)
+    {
+        if (_dragMode) Dropped?.Invoke(dropped);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
         _hwnd = new WindowInteropHelper(this).Handle;
-        int ex = User32.GetWindowLong(_hwnd, User32.GWL_EXSTYLE);
-        // Never takes focus, never in Alt-Tab, clicks always go to the game underneath.
-        User32.SetWindowLong(_hwnd, User32.GWL_EXSTYLE,
-            ex | User32.WS_EX_NOACTIVATE | User32.WS_EX_TOOLWINDOW | User32.WS_EX_TRANSPARENT);
+        ApplyClickThrough();   // clicks go to the game underneath, unless the board is open and the overlay is being placed
         ApplyAffinity();
     }
 

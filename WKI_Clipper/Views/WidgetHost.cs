@@ -222,6 +222,8 @@ public sealed class WidgetHost : IDisposable
 
     private PerfOverlayWindow? _perfOverlay;
     private bool _perfOverlayViewing;
+    /// <summary>Where the overlay was last seated (physical pixels). "Free" chosen from the list starts from here.</summary>
+    private LayoutRect? _perfPlaced;
     /// <summary>The FPS measurement (a passive ETW session) — held only while an FPS value is ticked and the overlay is up.</summary>
     private IDisposable? _perfFpsLease;
 
@@ -248,7 +250,11 @@ public sealed class WidgetHost : IDisposable
             return;
         }
 
-        _perfOverlay ??= new PerfOverlayWindow();
+        if (_perfOverlay is null)
+        {
+            _perfOverlay = new PerfOverlayWindow();
+            _perfOverlay.Dropped += OnPerfOverlayDropped;
+        }
         _perfOverlay.SetExcludedFromCapture(s.HideFromCapture);
         if (!_perfOverlayViewing)
         {
@@ -329,23 +335,70 @@ public sealed class WidgetHost : IDisposable
         }
         _perfOverlay.Render(lines, s);
         bool justShown = !_perfOverlay.IsVisible;
+        // Grabbable exactly while the board is open - also for an overlay that only appears now (a game started).
+        SyncPerfOverlayDrag();
         if (justShown) _perfOverlay.Show();
         _perfOverlay.UpdateLayout();
 
-        // One of eight places on the primary monitor's full area (in a fullscreen game that IS the screen edge) or a
-        // dragged-to spot on the monitor it was dropped on; a monitor that is gone means the primary one.
-        var monitors = ScreenBoxes();
-        if (PerfOverlayPlacement.ResolveMonitor(s.Anchor, s.Free, monitors, null) is { } monitor)
-        {
-            var area = monitor.WorkArea;
-            double dpi = DisplayGeometry.ScaleAt(area.X + area.W / 2, area.Y + area.H / 2);
-            var at = PerfOverlayPlacement.Place(s.Anchor, s.Free, _perfOverlay.ActualWidth * dpi, _perfOverlay.ActualHeight * dpi,
-                                                monitors, null, PerfOverlayPlacement.MarginDip * dpi);
-            if (DisplayGeometry.BoundsOf(_perfOverlay) is not { } cur || Math.Abs(cur.X - at.X) > 0.5 || Math.Abs(cur.Y - at.Y) > 0.5)
-                DisplayGeometry.MoveTo(_perfOverlay, at.X, at.Y);
-        }
-        // Only when it appears — re-asserting z-order every second would churn the desktop.
+        // Never move it under the user's hand: the 1 Hz refresh would pull it back to the stored place mid-drag.
+        if (!_perfOverlay.IsDragging) PlacePerfOverlay(s);
+        // Only when it appears - re-asserting z-order every second would churn the desktop.
         if (justShown) BumpTopmost(_perfOverlay);
+    }
+
+    /// <summary>
+    /// Seats the overlay: one of eight places on the primary monitor's full area (in a fullscreen game that IS the screen
+    /// edge) or a dragged-to spot on the monitor it was dropped on; a monitor that is gone means the primary one.
+    /// </summary>
+    private void PlacePerfOverlay(PerfOverlaySettings s)
+    {
+        var overlay = _perfOverlay!;
+        var monitors = ScreenBoxes();
+        if (PerfOverlayPlacement.ResolveMonitor(s.Anchor, s.Free, monitors, null) is not { } first) return;
+
+        // "Free" picked from the list but nothing dragged yet: stay exactly where the overlay is, and drag on from there.
+        if (s.Anchor == OverlayAnchor.Free && s.Free is null)
+        {
+            double scale = ScaleOfBox(first);
+            var basis = _perfPlaced ?? PerfOverlayPlacement.Place(OverlayAnchor.TopRight, null,
+                overlay.ActualWidth * scale, overlay.ActualHeight * scale, monitors, null, PerfOverlayPlacement.MarginDip * scale);
+            if (PerfOverlayPlacement.MonitorAt(basis, monitors) is { } on)
+                s.Free = PerfOverlayPlacement.FreeFrom(basis, on);
+        }
+
+        var monitor = PerfOverlayPlacement.ResolveMonitor(s.Anchor, s.Free, monitors, null) ?? first;
+        double dpi = ScaleOfBox(monitor);
+        var at = PerfOverlayPlacement.Place(s.Anchor, s.Free, overlay.ActualWidth * dpi, overlay.ActualHeight * dpi,
+                                            monitors, null, PerfOverlayPlacement.MarginDip * dpi);
+        if (DisplayGeometry.BoundsOf(overlay) is not { } cur || Math.Abs(cur.X - at.X) > 0.5 || Math.Abs(cur.Y - at.Y) > 0.5)
+            DisplayGeometry.MoveTo(overlay, at.X, at.Y);
+        _perfPlaced = at;
+    }
+
+    private static double ScaleOfBox(MonitorBox m) => DisplayGeometry.ScaleAt(m.WorkArea.X + m.WorkArea.W / 2, m.WorkArea.Y + m.WorkArea.H / 2);
+
+    /// <summary>The overlay can be grabbed exactly while the board is open (see <see cref="PerfOverlayPlacement.DragAllowed"/>).</summary>
+    private void SyncPerfOverlayDrag() => _perfOverlay?.SetDragMode(PerfOverlayPlacement.DragAllowed(_boardOpen));
+
+    /// <summary>
+    /// The user let go of the dragged overlay: within reach of one of the eight places it snaps to that, otherwise it stays
+    /// where it is as a free place. Saved at once; the overlay is seated exactly, the settings list shows the result.
+    /// </summary>
+    private void OnPerfOverlayDropped(LayoutRect dropped)
+    {
+        var s = _host.Settings.Current.PerfOverlay;
+        var monitors = ScreenBoxes();
+        if (PerfOverlayPlacement.MonitorAt(dropped, monitors) is not { } monitor) return;
+
+        double scale = ScaleOfBox(monitor);
+        PerfOverlayPlacement.ApplyDrop(s, dropped, monitors, PerfOverlayPlacement.SnapDip * scale, PerfOverlayPlacement.MarginDip * scale);
+        _host.Settings.Save();
+        Logger.Info(s.Free is { } f
+            ? $"Performance overlay dropped as a free place on {f.Monitor} (edges {f.HEdge}/{f.VEdge}, offset {f.RelDX:0.###}/{f.RelDY:0.###})."
+            : $"Performance overlay dropped and snapped to {s.Anchor}.");
+
+        RenderPerfOverlay();
+        _host.NotifyPerfOverlayPlaced();
     }
 
     /// <summary>Hotkey: overlay on/off and persist.</summary>
@@ -499,6 +552,9 @@ public sealed class WidgetHost : IDisposable
 
         // Crosshair becomes draggable while the board is open.
         if (_crosshair is { IsVisible: true }) { _crosshair.SetInteractive(true); BumpTopmost(_crosshair); }
+        // So does the performance overlay: above the backdrop, grabbable, dashed outline.
+        SyncPerfOverlayDrag();
+        if (_perfOverlay is { IsVisible: true }) BumpTopmost(_perfOverlay);
         // An open crosshair widget previews the look it edits, not the game's (see ApplyCrosshair).
         if (_host.CrosshairEditing is not null) ApplyCrosshair();
         // The duration is the whole point of the prewarm work — keep it measurable.
@@ -578,6 +634,8 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
         _boardOpen = false;
         _boardScreen = null;
+        // The overlay is click-through again, whatever happens next.
+        SyncPerfOverlayDrag();
         // Back from the previewed look to the game's own.
         if (_host.CrosshairEditing is not null) ApplyCrosshair();
         ReturnFocus();

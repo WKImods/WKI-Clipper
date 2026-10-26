@@ -11,7 +11,7 @@ namespace WKI_Clipper.Views;
 
 /// <summary>
 /// CPU / GPU / GPU temperature / RAM / VRAM live bars, the GPU clock / voltage / VRAM clock, the FPS
-/// values (while ticked), plus the settings of the on-screen overlay (corner, size, columns, colours,
+/// values (while ticked), plus the settings of the on-screen overlay (position, size, columns, colours,
 /// background, which values, graphs, visibility in captures). Reference-counts the shared
 /// <see cref="PerformanceMonitorService"/> so polling only runs while this widget or the overlay is on
 /// screen, and holds an FPS lease only while an FPS value is ticked and this widget is shown.
@@ -24,6 +24,7 @@ public partial class PerformanceView : UserControl
     private bool _subscribed;
     private IDisposable? _fpsLease;
     private System.Windows.Threading.DispatcherTimer? _saveTimer;
+    private PositionSelector? _position;
 
     private static PerfOverlaySettings Cfg => App.Host.Settings.Current.PerfOverlay;
 
@@ -59,7 +60,9 @@ public partial class PerformanceView : UserControl
 
         host.Performance.Sampled += OnSample;
         host.Performance.AddViewer();
+        host.PerfOverlayPlaced += OnOverlayPlaced;
         _subscribed = true;
+        _position?.Sync();   // the overlay may have been dragged while this widget was away
         SyncFpsLease();
         OnSample(host.Performance.Last); // paint the primed value at once
     }
@@ -71,9 +74,17 @@ public partial class PerformanceView : UserControl
         {
             host.Performance.Sampled -= OnSample;
             host.Performance.RemoveViewer();
+            host.PerfOverlayPlaced -= OnOverlayPlaced;
             _subscribed = false;
         }
         ReleaseFpsLease();
+    }
+
+    /// <summary>The overlay was dragged (board open): the Position list shows where it landed.</summary>
+    private void OnOverlayPlaced()
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(OnOverlayPlaced)); return; }
+        _position?.Sync();
     }
 
     // ---- FPS measurement (opt-in) ----
@@ -185,8 +196,8 @@ public partial class PerformanceView : UserControl
         OverlayPanel.Children.Add(new TextBlock
         {
             Style = (Style)FindResource("MutedStyle"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
-            Text = L.T("Die Zahlen in einer Bildschirmecke, ohne Fenster — auch im Spiel, Klicks gehen durch. Per Hotkey schaltbar (im Hotkey-Tab belegen).",
-                       "The numbers in a screen corner, no window — also in game, clicks pass through. Toggle by hotkey (bind it in the hotkey tab).")
+            Text = L.T("Die Zahlen an einem Platz auf dem Bildschirm, ohne Fenster — auch im Spiel, Klicks gehen durch. Per Hotkey schaltbar (im Hotkey-Tab belegen).",
+                       "The numbers at a spot on the screen, no window — also in game, clicks pass through. Toggle by hotkey (bind it in the hotkey tab).")
         });
 
         OverlayPanel.Children.Add(Check(L.T("Overlay anzeigen", "Show overlay"), Cfg.Enabled, v => Cfg.Enabled = v, bold: true));
@@ -195,16 +206,9 @@ public partial class PerformanceView : UserControl
                                "The overlay appears while a game is in front (fullscreen, or your window target) and goes away afterwards.");
         OverlayPanel.Children.Add(onlyGame);
 
-        // Corner (the full position list with "Free" follows with the drag mode)
-        (OverlayAnchor Value, string Text)[] corners =
-        {
-            (OverlayAnchor.TopLeft, L.T("Oben links", "Top left")),
-            (OverlayAnchor.TopRight, L.T("Oben rechts", "Top right")),
-            (OverlayAnchor.BottomLeft, L.T("Unten links", "Bottom left")),
-            (OverlayAnchor.BottomRight, L.T("Unten rechts", "Bottom right")),
-        };
-        OverlayPanel.Children.Add(Labeled(L.T("Ecke", "Corner"),
-            Combo(corners, Cfg.Anchor, v => Cfg.Anchor = v)));
+        // Position: eight places on the monitor, or "Free" (dragged there while the board is open)
+        _position = new PositionSelector(Cfg, () => Apply());
+        OverlayPanel.Children.Add(_position.Root);
 
         OverlayPanel.Children.Add(Labeled(L.T("Größe", "Size"),
             SliderRow(0.75, 2.0, PerfOverlayLayout.ClampScale(Cfg.Scale), v => $"{v * 100:F0} %",
@@ -363,6 +367,79 @@ public partial class PerformanceView : UserControl
         }
         _saveTimer.Stop();
         _saveTimer.Start();
+    }
+
+    /// <summary>
+    /// The "Position" row of the overlay settings: the eight places and "Free", and the hint how to drag it. Built from the
+    /// settings it edits (no host needed), so it can be tested on its own. <paramref name="applied"/> runs after each choice.
+    /// </summary>
+    internal sealed class PositionSelector
+    {
+        private static readonly OverlayAnchor[] Order =
+        {
+            OverlayAnchor.TopLeft, OverlayAnchor.TopCenter, OverlayAnchor.TopRight,
+            OverlayAnchor.MiddleLeft, OverlayAnchor.MiddleRight,
+            OverlayAnchor.BottomLeft, OverlayAnchor.BottomCenter, OverlayAnchor.BottomRight,
+            OverlayAnchor.Free,
+        };
+
+        private readonly PerfOverlaySettings _cfg;
+        private bool _syncing;
+
+        public FrameworkElement Root { get; }
+        public ComboBox Combo { get; }
+        public TextBlock Hint { get; }
+
+        public PositionSelector(PerfOverlaySettings cfg, Action applied)
+        {
+            _cfg = cfg;
+            Combo = new ComboBox { MinWidth = 160, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+            foreach (var anchor in Order)
+                Combo.Items.Add(new ComboBoxItem { Content = NameOf(anchor), Tag = anchor });
+            Sync();
+            Combo.SelectionChanged += (_, _) =>
+            {
+                if (_syncing || Combo.SelectedItem is not ComboBoxItem { Tag: OverlayAnchor anchor }) return;
+                PerfOverlayPlacement.SelectAnchor(_cfg, anchor);
+                applied();
+            };
+
+            Hint = new TextBlock
+            {
+                Style = (Style)Application.Current.FindResource("MutedStyle"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 4),
+                Text = L.T("Frei: Board öffnen und das Overlay ziehen. In der Nähe eines der 8 Plätze rastet es ein.",
+                           "Free: open the board and drag the overlay. Near one of the 8 spots it snaps in.")
+            };
+
+            var stack = new StackPanel();
+            stack.Children.Add(Labeled(L.T("Position", "Position"), Combo));
+            stack.Children.Add(Hint);
+            Root = stack;
+        }
+
+        /// <summary>Shows the settings' current place in the list (after a drag, say) without applying anything.</summary>
+        public void Sync()
+        {
+            int i = Array.IndexOf(Order, _cfg.Anchor);
+            _syncing = true;
+            try { Combo.SelectedIndex = i >= 0 ? i : Array.IndexOf(Order, OverlayAnchor.TopRight); }
+            finally { _syncing = false; }
+        }
+
+        private static string NameOf(OverlayAnchor anchor) => anchor switch
+        {
+            OverlayAnchor.TopLeft => L.T("Oben links", "Top left"),
+            OverlayAnchor.TopCenter => L.T("Oben Mitte", "Top centre"),
+            OverlayAnchor.TopRight => L.T("Oben rechts", "Top right"),
+            OverlayAnchor.MiddleLeft => L.T("Mitte links", "Middle left"),
+            OverlayAnchor.MiddleRight => L.T("Mitte rechts", "Middle right"),
+            OverlayAnchor.BottomLeft => L.T("Unten links", "Bottom left"),
+            OverlayAnchor.BottomCenter => L.T("Unten Mitte", "Bottom centre"),
+            OverlayAnchor.BottomRight => L.T("Unten rechts", "Bottom right"),
+            _ => L.T("Frei", "Free"),
+        };
     }
 
     /// <summary>Label on the left, value on the right — one line of a card.</summary>

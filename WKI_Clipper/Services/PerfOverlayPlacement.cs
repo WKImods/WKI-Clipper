@@ -21,6 +21,9 @@ public static class PerfOverlayPlacement
     /// <summary>Gap between a fixed anchor and the monitor edge, in DIPs.</summary>
     public const double MarginDip = 10;
 
+    /// <summary>A dropped overlay within this distance (DIPs) of a fixed anchor snaps to it.</summary>
+    public const double SnapDip = 24;
+
     private static readonly OverlayAnchor[] Fixed =
     {
         OverlayAnchor.TopLeft, OverlayAnchor.TopCenter, OverlayAnchor.TopRight,
@@ -120,6 +123,27 @@ public static class PerfOverlayPlacement
             if (distance < nearestDistance) { nearest = m; nearestDistance = distance; }
         }
         return nearest;
+    }
+
+    /// <summary>
+    /// The overlay can be grabbed only while the board is open. Closed, it is click-through again, so it can never
+    /// intercept a click meant for the game.
+    /// </summary>
+    public static bool DragAllowed(bool boardOpen) => boardOpen;
+
+    /// <summary>Takes a finished drag into the settings: a fixed anchor (and no free place) or <see cref="OverlayAnchor.Free"/> with its place.</summary>
+    public static void ApplyDrop(PerfOverlaySettings s, LayoutRect dropped, IReadOnlyList<MonitorBox> monitors, double snap, double margin)
+    {
+        var monitor = MonitorAt(dropped, monitors);
+        if (monitor is null) return;
+        (s.Anchor, s.Free) = FromDrop(dropped, monitor, snap, margin);
+    }
+
+    /// <summary>The user picked a place from the list. A fixed anchor forgets the old free place; "Free" keeps a stored one.</summary>
+    public static void SelectAnchor(PerfOverlaySettings s, OverlayAnchor anchor)
+    {
+        s.Anchor = anchor;
+        if (anchor != OverlayAnchor.Free) s.Free = null;
     }
 
     // ---- internals ----
