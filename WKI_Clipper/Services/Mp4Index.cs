@@ -13,10 +13,13 @@ namespace WKI_Clipper.Services;
 /// <param name="Keyframes">Ascending frame indexes (display order) of the sync samples; without an stss box: all of them.</param>
 /// <param name="HasBFrames">Display order differs from decode order.</param>
 /// <param name="VideoBytes">Sum of the video sample sizes (stsz) — the exact video bitrate without ffprobe.</param>
+/// <param name="VideoEndSeconds">Where the last video frame ends on the <see cref="FileSeconds"/> axis: the last frame in
+/// display order plus its own stts duration. Unlike the movie duration (the longer one of video and audio) it ignores
+/// an audio track that runs past the last frame; it is the point where the next file of a concat must start.</param>
 public sealed record Mp4VideoIndex(
     string Codec, int Width, int Height,
     double[] PreviewSeconds, double[] FileSeconds, int[] Keyframes,
-    bool HasBFrames, long VideoBytes, int AudioTrackCount, double MovieDurationSeconds)
+    bool HasBFrames, long VideoBytes, int AudioTrackCount, double MovieDurationSeconds, double VideoEndSeconds)
 {
     public int FrameCount => PreviewSeconds.Length;
 }
@@ -135,6 +138,7 @@ public static class Mp4Index
 
         // video only
         public long[] Dts = Array.Empty<long>();
+        public long LastSampleDuration;      // stts delta of the last sample in decode order (no next dts to subtract)
         public long[]? CttsOffsets;
         public int[]? SyncSamples;
         public long VideoBytes;
@@ -208,6 +212,12 @@ public static class Mp4Index
         var file = new double[n];
         for (int k = 0; k < n; k++) file[k] = pts[k] - fileStart;
 
+        // The last frame on screen ends at its own time plus its own stts delta. With B-frames that is not necessarily
+        // the last sample in decode order.
+        int lastDecoded = order[n - 1];
+        long lastTicks = lastDecoded + 1 < n ? video.Dts[lastDecoded + 1] - video.Dts[lastDecoded] : video.LastSampleDuration;
+        double videoEnd = file[n - 1] + lastTicks / ts;
+
         int[] keyframes;
         if (video.SyncSamples is null)
         {
@@ -228,7 +238,7 @@ public static class Mp4Index
 
         int audio = tracks.FindAll(t => t.Handler == "soun").Count;
         return new Mp4VideoIndex(video.Codec, video.Width, video.Height, preview, file, keyframes,
-            reordered, video.VideoBytes, audio, movieDuration);
+            reordered, video.VideoBytes, audio, movieDuration, videoEnd);
     }
 
     /// <summary>
@@ -316,7 +326,7 @@ public static class Mp4Index
         t.VideoBytes = bytes;
 
         if (stts is not { } st) throw new InvalidDataException("video track without stts");
-        t.Dts = ExpandStts(b, st, (int)count);
+        t.Dts = ExpandStts(b, st, (int)count, out t.LastSampleDuration);
 
         if (Find(b, stbl, "ctts") is { } ctts) t.CttsOffsets = ExpandCtts(b, ctts, (int)count);
 
@@ -360,8 +370,9 @@ public static class Mp4Index
         }
     }
 
-    private static long[] ExpandStts(byte[] b, Box stts, int sampleCount)
+    private static long[] ExpandStts(byte[] b, Box stts, int sampleCount, out long lastDelta)
     {
+        lastDelta = 0;
         int entries = (int)U32(b, stts.Start + 4);
         if (entries < 0 || (long)(stts.End - stts.Start - 8) < (long)entries * 8) throw new InvalidDataException("stts cut off");
 
@@ -377,6 +388,7 @@ public static class Mp4Index
             long count = U32(b, stts.Start + 8 + i * 8);
             long delta = U32(b, stts.Start + 8 + i * 8 + 4);
             for (long j = 0; j < count; j++) { dts[at++] = time; time += delta; }
+            if (count > 0) lastDelta = delta;
         }
         return dts;
     }

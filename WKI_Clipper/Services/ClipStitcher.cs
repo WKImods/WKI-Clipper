@@ -15,7 +15,8 @@ public sealed record ClipGap(DateTime FromUtc, DateTime ToUtc, GapReason Reason,
 }
 
 /// <param name="EndUtc">When the segment was closed (its last write).</param>
-/// <param name="Duration">From the file header; null when it could not be read.</param>
+/// <param name="Duration">The time the segment takes in the stitched clip: for a disk segment the end of its last video
+/// frame (<see cref="Mp4Duration.TryReadConcatDuration"/>), null when it could not be read.</param>
 public sealed record SegmentCandidate(string Path, int Generation, DateTime EndUtc, long Bytes, TimeSpan? Duration)
 {
     /// <summary>The RAM segment behind this candidate (RAM buffer); null for a segment file. <see cref="Path"/> is then only a label.</summary>
@@ -160,12 +161,20 @@ public static class ClipStitcher
     // ---- ffmpeg concat list ----
 
     /// <summary>
-    /// The concat demuxer list: <c>file '...'</c> per segment, each followed by <c>duration</c> from the segment header.
-    /// Without it ffmpeg places file k at the sum of the files' own durations (video/audio extent, measured: the
-    /// movie header says ~0.86 ms more per file), so after 360 segments a chapter computed from the headers would sit
-    /// ~0.3 s after the real cut. With the duration given, the output timeline is exactly the sum of the durations the
-    /// chapters are computed from. The header duration is never shorter than the file's extent, so timestamps stay
-    /// strictly increasing (the mp4 muxer rejects equal or decreasing DTS).
+    /// The concat demuxer list: <c>file '...'</c> per segment, each followed by <c>duration</c> from
+    /// <see cref="SegmentCandidate.Duration"/>. Without it ffmpeg places file k at the sum of the files' own durations
+    /// (video/audio extent; measured: the movie header says ~0.86 ms more per file), so after 360 segments a chapter
+    /// computed from the headers would sit ~0.3 s after the real cut. With the duration given, the output timeline is
+    /// exactly the sum of the durations the chapters are computed from.
+    ///
+    /// For a disk segment that duration has to be the end of its last VIDEO frame (<see cref="Mp4Duration.TryReadConcatDuration"/>),
+    /// not the movie header. Measured with the buffer's segment muxer (60 fps, AAC): the audio of a segment overhangs its
+    /// last video frame by 0-21 ms (up to one AAC frame), and the header is the longer of the two. Pinned to the header,
+    /// every following segment started that overhang late, so the video got a hole of 5-16 ms (often a full frame) at
+    /// every boundary - a 15 min clip averaged 59.87 fps with 32.7 ms and 21.7 ms deltas at each seam. Pinned to the video
+    /// end, all video and audio packet deltas stay within 1 ms of 16.667 ms / 21.333 ms and the average is exactly 60 fps.
+    /// The audio overhang is under one AAC frame, so the first audio dts of the next file still lies behind the last one
+    /// of this file: timestamps stay strictly increasing (the mp4 muxer rejects equal or decreasing DTS).
     /// </summary>
     public static IEnumerable<string> ConcatListLines(IEnumerable<SegmentCandidate> segments)
     {

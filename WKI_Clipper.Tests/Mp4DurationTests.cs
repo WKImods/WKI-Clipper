@@ -197,4 +197,83 @@ public sealed class Mp4DurationTests : IDisposable
     [Fact]
     public void A_missing_file_is_false()
         => Assert.False(Mp4Duration.TryRead(Path.Combine(_dir, "nope.mp4"), out _));
+
+    // ---- the duration pinned in the concat list ----
+
+    private string Write(string name, byte[] bytes)
+    {
+        var path = Path.Combine(_dir, name);
+        File.WriteAllBytes(path, bytes);
+        return path;
+    }
+
+    /// <summary>Segment 0 of the ring: 480 frames at 60 fps, video 21 ms after the audio, the movie header at the audio end.</summary>
+    private static Mp4Builder SegmentZero()
+    {
+        var b = new Mp4Builder { MovieDuration = 8021 };
+        var video = Mp4Builder.Video(480, delta: 256);
+        video.Elst = new[] { (21L, -1L, (short)1), (8000L, 0L, (short)1) };
+        b.Tracks.Add(video);
+        b.Tracks.Add(Mp4Builder.Audio(samples: 376));
+        return b;
+    }
+
+    [Fact]
+    public void The_concat_duration_is_the_end_of_the_last_video_frame_not_the_movie_duration()
+    {
+        var path = Write("seg_0.mp4", SegmentZero().Build());
+
+        Assert.True(Mp4Duration.TryReadConcatDuration(path, out var d));
+        Assert.True(Mp4Duration.TryRead(path, out var movie));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(8021), movie);
+        long expected = (long)Math.Round((323 + 480 * 256) / 15360.0 * TimeSpan.TicksPerSecond);
+        Assert.InRange(d.Ticks, expected - 1, expected + 1);               // 8.0210286 s: sub-millisecond precision survives
+    }
+
+    [Fact]
+    public void Without_a_video_track_the_concat_duration_falls_back_to_the_movie_duration()
+    {
+        var b = new Mp4Builder { MovieDuration = 5008 };
+        b.Tracks.Add(Mp4Builder.Audio());
+        var path = Write("audio_only.mp4", b.Build());
+
+        Assert.True(Mp4Duration.TryReadConcatDuration(path, out var d));
+        Assert.Equal(TimeSpan.FromMilliseconds(5008), d);
+    }
+
+    [Fact]
+    public void A_video_track_the_index_does_not_understand_still_gives_the_movie_duration()
+    {
+        var b = new Mp4Builder { MovieDuration = 4321 };
+        var video = Mp4Builder.Video(100, delta: 256);
+        video.Elst = new[] { (1000L, 0L, (short)1), (1000L, 5000L, (short)1) };   // two real edits: unsupported
+        b.Tracks.Add(video);
+        var path = Write("two_edits.mp4", b.Build());
+
+        Assert.Null(Mp4Index.TryRead(path));
+        Assert.True(Mp4Duration.TryReadConcatDuration(path, out var d));
+        Assert.Equal(TimeSpan.FromMilliseconds(4321), d);
+    }
+
+    [Fact]
+    public void A_segment_still_being_written_has_no_concat_duration()
+    {
+        var open = Concat(Ftyp(), BE32(0), Encoding.ASCII.GetBytes("mdat"), new byte[500]);
+        Assert.False(Mp4Duration.TryReadConcatDuration(Write("open.mp4", open), out _));
+    }
+
+    [Fact]
+    public void A_missing_file_has_no_concat_duration()
+        => Assert.False(Mp4Duration.TryReadConcatDuration(Path.Combine(_dir, "nope.mp4"), out _));
+
+    [Fact]
+    public void The_concat_duration_is_read_from_a_file_another_process_still_has_open()
+    {
+        var path = Write("held.mp4", SegmentZero().Build());
+        using var writer = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+
+        Assert.True(Mp4Duration.TryReadConcatDuration(path, out var d));
+        Assert.True(d > TimeSpan.FromMilliseconds(8021));
+    }
 }

@@ -151,7 +151,7 @@ public sealed class LongClipIntegrationTests : IClassFixture<LongFootageFixture>
         // Exactly what the service writes: file + duration lines.
         var candidates = segments.Select(s =>
         {
-            Assert.True(Mp4Duration.TryRead(s, out var d), "unreadable header: " + s);
+            Assert.True(Mp4Duration.TryReadConcatDuration(s, out var d), "unreadable header: " + s);
             return new SegmentCandidate(s, 0, DateTime.UtcNow, 0, d);
         }).ToList();
         File.WriteAllLines(list, ClipStitcher.ConcatListLines(candidates));
@@ -168,7 +168,7 @@ public sealed class LongClipIntegrationTests : IClassFixture<LongFootageFixture>
         var total = TimeSpan.Zero;
         foreach (var s in segments)
         {
-            Assert.True(Mp4Duration.TryRead(s, out var d), "unreadable header: " + s);
+            Assert.True(Mp4Duration.TryReadConcatDuration(s, out var d), "unreadable header: " + s);
             total += d;
         }
         return total;
@@ -221,7 +221,8 @@ public sealed class LongClipIntegrationTests : IClassFixture<LongFootageFixture>
         var output = ProbeDuration(clip).TotalSeconds;
 
         Assert.True(Math.Abs(output - sum) < 2 * Frame, $"output {output:0.000} s vs segments {sum:0.000} s");
-        // Each boundary adds the audio overhang of at most one AAC frame (measured ~8.7 ms); nominal footage is 360 s.
+        // Nominal footage is 360 s. The pinned video ends add nothing per boundary any more; the generous bound (one AAC
+        // frame per boundary, what the movie headers used to add) only keeps the test independent of the encoder's rounding.
         Assert.True(output - 360 <= 359 * 0.025, $"output {output:0.000} s is {output - 360:0.000} s longer than the footage");
     }
 
@@ -275,7 +276,7 @@ public sealed class LongClipIntegrationTests : IClassFixture<LongFootageFixture>
         {
             foreach (var f in files)
             {
-                Assert.True(Mp4Duration.TryRead(f, out var d));
+                Assert.True(Mp4Duration.TryReadConcatDuration(f, out var d));
                 cursor += d;
                 File.SetLastWriteTimeUtc(f, cursor);
                 candidates.Add(new SegmentCandidate(f, gen, cursor, new FileInfo(f).Length, d));

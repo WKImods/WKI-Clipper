@@ -116,7 +116,7 @@ public sealed class ReplayBufferSaveEndToEndTests : IDisposable
         var t = start;
         foreach (var f in files)
         {
-            Assert.True(Mp4Duration.TryRead(f, out var d), f);
+            Assert.True(Mp4Duration.TryReadConcatDuration(f, out var d), f);
             t += d;
             File.SetLastWriteTimeUtc(f, t);
         }
@@ -144,8 +144,8 @@ public sealed class ReplayBufferSaveEndToEndTests : IDisposable
         var gen2 = FfRun.SegmentsOf(BufferDir, 2);
 
         // Wall clock: 20 s of Arma, then 45 s in Discord, then Arma again until just now.
-        double sum0 = gen0.Sum(f => { Mp4Duration.TryRead(f, out var d); return d.TotalSeconds; });
-        double sum2 = gen2.Sum(f => { Mp4Duration.TryRead(f, out var d); return d.TotalSeconds; });
+        double sum0 = gen0.Sum(f => { Mp4Duration.TryReadConcatDuration(f, out var d); return d.TotalSeconds; });
+        double sum2 = gen2.Sum(f => { Mp4Duration.TryReadConcatDuration(f, out var d); return d.TotalSeconds; });
         var now = DateTime.UtcNow;
         var start0 = now.AddSeconds(-(sum0 + 45 + sum2 + 2));
         var end0 = Stamp(gen0, start0);
@@ -199,7 +199,7 @@ public sealed class ReplayBufferSaveEndToEndTests : IDisposable
         if (_ffmpeg is null) return;
         FfRun.GenerateSegments(_ffmpeg, BufferDir, 0, 40, KeyframeMode.ForcedAtSegmentBoundary);
         var gen0 = FfRun.SegmentsOf(BufferDir, 0);
-        var sum = gen0.Sum(f => { Mp4Duration.TryRead(f, out var d); return d.TotalSeconds; });
+        var sum = gen0.Sum(f => { Mp4Duration.TryReadConcatDuration(f, out var d); return d.TotalSeconds; });
         Stamp(gen0, DateTime.UtcNow.AddSeconds(-(sum + 2)));
         SetState(0, Arma, new[] { new GenerationInfo(0, Arma, "Arma", DateTime.UtcNow.AddMinutes(-5), null) });
 
@@ -219,7 +219,7 @@ public sealed class ReplayBufferSaveEndToEndTests : IDisposable
         if (_ffmpeg is null) return;
         FfRun.GenerateSegments(_ffmpeg, BufferDir, 0, 40, KeyframeMode.ForcedAtSegmentBoundary);
         var gen0 = FfRun.SegmentsOf(BufferDir, 0);
-        var sum = gen0.Sum(f => { Mp4Duration.TryRead(f, out var d); return d.TotalSeconds; });
+        var sum = gen0.Sum(f => { Mp4Duration.TryReadConcatDuration(f, out var d); return d.TotalSeconds; });
         Stamp(gen0, DateTime.UtcNow.AddSeconds(-(sum + 2)));
         // Three segments whose end is lost (a crash, a full disk): bigger than 1 KB, but no moov atom. One segment alone
         // is a 1 s hole here, below the 2 s that count as a gap.
@@ -655,7 +655,7 @@ public sealed class ReplayBufferSaveEndToEndTests : IDisposable
 
     private static double Duration(string file)
     {
-        Assert.True(Mp4Duration.TryRead(file, out var d), file);
+        Assert.True(Mp4Duration.TryReadConcatDuration(file, out var d), file);
         return d.TotalSeconds;
     }
 }

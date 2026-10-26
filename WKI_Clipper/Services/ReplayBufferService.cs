@@ -1701,10 +1701,13 @@ public sealed class ReplayBufferService : IDisposable
             selected = complete.Skip(start).TakeLast(ring.PickForSeconds(requestedSeconds)).ToList();
         }
 
-        // The real durations drive the chapters and the saved length; an unreadable header (segment still open) drops the
-        // segment. RAM segments know theirs from the key frame timestamps.
+        // The real durations drive the concat list, the chapters and the saved length (one number for all three); an
+        // unreadable header (segment still open) drops the segment. A disk segment counts until the end of its last
+        // video frame, not until the movie header: the audio overhang would push every following segment back and leave
+        // a hole in the video at each seam (see ClipStitcher.ConcatListLines). RAM segments know theirs from the key
+        // frame timestamps.
         var withDurations = selected
-            .Select(c => c.Memory is not null ? c : c with { Duration = Mp4Duration.TryRead(c.Path, out var d) ? d : null })
+            .Select(c => c.Memory is not null ? c : c with { Duration = Mp4Duration.TryReadConcatDuration(c.Path, out var d) ? d : null })
             .ToList();
 
         var current = epoch.Identity;
