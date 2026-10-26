@@ -109,9 +109,9 @@ public sealed class SpotifyView : UserControl, IWebWidget
         _coverFrame = new Border
         {
             Width = 64, Height = 64, CornerRadius = new CornerRadius(4), ClipToBounds = true,
-            Background = (Brush)Application.Current.FindResource("PanelBrush"),
             Child = _cover, Margin = new Thickness(0, 0, 10, 0)
         };
+        _coverFrame.SetResourceReference(Border.BackgroundProperty, "PanelBrush");   // this view survives a theme switch: references, not captured brushes
 
         BuildCompact();
         BuildFull();
@@ -199,7 +199,7 @@ public sealed class SpotifyView : UserControl, IWebWidget
         var bar = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
         DockPanel.SetDock(_toCompact, Dock.Left);
         bar.Children.Add(_toCompact);
-        _webHint.Foreground = (Brush)Application.Current.FindResource("AccentBrush");
+        _webHint.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
         bar.Children.Add(_webHint);
         DockPanel.SetDock(bar, Dock.Top);
         _full.Children.Add(bar);
@@ -366,7 +366,7 @@ public sealed class SpotifyView : UserControl, IWebWidget
         }
         _status.Text = status ?? "";
         _status.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
-        _status.Foreground = (Brush)Application.Current.FindResource(_webPlaying ? "AccentBrush" : "MutedBrush");
+        _status.SetResourceReference(TextBlock.ForegroundProperty, _webPlaying ? "AccentBrush" : "MutedBrush");
         _launch.Visibility = showLaunch ? Visibility.Visible : Visibility.Collapsed;
         _webHint.Text = _webPlaying ? status! : "";
 

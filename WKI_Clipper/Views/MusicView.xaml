@@ -10,7 +10,7 @@
         </Grid.RowDefinitions>
 
         <!-- Now playing + transport -->
-        <Border Grid.Row="0" Background="{StaticResource PanelBrush}" CornerRadius="6"
+        <Border Grid.Row="0" Background="{DynamicResource PanelBrush}" CornerRadius="6"
                 Padding="12,10" Margin="0,0,0,8">
             <StackPanel>
                 <TextBlock x:Name="TitleText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
@@ -21,7 +21,7 @@
         </Border>
 
         <!-- Levels (stream + monitor) -->
-        <Border Grid.Row="1" Background="{StaticResource PanelBrush}" CornerRadius="6"
+        <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" CornerRadius="6"
                 Padding="12,10" Margin="0,0,0,8">
             <StackPanel x:Name="LevelsPanel" />
         </Border>

@@ -19,7 +19,7 @@
             <Setter Property="Width" Value="28" />
             <Setter Property="Height" Value="28" />
             <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -47,7 +47,7 @@
                     <ControlTemplate TargetType="ToggleButton">
                         <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8">
                             <TextBlock x:Name="Pin" Text="&#xE718;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="13" Foreground="{StaticResource MutedBrush}"
+                                       FontSize="13" Foreground="{DynamicResource MutedBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -56,7 +56,7 @@
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="Pin" Property="Text" Value="&#xE840;" />
-                                <Setter TargetName="Pin" Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Pin" Property="Foreground" Value="{DynamicResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -66,7 +66,7 @@
     </Window.Resources>
 
     <!-- Glass surface: violet, translucent, faint highlight at the top, hairline edge -->
-    <Border x:Name="Surface" CornerRadius="16" Background="{StaticResource SurfaceBrush}"
+    <Border x:Name="Surface" CornerRadius="16" Background="{DynamicResource SurfaceBrush}"
             BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
@@ -112,7 +112,7 @@
                 <Thumb.Template>
                     <ControlTemplate TargetType="Thumb">
                         <Grid Background="Transparent">
-                            <Path Data="M 14 4 L 4 14 M 14 9 L 9 14" Stroke="{StaticResource FaintBrush}"
+                            <Path Data="M 14 4 L 4 14 M 14 9 L 9 14" Stroke="{DynamicResource FaintBrush}"
                                   StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                         </Grid>
                     </ControlTemplate>

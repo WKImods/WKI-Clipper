@@ -76,9 +76,9 @@ public sealed class WebAppHost : UserControl, IDisposable
         _statusText = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
-            TextAlignment = TextAlignment.Center,
-            Foreground = (Brush)Application.Current.FindResource("MutedBrush")
+            TextAlignment = TextAlignment.Center
         };
+        _statusText.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");   // the page is not rebuilt on a theme switch: stay a reference
         _retryButton = new Button
         {
             Content = L.T("Neu starten", "Restart"),

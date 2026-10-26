@@ -57,6 +57,7 @@ public sealed class WidgetHost : IDisposable
     {
         _host = host;
         L.LanguageChanged += OnLanguageChanged;
+        _host.Theme.Changed += OnThemeChanged;
         _host.CrosshairRefresh = ApplyCrosshair;
         _host.PerfOverlayRefresh = ApplyPerfOverlay;
         _host.GameChanged += OnGameChangedForOverlay;
@@ -422,31 +423,42 @@ public sealed class WidgetHost : IDisposable
     }
 
     private void OnLanguageChanged()
-        => Application.Current.Dispatcher.BeginInvoke(new Action(RebuildForLanguageChange));
+        => Application.Current.Dispatcher.BeginInvoke(new Action(() => RebuildUi("language")));
 
     /// <summary>
-    /// Widget windows and the launcher build their (localized) content once. On a
-    /// language flip, tear them all down and rebuild so the new language shows
-    /// everywhere immediately — no app restart. Geometry/visibility survive via the
-    /// persisted <see cref="WidgetState"/>s.
-    ///
-    /// Web widgets are the exception: rebuilding would throw away the page (and with it
-    /// an open WhatsApp chat or a half-typed message). They only get new labels.
+    /// A new colour theme is on: everything XAML draws follows by itself (dynamic resources), but the widget windows, the sidebar
+    /// and the shortcut bar are built in code with the brushes of the moment - they are built anew, like on a language change.
     /// </summary>
-    private void RebuildForLanguageChange()
+    private void OnThemeChanged()
+        => Application.Current.Dispatcher.BeginInvoke(new Action(() => RebuildUi("theme")));
+
+    /// <summary>
+    /// Widget windows and the launcher build their (localized, coloured) content once. When that content has to change - the
+    /// language flipped, a new colour theme is on - tear them all down and rebuild, so the change shows everywhere immediately,
+    /// no app restart. Geometry/visibility/pins survive via the persisted <see cref="WidgetState"/>s: every window saves its
+    /// place first, and the board (or just the pinned widgets) comes back from those.
+    ///
+    /// Web widgets are the exception (see <see cref="WidgetRebuildPlan"/>): rebuilding would throw away the page (and with it
+    /// an open WhatsApp chat or a half-typed message). They only get new labels and a new icon colour; their chrome follows a
+    /// theme through dynamic resources.
+    /// </summary>
+    private void RebuildUi(string reason)
     {
         bool wasOpen = _boardOpen;
-        foreach (var (id, w) in _windows) CaptureGeometry(id, w, "language-rebuild");
+        var plan = WidgetRebuildPlan.For(_windows.Select(kv => new WidgetWindowInfo(kv.Key, kv.Value.WidgetContent is IWebWidget)), wasOpen);
 
-        foreach (var (id, w) in _windows.ToList())
+        foreach (var id in plan.CaptureGeometry) CaptureGeometry(id, _windows[id], reason + "-rebuild");
+
+        foreach (var id in plan.Keep)
         {
-            if (w.WidgetContent is IWebWidget web)
-            {
-                w.SetTitle(Label(id));
-                web.Relocalize();
-                continue;
-            }
-            try { w.Close(); } catch { }
+            var w = _windows[id];
+            w.SetTitle(Label(id));
+            w.SetIcon(IconGlyph.ForWidget(id, 15, (Brush)Application.Current.FindResource("AccentBrush")));
+            ((IWebWidget)w.WidgetContent).Relocalize();
+        }
+        foreach (var id in plan.Rebuild)
+        {
+            try { _windows[id].Close(); } catch { }
             _windows.Remove(id);
         }
         if (_sidebar != null) { try { _sidebar.Close(); } catch { } _sidebar = null; }
@@ -455,17 +467,16 @@ public sealed class WidgetHost : IDisposable
         if (_backdrop != null) { try { _backdrop.Close(); } catch { } _backdrop = null; }
         _boardOpen = false;
 
-        // OpenBoard records "where the keyboard was" — during a rebuild that would be one
+        // OpenBoard records "where the keyboard was" - during a rebuild that would be one
         // of our own windows, so keep the game the user actually came from.
         var returnFocusTo = _returnFocusTo;
         bool externalLaunch = _externalLaunchDuringBoard;
-        if (wasOpen) OpenBoard();
+        if (plan.ReopenBoard) OpenBoard();
         else RestorePinned();
         _returnFocusTo = returnFocusTo;
         _externalLaunchDuringBoard = externalLaunch;
-        Logger.Info("Widgets rebuilt for language change.");
+        Logger.Info($"Widgets rebuilt ({reason}).");
     }
-
     /// <summary>Sidebar order; also the stagger order for default placement.</summary>
     private static readonly IReadOnlyList<WidgetId> Order = WidgetCatalog.Order;
 
@@ -1480,6 +1491,7 @@ public sealed class WidgetHost : IDisposable
     public void Dispose()
     {
         L.LanguageChanged -= OnLanguageChanged;
+        _host.Theme.Changed -= OnThemeChanged;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _displayTimer?.Stop();
         _host.PerfOverlayRefresh = null;

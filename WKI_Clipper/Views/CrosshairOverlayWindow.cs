@@ -62,12 +62,12 @@ public sealed class CrosshairOverlayWindow : Window
         // since SizeToContent follows the content).
         _frame = new Border
         {
-            BorderBrush = (System.Windows.Media.Brush)Application.Current.FindResource("AccentBrush"),
             BorderThickness = new Thickness(1),
             Background = System.Windows.Media.Brushes.Transparent,
             Visibility = Visibility.Collapsed,
             IsHitTestVisible = false
         };
+        _frame.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");   // a reference: follows a theme switch with the board open
 
         var root = new Grid();
         root.Children.Add(_image);

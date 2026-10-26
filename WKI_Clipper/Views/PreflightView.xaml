@@ -12,7 +12,7 @@
             <StackPanel>
                 <StackPanel x:Name="ChecksPanel" />
                 <Expander x:Name="ConfigExpander" Margin="0,8,0,0"
-                          Foreground="{StaticResource MutedBrush}">
+                          Foreground="{DynamicResource MutedBrush}">
                     <StackPanel x:Name="ConfigPanel" Margin="0,8,0,0" />
                 </Expander>
             </StackPanel>

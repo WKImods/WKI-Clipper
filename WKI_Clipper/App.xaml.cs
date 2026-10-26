@@ -52,6 +52,15 @@ public partial class App : Application
         {
             Host = new AppHost();
             Logger.Info("AppHost constructed.");
+
+            // The saved colour theme goes on before the first window exists, so nothing ever shows in the wrong colours.
+            // The default needs no swap: Theme.xaml IS the default theme.
+            if (!ThemePaletteBuilder.IsDefault(Host.Settings.Current.Theme))
+            {
+                try { Host.Theme.Apply(ThemePaletteBuilder.Build(Host.Settings.Current.Theme)); }
+                catch (Exception ex) { Logger.Warn("Colour theme could not be applied - starting with the default: " + ex.Message); }
+            }
+
             Host.Initialize();
             Logger.Info("AppHost initialized.");
 

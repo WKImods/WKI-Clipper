@@ -19,7 +19,7 @@
         <StackPanel x:Name="SlidersPanel" DockPanel.Dock="Bottom" Margin="0,10,0,0" />
 
         <!-- Library -->
-        <Border Background="{StaticResource PanelBrush}" CornerRadius="6" Padding="8">
+        <Border Background="{DynamicResource PanelBrush}" CornerRadius="6" Padding="8">
             <DockPanel LastChildFill="True">
                 <TextBlock x:Name="LibHeading" DockPanel.Dock="Top" FontWeight="SemiBold" Margin="4,2,4,8" />
                 <TextBlock x:Name="EmptyHint" DockPanel.Dock="Top" Style="{StaticResource MutedStyle}"

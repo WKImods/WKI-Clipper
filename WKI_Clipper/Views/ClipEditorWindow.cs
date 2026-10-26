@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -153,7 +153,7 @@ public sealed class ClipEditorWindow : Window
         Width = 1100; Height = 760; MinWidth = 820; MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ShowInTaskbar = true;
-        Background = Res("BgBrush");
+        SetResourceReference(BackgroundProperty, "BgBrush");   // palette brushes: a reference, so a theme switch recolours the open editor
         Foreground = Res("TextBrush");
 
         BuildUi();
@@ -231,7 +231,7 @@ public sealed class ClipEditorWindow : Window
         marks.Children.Add(_setOut);
         marks.Children.Add(_marksText);
         panel.Children.Add(marks);
-        _snapText.Foreground = Res("AccentBrush");
+        _snapText.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
         _snapText.Margin = new Thickness(0, 4, 0, 0);
         panel.Children.Add(_snapText);
 
@@ -259,8 +259,8 @@ public sealed class ClipEditorWindow : Window
 
         // running / done
         _runPanel.Margin = new Thickness(0, 10, 0, 0);
-        _progress.Foreground = Res("AccentBrush");
-        _progress.Background = Res("PanelBrush");
+        _progress.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty, "AccentBrush");
+        _progress.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty, "PanelBrush");
         _progress.BorderThickness = new Thickness(0);
         _runPanel.Children.Add(_progress);
         var runRow = new Grid { Margin = new Thickness(0, 6, 0, 0) };

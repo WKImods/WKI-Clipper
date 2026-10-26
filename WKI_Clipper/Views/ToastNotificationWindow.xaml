@@ -28,7 +28,7 @@
             <!-- Accent stripe -->
             <Rectangle Grid.Column="0"
                        x:Name="AccentStripe"
-                       Fill="{StaticResource AccentBrush}"
+                       Fill="{DynamicResource AccentBrush}"
                        RadiusX="3" RadiusY="3" />
 
             <!-- Content -->
@@ -40,14 +40,14 @@
                            TextTrimming="CharacterEllipsis" />
                 <TextBlock x:Name="BodyText"
                            FontSize="12"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            TextTrimming="CharacterEllipsis"
                            TextWrapping="NoWrap"
                            Margin="0,3,0,0" />
                 <TextBlock x:Name="HintText"
                            Text="Klicken zum Öffnen"
                            FontSize="10"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            Margin="0,6,0,0"
                            Visibility="Collapsed" />
             </StackPanel>
@@ -59,7 +59,7 @@
                     Width="28" Height="28"
                     FontSize="16"
                     Background="Transparent"
-                    Foreground="{StaticResource MutedBrush}"
+                    Foreground="{DynamicResource MutedBrush}"
                     VerticalAlignment="Top"
                     HorizontalAlignment="Right"
                     Margin="0,4,4,0"

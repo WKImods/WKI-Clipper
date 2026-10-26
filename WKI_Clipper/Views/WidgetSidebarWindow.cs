@@ -237,6 +237,7 @@ public sealed class WidgetSidebarWindow : Window
     private static FrameworkElement MakeAvatar()
     {
         var grid = new Grid { Width = 38, Height = 38, VerticalAlignment = VerticalAlignment.Center };
+        var accent = (Color)Application.Current.FindResource("AccentColor");
         grid.Children.Add(new Ellipse
         {
             Fill = new RadialGradientBrush(
@@ -244,9 +245,9 @@ public sealed class WidgetSidebarWindow : Window
                 {
                     new((Color)Application.Current.FindResource("AccentLightColor"), 0),
                     new((Color)Application.Current.FindResource("AccentColor"), 0.55),
-                    new(Color.FromRgb(0xC8, 0x46, 0x1A), 1)
+                    new(((LinearGradientBrush)Application.Current.FindResource("BarBrush")).GradientStops[0].Color, 1)   // the deep end of the bar gradient
                 }) { GradientOrigin = new Point(0.3, 0.25), Center = new Point(0.35, 0.3), RadiusX = 0.8, RadiusY = 0.8 },
-            Stroke = new SolidColorBrush(Color.FromArgb(0x30, 0xFF, 0x7A, 0x2C)),
+            Stroke = new SolidColorBrush(Color.FromArgb(0x30, accent.R, accent.G, accent.B)),
             StrokeThickness = 3
         });
         grid.Children.Add(new TextBlock

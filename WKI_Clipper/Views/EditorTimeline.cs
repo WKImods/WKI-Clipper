@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -23,12 +23,31 @@ internal sealed class EditorTimeline : FrameworkElement
     private bool _exact;
     private TimelineHit _drag = TimelineHit.None;
 
+    // The palette brushes the timeline paints with. They are properties bound to the theme's resource keys (not a lookup at draw
+    // time), so a colour switch redraws an editor that is open.
+    private static readonly DependencyProperty TrackBrushProperty = DependencyProperty.Register(nameof(TrackBrush), typeof(Brush), typeof(EditorTimeline),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    private static readonly DependencyProperty AccentBrushProperty = DependencyProperty.Register(nameof(AccentBrush), typeof(Brush), typeof(EditorTimeline),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    private static readonly DependencyProperty TickBrushProperty = DependencyProperty.Register(nameof(TickBrush), typeof(Brush), typeof(EditorTimeline),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    private Brush? TrackBrush => (Brush?)GetValue(TrackBrushProperty);
+    private Brush? AccentBrush => (Brush?)GetValue(AccentBrushProperty);
+    private Brush? TickBrush => (Brush?)GetValue(TickBrushProperty);
+
+    /// <summary>For tests: the brushes the next draw will use (track, accent, ticks).</summary>
+    internal (Brush? Track, Brush? Accent, Brush? Tick) PaintBrushes => (TrackBrush, AccentBrush, TickBrush);
+
     public EditorTimeline()
     {
         Height = 56;
         Focusable = false;
         Cursor = Cursors.Hand;
         SnapsToDevicePixels = true;
+        SetResourceReference(TrackBrushProperty, "PanelBrush");
+        SetResourceReference(AccentBrushProperty, "AccentBrush");
+        SetResourceReference(TickBrushProperty, "MutedBrush");
     }
 
     /// <summary>The user wants this time shown (clicking or dragging on the track).</summary>
@@ -70,9 +89,9 @@ internal sealed class EditorTimeline : FrameworkElement
         double w = ActualWidth, h = ActualHeight;
         if (w <= 0 || h <= 0) return;
 
-        var panel = Res("PanelBrush", Brushes.DimGray);
-        var accent = Res("AccentBrush", Brushes.Orange);
-        var muted = Res("MutedBrush", Brushes.Gray);
+        var panel = TrackBrush ?? Res("PanelBrush", Brushes.DimGray);
+        var accent = AccentBrush ?? Res("AccentBrush", Brushes.Orange);
+        var muted = TickBrush ?? Res("MutedBrush", Brushes.Gray);
         var text = Res("TextBrush", Brushes.White);
 
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));   // the whole control takes mouse hits, not just what is painted

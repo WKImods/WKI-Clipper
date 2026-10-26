@@ -200,6 +200,9 @@ public sealed class AppHost : IDisposable
     /// <summary>Re-render the live crosshair overlay from current settings.</summary>
     public void RefreshCrosshair() => CrosshairRefresh?.Invoke();
 
+    /// <summary>The colour theme of the whole app: apply a palette here and every window follows (see <see cref="ThemeService"/>).</summary>
+    public ThemeService Theme { get; } = new();
+
     /// <summary>Set by the widget host: re-applies the on-screen performance overlay.</summary>
     public Action? PerfOverlayRefresh { get; set; }
     public void RefreshPerfOverlay() => PerfOverlayRefresh?.Invoke();
