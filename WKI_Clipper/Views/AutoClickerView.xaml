@@ -15,7 +15,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- Status row: "Clicker bereit", state pill, Start/Stop -->
+            <!-- Status row: "Clicker bereit" and "Mausbewegung bereit", the clicker's state pill, Start/Stop -->
             <Border x:Name="StatusSection" Background="{DynamicResource PanelBrush}" CornerRadius="6" Padding="12" Margin="0,0,0,12">
                 <StackPanel>
                     <Grid>
@@ -23,7 +23,10 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <CheckBox x:Name="ArmedBox" VerticalAlignment="Center" />
+                        <StackPanel VerticalAlignment="Center">
+                            <CheckBox x:Name="ArmedBox" />
+                            <CheckBox x:Name="PatternsArmedBox" Margin="0,6,0,0" />
+                        </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                             <Button x:Name="RetryBtn" Margin="8,0,0,0" Visibility="Collapsed" />
                             <Button x:Name="StartStopBtn" Style="{StaticResource AccentButton}" Margin="8,0,0,0" MinWidth="90" />
@@ -43,6 +46,7 @@
                 <RadioButton x:Name="TabAdvanced" GroupName="AC" Style="{StaticResource TabButtonStyle}" Tag="advanced" Checked="OnSubTab" />
                 <RadioButton x:Name="TabZones"    GroupName="AC" Style="{StaticResource TabButtonStyle}" Tag="zones"    Checked="OnSubTab" />
                 <RadioButton x:Name="TabPoints"   GroupName="AC" Style="{StaticResource TabButtonStyle}" Tag="points"   Checked="OnSubTab" />
+                <RadioButton x:Name="TabPatterns" GroupName="AC" Style="{StaticResource TabButtonStyle}" Tag="patterns" Checked="OnSubTab" />
                 <RadioButton x:Name="TabPresets"  GroupName="AC" Style="{StaticResource TabButtonStyle}" Tag="presets"  Checked="OnSubTab" />
             </WrapPanel>
 
@@ -52,6 +56,7 @@
                 <ac:AdvancedClickerPanel x:Name="AdvancedPanel"   Visibility="Collapsed" />
                 <ac:ZonesSafetyPanel     x:Name="ZonesPanel"      Visibility="Collapsed" />
                 <ac:ClickPointsPanel     x:Name="PointsPanel"     Visibility="Collapsed" />
+                <ac:MousePatternsPanel   x:Name="PatternsPanel"   Visibility="Collapsed" />
                 <ac:PresetsStatsPanel    x:Name="PresetsPanel"    Visibility="Collapsed" />
             </Grid>
 

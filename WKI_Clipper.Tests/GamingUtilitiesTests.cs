@@ -1,10 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
+using WKI_Clipper.Services.AutoClicker;
 using WKI_Clipper.Views;
+using WKI_Clipper.Views.AutoClicker;
 using Xunit;
 
 namespace WKI_Clipper.Tests;
@@ -111,7 +114,7 @@ public sealed class GamingUtilitiesTests
     }
 
     [Fact]
-    public void The_autoclicker_tab_offers_the_five_sub_tabs_in_the_design_order()
+    public void Subtabs_are_six_in_order()
     {
         var r = OnSta(() =>
         {
@@ -122,10 +125,152 @@ public sealed class GamingUtilitiesTests
             return (tabs, view.SubTabStrip.Children.Count);
         });
 
-        Assert.Equal(new[] { "Einfach", "Erweitert", "Zonen & Schutz", "Klickpunkte", "Presets" }, r.tabs.Select(t => t.Text));
-        // "patterns" is a known key already; its tab arrives with the mouse-patterns UI (plan task 7), which updates this test.
-        Assert.Equal(WKI_Clipper.Services.AutoClicker.ClickerSettingsRules.SubTabs.Where(k => k != "patterns"), r.tabs.Select(t => t.Key));
-        Assert.Equal(5, r.Count);
+        Assert.Equal(new[] { "Einfach", "Erweitert", "Zonen & Schutz", "Klickpunkte", "Mausbewegung", "Presets" }, r.tabs.Select(t => t.Text));
+        Assert.Equal(ClickerSettingsRules.SubTabs, r.tabs.Select(t => t.Key));
+        Assert.Equal(6, r.Count);
+    }
+
+    [Fact]
+    public void The_status_row_has_the_second_switch_and_the_warning_names_movement_macros()
+    {
+        var r = OnSta(() =>
+        {
+            var view = new AutoClickerView();
+            view.BuildTexts();
+            return (view.WarningText.Text, view.PatternsArmedBox.ToolTip?.ToString(), view.ArmedBox.Parent == view.PatternsArmedBox.Parent);
+        });
+
+        Assert.Contains("Bewegungs-Makros", r.Item1);
+        Assert.Contains("Anti-Cheat", r.Item1);
+        Assert.Contains("Mausbewegung", r.Item2);
+        Assert.True(r.Item3);   // next to "Clicker bereit"
+    }
+
+    // ---- the mouse patterns tab ----
+
+    private const string PatternA = "0123456789abcdef0123456789abcdef";
+    private const string PatternB = "fedcba9876543210fedcba9876543210";
+
+    private static AppSettings TwoPatterns()
+    {
+        var settings = new AppSettings();
+        var c = settings.AutoClicker.Clicker;
+        c.MousePatternsArmed = true;
+        c.MousePatterns = new List<MousePattern>
+        {
+            new() { Id = PatternA, Name = "Kreis", Hotkey = new ClickerHotkey { Keys = { 0x46 } }, Revision = 1, DurationMs = 2400, Program = "game.exe" },
+            new() { Id = PatternB, Name = "Welle", Active = false, Revision = 1, DurationMs = 800 },
+        };
+        return settings;
+    }
+
+    private static ClickerState ReadyState => ClickerState.Off with { Phase = ClickerPhase.Ready, PatternsArmed = true };
+
+    private static string Lines(System.Windows.Controls.Panel panel)
+        => string.Join(Environment.NewLine, panel.Children.OfType<System.Windows.Controls.TextBlock>().Select(t => t.Text));
+
+    [Fact]
+    public void Panel_builds_with_two_patterns_and_no_data_file()
+    {
+        var store = new FakePatternStore();
+        var r = OnSta(() =>
+        {
+            var panel = new MousePatternsPanel { Store = store };
+            panel.Render(TwoPatterns(), ReadyState, recordTarget: PatternB);
+            var a = panel.CardsById[PatternA];
+            var b = panel.CardsById[PatternB];
+            return (Cards: panel.Cards.Children.Count, Names: (a.NameBox.Text, b.NameBox.Text), Active: (a.Active.IsChecked, b.Active.IsChecked),
+                    Points: a.Preview.Points.Count + b.Preview.Points.Count, Duration: a.Duration.Text,
+                    OnlyIn: (a.OnlyIn.Visibility, a.OnlyIn.Content?.ToString(), b.OnlyIn.Visibility),
+                    Hotkeys: (a.Hotkey.Content?.ToString(), b.Hotkey.Content?.ToString()), Speed: a.Speed.Text,
+                    WarnA: Lines(a.Warnings), WarnB: Lines(b.Warnings),
+                    Empty: panel.EmptyText.Visibility, Status: panel.StatusText.Text, Target: (panel.TargetRow.Visibility, panel.TargetText.Text),
+                    Record: panel.RecordHotkey.Content?.ToString());
+        });
+
+        Assert.Equal(2, r.Cards);
+        Assert.Equal(("Kreis", "Welle"), r.Names);
+        Assert.Equal((true, false), r.Active);
+        Assert.Equal(0, r.Points);   // no samples, no drawing
+        Assert.Equal("2,4 s", r.Duration);
+        Assert.Equal((Visibility.Visible, "Nur in game.exe", Visibility.Collapsed), r.OnlyIn);
+        Assert.Equal(("F", "(keine)"), r.Hotkeys);
+        Assert.Equal("1", r.Speed);
+        Assert.Contains("Aufnahme fehlt", r.WarnA);
+        Assert.Contains("Aufnahme fehlt", r.WarnB);
+        Assert.Equal(Visibility.Collapsed, r.Empty);
+        Assert.Equal("Bereit · 1 Muster aktiv", r.Status);
+        Assert.Equal((Visibility.Visible, "Nächste Aufnahme ersetzt 'Welle' - Strg+Alt+R im Spiel drücken"), r.Target);
+        Assert.Equal("Strg+Alt+R", r.Record);
+    }
+
+    [Fact]
+    public void The_drawing_shows_the_samples_and_they_are_read_once_per_revision()
+    {
+        var store = new FakePatternStore();
+        store.Put(PatternA, new PatternData(PatternTrack.Empty, new PatternTrack(new[] { 1, 2, 3 }, new[] { 10, 0, -10 }, new[] { 0, 10, 0 }), 3));
+        var r = OnSta(() =>
+        {
+            var panel = new MousePatternsPanel { Store = store };
+            var settings = TwoPatterns();
+            panel.Render(settings, ReadyState, recordTarget: null);
+            int loadsFirst = store.Loads;
+            int points = panel.CardsById[PatternA].Preview.Points.Count;
+            var warn = Lines(panel.CardsById[PatternA].Warnings);
+
+            panel.Render(settings, ReadyState with { Recording = true }, recordTarget: null);
+            int loadsSame = store.Loads;
+            var status = panel.StatusText.Text;
+            settings.AutoClicker.Clicker.MousePatterns[0].Revision = 2;
+            panel.Render(settings, ReadyState, recordTarget: null);
+            return (points, warn, loadsFirst, loadsSame, loadsAfter: store.Loads, status, target: panel.TargetRow.Visibility);
+        });
+
+        Assert.Equal(4, r.points);   // the start and one point per bin
+        Assert.DoesNotContain("Aufnahme fehlt", r.warn);
+        Assert.Equal(2, r.loadsFirst);   // both patterns once
+        Assert.Equal(r.loadsFirst, r.loadsSame);
+        Assert.Equal(r.loadsFirst + 1, r.loadsAfter);
+        Assert.Equal("Aufnahme läuft · Strg+Alt+R beendet", r.status);
+        Assert.Equal(Visibility.Collapsed, r.target);
+    }
+
+    [Fact]
+    public void Without_patterns_the_tab_says_how_to_record_one()
+    {
+        var r = OnSta(() =>
+        {
+            var panel = new MousePatternsPanel { Store = new FakePatternStore() };
+            panel.Render(new AppSettings(), ClickerState.Off, recordTarget: null);
+            return (panel.Cards.Children.Count, panel.EmptyText.Visibility, panel.EmptyText.Text, panel.StatusText.Text);
+        });
+
+        Assert.Equal(0, r.Item1);
+        Assert.Equal(Visibility.Visible, r.Item2);
+        Assert.Equal("Noch keine Muster. Strg+Alt+R drücken, Bewegung machen, nochmal drücken.", r.Item3);
+        Assert.Equal("Mausbewegung ist aus - oben 'Mausbewegung bereit' einschalten", r.Item4);
+    }
+
+    [Fact]
+    public void The_record_hotkey_box_clears_to_its_own_default()
+    {
+        var r = OnSta(() =>
+        {
+            var click = new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent);
+            var box = new HotkeyCaptureBox(required: true, defaultHotkey: MousePatternRules.DefaultRecordHotkey());
+            box.SetHotkey(MousePatternRules.DefaultRecordHotkey());
+            bool defaultClearable = box.ClearButton.IsEnabled;
+            box.SetHotkey(new ClickerHotkey { Keys = { 0x46 } });
+            ClickerHotkey? changed = null;
+            box.HotkeyChanged += h => changed = h;
+            box.ClearButton.RaiseEvent(click);
+            return (defaultClearable, changed, box.Content?.ToString(), box.ClearButton.ToolTip?.ToString());
+        });
+
+        Assert.False(r.defaultClearable);
+        Assert.True(ClickerHotkey.SameCombo(MousePatternRules.DefaultRecordHotkey(), r.changed));
+        Assert.Equal("Strg+Alt+R", r.Item3);
+        Assert.Contains("Strg+Alt+R", r.Item4);
     }
 
     [Fact]

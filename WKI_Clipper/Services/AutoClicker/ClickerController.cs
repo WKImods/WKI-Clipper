@@ -215,6 +215,9 @@ public sealed class ClickerController : IClickerLock, IDisposable
     /// <summary>The helper is wanted: "Clicker bereit" or "Mausbewegung bereit" is on (<see cref="MousePatternRules.HostWanted"/>).</summary>
     public bool Armed => MousePatternRules.HostWanted(_settings());
 
+    /// <summary>Where the samples of the mouse patterns live; the patterns tab reads them for its drawings.</summary>
+    public IMousePatternStore PatternStore => _patternStore;
+
     /// <summary>The pattern the next recording replaces ("Neu aufnehmen"); null = the next recording becomes a new pattern. Not saved.</summary>
     public string? RecordTarget => _recordTarget;
 

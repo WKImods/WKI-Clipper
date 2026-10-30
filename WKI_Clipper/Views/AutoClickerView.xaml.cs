@@ -3,6 +3,7 @@ using System.Linq;
 using System.Runtime.Versioning;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
 using WKI_Clipper.Services.AutoClicker;
@@ -13,9 +14,10 @@ namespace WKI_Clipper.Views;
 
 /// <summary>
 /// The AutoClicker tab of Gaming Utilities (design section 9). On top: the anti-cheat warning (until acknowledged) and the status row of
-/// the native clicker ("Clicker bereit", state pill, Start/Stop, conflicts). Below: the sub-tabs Einfach | Erweitert | Zonen &amp; Schutz |
-/// Klickpunkte | Presets. The selected sub-tab is saved, so it survives the widget rebuild of a language or theme switch.
-/// Controller and settings events arrive on any thread and are marshalled here.
+/// the native clicker ("Clicker bereit" and "Mausbewegung bereit", the clicker's state pill, Start/Stop, conflicts, the count of pattern
+/// warnings). Below: the sub-tabs Einfach | Erweitert | Zonen &amp; Schutz | Klickpunkte | Mausbewegung | Presets. The selected sub-tab is
+/// saved, so it survives the widget rebuild of a language or theme switch. Controller and settings events arrive on any thread and are
+/// marshalled here.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public partial class AutoClickerView : UserControl
@@ -35,7 +37,7 @@ public partial class AutoClickerView : UserControl
 
     private static AppHost? Host => App.Host;
 
-    private ClickerPanel[] Panels => new ClickerPanel[] { SimplePanel, AdvancedPanel, ZonesPanel, PointsPanel, PresetsPanel };
+    private ClickerPanel[] Panels => new ClickerPanel[] { SimplePanel, AdvancedPanel, ZonesPanel, PointsPanel, PatternsPanel, PresetsPanel };
 
     // ---------------- lifecycle ----------------
 
@@ -51,6 +53,8 @@ public partial class AutoClickerView : UserControl
             AckBtn.Click += OnAcknowledge;
             ArmedBox.Checked += (_, _) => SetArmed(true);
             ArmedBox.Unchecked += (_, _) => SetArmed(false);
+            PatternsArmedBox.Checked += (_, _) => SetPatternsArmed(true);
+            PatternsArmedBox.Unchecked += (_, _) => SetPatternsArmed(false);
             StartStopBtn.Click += OnStartStop;
             RetryBtn.Click += (_, _) => Host?.Clicker.Retry();
             RestoreSubTab();
@@ -80,19 +84,23 @@ public partial class AutoClickerView : UserControl
     internal void BuildTexts()
     {
         WarningText.Text = L.T(
-            "AutoClicker können in Online-Spielen mit Anti-Cheat (BattlEye, Easy Anti-Cheat, Vanguard ...) gegen die Regeln verstoßen und zu Bans führen. Nutzung auf eigene Gefahr.",
-            "Auto clickers can break the rules of online games with anti-cheat (BattlEye, Easy Anti-Cheat, Vanguard ...) and lead to bans. Use at your own risk.");
+            "AutoClicker und Bewegungs-Makros (Mausbewegung) können in Online-Spielen mit Anti-Cheat (BattlEye, Easy Anti-Cheat, Vanguard ...) gegen die Regeln verstoßen und zu Bans führen. Nutzung auf eigene Gefahr.",
+            "Auto clickers and movement macros (mouse patterns) can break the rules of online games with anti-cheat (BattlEye, Easy Anti-Cheat, Vanguard ...) and lead to bans. Use at your own risk.");
         AckBtn.Content = L.T("Verstanden", "Understood");
 
         ArmedBox.ToolTip = L.T(
             "Startet den AutoClicker-Helfer im Hintergrund, der auf den Hotkey wartet. Aus = kein Hotkey, keine Klicks.",
             "Starts the AutoClicker helper in the background that waits for the hotkey. Off = no hotkey, no clicks.");
+        PatternsArmedBox.ToolTip = L.T(
+            "Lässt die Mausbewegungs-Muster auf ihre Hotkeys und den Aufnahme-Hotkey hören (dafür läuft der Helfer im Hintergrund). Aus = keine Muster, keine Aufnahme. Unabhängig von \"Clicker bereit\".",
+            "Lets the mouse patterns listen to their hotkeys and the record hotkey (the helper runs in the background for it). Off = no patterns, no recording. Independent of \"Clicker ready\".");
         RetryBtn.Content = L.T("Erneut versuchen", "Try again");
 
         TabSimple.Content = L.T("Einfach", "Simple");
         TabAdvanced.Content = L.T("Erweitert", "Advanced");
         TabZones.Content = L.T("Zonen & Schutz", "Zones & safety");
         TabPoints.Content = L.T("Klickpunkte", "Click points");
+        TabPatterns.Content = L.T("Mausbewegung", "Mouse patterns");
         TabPresets.Content = "Presets";
     }
 
@@ -111,17 +119,20 @@ public partial class AutoClickerView : UserControl
         {
             Volatile.Write(ref _refreshQueued, 0);
             if (!IsLoaded) return;
+            // Panels first: the status row counts the warnings the patterns panel just worked out.
+            if (_panelsDirty)
+            {
+                _panelsDirty = false;
+                foreach (var panel in Panels) panel.Refresh();
+            }
             UpdateStatus();
-            if (!_panelsDirty) return;
-            _panelsDirty = false;
-            foreach (var panel in Panels) panel.Refresh();
         }));
     }
 
     private void RefreshAll()
     {
-        UpdateStatus();
         foreach (var panel in Panels) panel.Refresh();
+        UpdateStatus();
     }
 
     // ---------------- status row ----------------
@@ -139,11 +150,15 @@ public partial class AutoClickerView : UserControl
             ArmedBox.IsChecked = clicker.Armed;
             ArmedBox.Content = L.T($"Clicker bereit (Hotkey: {ClickerHotkey.Describe(clicker.Hotkey)})",
                                    $"Clicker ready (hotkey: {ClickerHotkey.Describe(clicker.Hotkey)})");
+            PatternsArmedBox.IsChecked = clicker.MousePatternsArmed;
+            PatternsArmedBox.Content = MousePatternUiRules.ArmedLabel(clicker);
         }
         finally { _restoring = false; }
 
-        PillText.Text = ClickerStateText.Pill(state);
-        PillText.SetResourceReference(TextBlock.ForegroundProperty, ClickerStatusRules.Tone(state) switch
+        // The helper also runs for the mouse patterns alone: the pill and Start speak for the clicker only.
+        var clickerSide = MousePatternUiRules.ClickerSide(state, clicker);
+        PillText.Text = ClickerStateText.Pill(clickerSide);
+        PillText.SetResourceReference(TextBlock.ForegroundProperty, ClickerStatusRules.Tone(clickerSide) switch
         {
             ClickerPillTone.Active => "SuccessBrush",
             ClickerPillTone.Danger => "DangerBrush",
@@ -151,7 +166,7 @@ public partial class AutoClickerView : UserControl
             _ => "MutedBrush"
         });
 
-        var button = ClickerStatusRules.StartButton(state, ClickerConflicts.CanStart(conflicts));
+        var button = ClickerStatusRules.StartButton(clickerSide, ClickerConflicts.CanStart(conflicts));
         StartStopBtn.Content = button.IsStop ? L.T("Stopp", "Stop") : L.T("Start", "Start");
         StartStopBtn.IsEnabled = button.Enabled;
         StartStopBtn.ToolTip = clicker.Armed ? null : L.T("Zuerst \"Clicker bereit\" einschalten.", "Switch \"Clicker ready\" on first.");
@@ -164,6 +179,15 @@ public partial class AutoClickerView : UserControl
             line.SetResourceReference(TextBlock.ForegroundProperty, conflict.BlocksStart ? "DangerBrush" : "MutedBrush");
             ConflictRows.Children.Add(line);
         }
+        if (MousePatternUiRules.WarningSummary(PatternsPanel.WarningTotal) is { } summary)
+        {
+            var line = new TextBlock { Text = summary, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0), Cursor = Cursors.Hand };
+            line.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+            line.MouseLeftButtonUp += (_, _) => TabPatterns.IsChecked = true;   // the details are under the cards
+            ConflictRows.Children.Add(line);
+        }
+
+        PatternsPanel.ShowState(state);
     }
 
     private void SetArmed(bool armed)
@@ -172,6 +196,16 @@ public partial class AutoClickerView : UserControl
         if (_restoring || host?.Settings.Current.AutoClicker?.Clicker is not { } clicker || clicker.Armed == armed) return;
         clicker.Armed = armed;
         host.Settings.Save();   // the controller follows the switch from SettingsChanged
+        UpdateStatus();
+    }
+
+    /// <summary>"Mausbewegung bereit": the helper runs while either switch is on (<see cref="MousePatternRules.HostWanted"/>).</summary>
+    private void SetPatternsArmed(bool armed)
+    {
+        var host = Host;
+        if (_restoring || host?.Settings.Current.AutoClicker?.Clicker is not { } clicker || clicker.MousePatternsArmed == armed) return;
+        clicker.MousePatternsArmed = armed;
+        host.Settings.Save();
         UpdateStatus();
     }
 
@@ -190,9 +224,9 @@ public partial class AutoClickerView : UserControl
 
     // ---------------- sub-tabs ----------------
 
-    private RadioButton[] Tabs => new[] { TabSimple, TabAdvanced, TabZones, TabPoints, TabPresets };
+    private RadioButton[] Tabs => new[] { TabSimple, TabAdvanced, TabZones, TabPoints, TabPatterns, TabPresets };
 
-    private UIElement[] Pages => new UIElement[] { SimplePanel, AdvancedPanel, ZonesPanel, PointsPanel, PresetsPanel };
+    private UIElement[] Pages => new UIElement[] { SimplePanel, AdvancedPanel, ZonesPanel, PointsPanel, PatternsPanel, PresetsPanel };
 
     private void RestoreSubTab()
     {

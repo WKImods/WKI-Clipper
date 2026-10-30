@@ -14,7 +14,8 @@ namespace WKI_Clipper.Views.AutoClicker;
 /// The hotkey capture control of the AutoClicker (free-hotkeys design section 4): click, then press the combo - any key incl. Esc,
 /// Backspace, Print Screen, F10, media keys and modifiers alone, any mouse button incl. the left one and the wheel while the cursor is
 /// over the field. The combo is taken when everything is released (a wheel notch at once). <see cref="CancelButton"/>, a click beside
-/// the field and focus loss cancel; <see cref="ClearButton"/> clears (a required hotkey goes back to the default Ctrl+Alt+Y).
+/// the field and focus loss cancel; <see cref="ClearButton"/> clears (a required hotkey goes back to its default: Ctrl+Alt+Y, or the one
+/// passed in, like the patterns' record hotkey Ctrl+Alt+R).
 /// In single-key mode (the keyboard output key) the first key press is taken, Esc cancels and mouse buttons end the capture.
 /// Keys are read from the window's own messages, before WPF translates them (WPF hides Print Screen's key-down, turns F10 and Alt
 /// combos into Key.System, reports generic modifiers): the codes match what the helper's low-level hook reports. No global hook in the
@@ -27,6 +28,7 @@ public sealed class HotkeyCaptureBox : Button
 
     private readonly bool _required;
     private readonly bool _singleKey;
+    private readonly ClickerHotkey _default;
     private HotkeyRecorder? _recorder;
     private bool _singleCapture;
     private HashSet<int>? _singleDownAtStart;
@@ -54,10 +56,12 @@ public sealed class HotkeyCaptureBox : Button
 
     /// <param name="required">Clearing restores the default instead of leaving no hotkey.</param>
     /// <param name="singleKey">One keyboard key, no modifiers, no mouse buttons.</param>
-    public HotkeyCaptureBox(bool required, bool singleKey = false)
+    /// <param name="defaultHotkey">What clearing a required hotkey restores; null = the clicker's <see cref="ClickerHotkey.Default"/>.</param>
+    public HotkeyCaptureBox(bool required, bool singleKey = false, ClickerHotkey? defaultHotkey = null)
     {
         _required = required;
         _singleKey = singleKey;
+        _default = defaultHotkey?.Clone() ?? ClickerHotkey.Default();
         _threadFilter = OnThreadMessage;
         _windowHook = OnWindowMessage;
         // The theme styles exactly "Button" (an implicit style does not reach a subclass): take that look.
@@ -77,7 +81,7 @@ public sealed class HotkeyCaptureBox : Button
         {
             Content = required ? L.T("Standard", "Default") : L.T("Leeren", "Clear"),
             ToolTip = required
-                ? L.T($"Setzt den Hotkey auf {ClickerHotkey.Describe(ClickerHotkey.Default())} zurück.", $"Resets the hotkey to {ClickerHotkey.Describe(ClickerHotkey.Default())}.")
+                ? L.T($"Setzt den Hotkey auf {ClickerHotkey.Describe(_default)} zurück.", $"Resets the hotkey to {ClickerHotkey.Describe(_default)}.")
                 : L.T("Entfernt den Hotkey.", "Removes the hotkey."),
         };
         ClearButton.Click += (_, _) => Finish(RecorderResult.Cleared, null);
@@ -107,7 +111,7 @@ public sealed class HotkeyCaptureBox : Button
         else
             Content = ClickerHotkey.Describe(Hotkey);
         ClearButton.IsEnabled = _required
-            ? !ClickerHotkey.SameCombo(Hotkey, ClickerHotkey.Default())
+            ? !ClickerHotkey.SameCombo(Hotkey, _default)
             : Hotkey is { IsEmpty: false };
     }
 
@@ -217,7 +221,7 @@ public sealed class HotkeyCaptureBox : Button
                 Hotkey = captured;
                 break;
             case RecorderResult.Cleared:
-                Hotkey = _required ? ClickerHotkey.Default() : null;
+                Hotkey = _required ? _default.Clone() : null;
                 break;
             default:
                 return;
