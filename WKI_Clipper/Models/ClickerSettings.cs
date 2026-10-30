@@ -150,8 +150,20 @@ public sealed class ClickerSettings
     public const double DefaultClickSpeed = 25;
     public const long DefaultDurationMs = 40;
 
-    /// <summary>"Clicker bereit": the helper process runs only while this is true. Always false after the v12 migration.</summary>
+    /// <summary>
+    /// "Clicker bereit": the clicker's hotkey, start zones and start button work only while this is true. The helper process runs while
+    /// this or <see cref="MousePatternsArmed"/> is on (<see cref="MousePatternRules.HostWanted"/>). Always false after the v12 migration.
+    /// </summary>
     public bool Armed { get; set; }
+
+    /// <summary>"Mausbewegung bereit": pattern and record hotkeys work only while this is true. Off until the user switches it on.</summary>
+    public bool MousePatternsArmed { get; set; }
+
+    /// <summary>Starts and stops a pattern recording (mouse-patterns design 4.2). Always set; Strg+Alt+R by default.</summary>
+    public ClickerHotkey PatternRecordHotkey { get; set; } = MousePatternRules.DefaultRecordHotkey();
+
+    /// <summary>Recorded mouse patterns (metadata; the samples are files, see <see cref="MousePattern"/>), at most <see cref="MousePatternRules.MaxPatterns"/>.</summary>
+    public List<MousePattern> MousePatterns { get; set; } = new();
 
     public RateInputMode RateInputMode { get; set; } = RateInputMode.Rate;
     public double ClickSpeed { get; set; } = DefaultClickSpeed;
@@ -180,7 +192,7 @@ public sealed class ClickerSettings
     public bool StrictModifiers { get; set; }
 
     /// <summary>
-    /// The hotkey boxes (start and master hotkey) record left and right modifiers apart (LCtrl instead of Ctrl, AltGr as LCtrl+RAlt).
+    /// The hotkey boxes (start, master, record and pattern hotkeys) record left and right modifiers apart (LCtrl instead of Ctrl, AltGr as LCtrl+RAlt).
     /// null = not chosen yet: follows the saved hotkeys (see <c>HotkeyRecorder.RecordsSided</c>).
     /// </summary>
     public bool? SidedModifiers { get; set; }

@@ -123,7 +123,8 @@ public sealed class GamingUtilitiesTests
         });
 
         Assert.Equal(new[] { "Einfach", "Erweitert", "Zonen & Schutz", "Klickpunkte", "Presets" }, r.tabs.Select(t => t.Text));
-        Assert.Equal(WKI_Clipper.Services.AutoClicker.ClickerSettingsRules.SubTabs, r.tabs.Select(t => t.Key));
+        // "patterns" is a known key already; its tab arrives with the mouse-patterns UI (plan task 7), which updates this test.
+        Assert.Equal(WKI_Clipper.Services.AutoClicker.ClickerSettingsRules.SubTabs.Where(k => k != "patterns"), r.tabs.Select(t => t.Key));
         Assert.Equal(5, r.Count);
     }
 

@@ -37,7 +37,7 @@ public static class ClickerSettingsRules
     /// The keys of the sub-tab strip of the AutoClicker tab (design section 9). A key that is not here (such as a sub-tab removed
     /// before release) falls back to the first one when the settings are normalized.
     /// </summary>
-    public static readonly IReadOnlyList<string> SubTabs = new[] { "simple", "advanced", "zones", "points", "presets" };
+    public static readonly IReadOnlyList<string> SubTabs = new[] { "simple", "advanced", "zones", "points", "patterns", "presets" };
 
     /// <summary>Highest "n per unit" the UI may offer: 500, or 1000 with the extended limit; with double click never more than 10 per second.</summary>
     public static double MaxSpeed(bool extendedLimit, bool doubleClick, RateUnit unit)
@@ -92,6 +92,7 @@ public static class ClickerSettingsRules
         s.Whitelist = AutoClickerBlacklist.Normalize(s.Whitelist);
         s.Presets = NormalizePresets(s.Presets);
         s.Stats = NormalizeStats(s.Stats);
+        MousePatternRules.Normalize(s);
 
         s.SubTab = SubTabs.FirstOrDefault(t => string.Equals(t, s.SubTab?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? SubTabs[0];
         return s;
@@ -133,14 +134,14 @@ public static class ClickerSettingsRules
         return required ? ClickerHotkey.Default() : null;
     }
 
-    /// <summary>Trimmed, control characters removed, at most 40 characters; "Preset" when nothing is left.</summary>
-    public static string CleanName(string? name)
+    /// <summary>Trimmed, control characters removed, at most 40 characters; <paramref name="fallback"/> when nothing is left.</summary>
+    public static string CleanName(string? name, string fallback = "Preset")
     {
         var sb = new StringBuilder();
         foreach (var ch in name ?? "")
             sb.Append(char.IsControl(ch) ? ' ' : ch);
         var clean = Truncate(sb.ToString().Trim(), MaxNameLength);
-        return clean.Length == 0 ? "Preset" : clean;
+        return clean.Length == 0 ? fallback : clean;
     }
 
     /// <summary>The name, or "name (2)", "name (3)" ... when taken (case-insensitive); the result stays within 40 characters and is added to <paramref name="taken"/>.</summary>

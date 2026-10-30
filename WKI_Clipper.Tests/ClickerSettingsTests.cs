@@ -153,6 +153,14 @@ public sealed class ClickerSettingsTests : IDisposable
         c.Whitelist.Add(new BlacklistEntry { ExeName = "notepad.exe", DisplayName = "Notepad" });
         c.Presets.Add(new ClickerPreset { Name = "mine", ClickSpeed = 7 });
         c.Stats.AddRun(new RunRecord { StartUtc = new DateTime(2026, 10, 28, 12, 0, 0, DateTimeKind.Utc), Seconds = 5.5, Clicks = 100, StopReason = "Hotkey" });
+        c.MousePatternsArmed = true;
+        c.PatternRecordHotkey = new ClickerHotkey { Modifiers = ClickerModifiers.Alt, Keys = { 0x7A } };
+        var patternId = Guid.NewGuid().ToString("N");
+        c.MousePatterns.Add(new MousePattern
+        {
+            Id = patternId, Name = "Kreis", Hotkey = new ClickerHotkey { Keys = { ClickerVk.LButton } }, Active = false, Mode = ActivationMode.Toggle,
+            Repeat = true, Speed = 2.5, Replay = PatternReplay.Raw, Program = "skate.exe", OnlyInProgram = true, DurationMs = 2400.5, Revision = 3
+        });
         first.Save();
 
         var loaded = new SettingsService(_dir).Load().AutoClicker.Clicker;
@@ -176,6 +184,24 @@ public sealed class ClickerSettingsTests : IDisposable
         Assert.Equal(1, loaded.Stats.Sessions);
         Assert.Equal(100, loaded.Stats.TotalClicks);
         Assert.Equal("Hotkey", Assert.Single(loaded.Stats.LastRuns).StopReason);
+        Assert.True(loaded.MousePatternsArmed);
+        Assert.Equal((ClickerModifiers.Alt, 0x7A), (loaded.PatternRecordHotkey.Modifiers, Assert.Single(loaded.PatternRecordHotkey.Keys)));
+        var mp = Assert.Single(loaded.MousePatterns);
+        Assert.Equal((patternId, "Kreis", false, ActivationMode.Toggle, true, 2.5, PatternReplay.Raw),
+            (mp.Id, mp.Name, mp.Active, mp.Mode, mp.Repeat, mp.Speed, mp.Replay));
+        Assert.Equal(("skate.exe", true, 2400.5, 3), (mp.Program, mp.OnlyInProgram, mp.DurationMs, mp.Revision));
+        Assert.Equal(new[] { ClickerVk.LButton }, mp.Hotkey!.Keys);
+    }
+
+    [Fact]
+    public void Pattern_enums_are_written_as_text_and_samples_never_reach_the_settings()
+    {
+        var c = new ClickerSettings();
+        c.MousePatterns.Add(new MousePattern { Id = Guid.NewGuid().ToString("N"), Name = "Kreis" });
+        var json = JsonSerializer.Serialize(c);
+        Assert.Contains("\"Replay\":\"Auto\"", json);
+        Assert.Contains("\"Mode\":\"Hold\"", json);
+        Assert.DoesNotContain("AtMs", json);
     }
 
     [Fact]
@@ -268,6 +294,9 @@ public sealed class ClickerSettingsTests : IDisposable
         Assert.Equal(0, c.Stats.Sessions);
         Assert.True(c.ShowActiveIndicator);
         Assert.Equal("simple", c.SubTab);
+        Assert.False(c.MousePatternsArmed);
+        Assert.True(ClickerHotkey.SameCombo(MousePatternRules.DefaultRecordHotkey(), c.PatternRecordHotkey));
+        Assert.Empty(c.MousePatterns);
     }
 
     [Fact]
@@ -602,7 +631,7 @@ public sealed class ClickerSettingsTests : IDisposable
     [Fact]
     public void A_null_stats_object_and_null_lists_are_replaced()
     {
-        var c = new ClickerSettings { Stats = null!, Zones = null!, ClickPoints = null!, Whitelist = null!, Presets = null! };
+        var c = new ClickerSettings { Stats = null!, Zones = null!, ClickPoints = null!, Whitelist = null!, Presets = null!, MousePatterns = null! };
         ClickerSettingsRules.Normalize(c);
         Assert.NotNull(c.Stats);
         Assert.Empty(c.Stats.LastRuns);
@@ -610,6 +639,7 @@ public sealed class ClickerSettingsTests : IDisposable
         Assert.Empty(c.ClickPoints);
         Assert.Empty(c.Whitelist);
         Assert.Empty(c.Presets);
+        Assert.Empty(c.MousePatterns);
     }
 
     [Fact]
@@ -633,7 +663,8 @@ public sealed class ClickerSettingsTests : IDisposable
     [InlineData("advanced", "advanced")]
     [InlineData("  ZONES ", "zones")]
     [InlineData("presets", "presets")]
-    [InlineData("legacy", "simple")]        // a sub-tab that no longer exists
+    [InlineData("patterns", "patterns")]
+    [InlineData("legacy", "simple")]       // a sub-tab that no longer exists
     [InlineData("LEGACY", "simple")]
     [InlineData("", "simple")]
     [InlineData(null, "simple")]

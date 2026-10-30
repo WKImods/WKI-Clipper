@@ -59,10 +59,12 @@ public sealed class HotkeyRecorder
     }
 
     /// <summary>
-    /// Whether the hotkey boxes record left and right apart: the stored choice, else whether a saved hotkey already has a sided
-    /// modifier (settings from before the choice was stored), so the next recording does not quietly turn generic.
+    /// Whether the hotkey boxes record left and right apart: the stored choice, else whether a saved hotkey (start, master, record or a
+    /// pattern's) already has a sided modifier (settings from before the choice was stored), so the next recording does not quietly turn generic.
     /// </summary>
-    public static bool RecordsSided(ClickerSettings c) => c.SidedModifiers ?? (HasSidedModifier(c.Hotkey) || HasSidedModifier(c.MasterHotkey));
+    public static bool RecordsSided(ClickerSettings c)
+        => c.SidedModifiers ?? (HasSidedModifier(c.Hotkey) || HasSidedModifier(c.MasterHotkey) || HasSidedModifier(c.PatternRecordHotkey)
+                                || c.MousePatterns?.Any(p => HasSidedModifier(p?.Hotkey)) == true);
 
     private static bool HasSidedModifier(ClickerHotkey? hotkey)
         => hotkey is not null && ModifierFamily.Families.Any(f => (hotkey.Modifiers & (f.Left | f.Right)) != 0);

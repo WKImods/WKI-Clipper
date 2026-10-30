@@ -38,6 +38,9 @@ public enum ClickerConflictKind
     MasterHasWheel
 }
 
+/// <summary>The kinds of allowed-but-risky hotkey that <see cref="ClickerConflicts.HotkeyRisks"/> reports.</summary>
+internal enum HotkeyRisk { BareMouseButton, ModifierOnly, Escape, Wheel }
+
 /// <summary>A problem with the current clicker setup. <see cref="BlocksStart"/> conflicts keep the clicker from starting; the rest are warnings.</summary>
 public sealed record ClickerConflict(ClickerConflictKind Kind, bool BlocksStart, string Message);
 
@@ -72,13 +75,9 @@ public static class ClickerConflicts
         AddHotkeyRisks(result, c.MasterHotkey, master: true);
 
         if (ClipperOwner(settings, c.Hotkey, c.StrictModifiers) is { } owner)
-            result.Add(new(ClickerConflictKind.HotkeyIsClipperHotkey, false,
-                L.T($"Der Hotkey ist schon belegt: {owner}. Beide Aktionen würden gleichzeitig ausgelöst.",
-                    $"The hotkey is already used by {owner}. Both actions would fire together.")));
+            result.Add(new(ClickerConflictKind.HotkeyIsClipperHotkey, false, ClipperClashText(owner, master: false)));
         if (ClipperOwner(settings, c.MasterHotkey, c.StrictModifiers) is { } masterOwner)
-            result.Add(new(ClickerConflictKind.MasterIsClipperHotkey, false,
-                L.T($"Der Master-Hotkey ist schon belegt: {masterOwner}. Beide Aktionen würden gleichzeitig ausgelöst.",
-                    $"The master hotkey is already used by {masterOwner}. Both actions would fire together.")));
+            result.Add(new(ClickerConflictKind.MasterIsClipperHotkey, false, ClipperClashText(masterOwner, master: true)));
 
         if (ClickerHotkey.Overlaps(c.Hotkey, c.MasterHotkey, c.StrictModifiers))
             result.Add(new(ClickerConflictKind.HotkeyIsMasterHotkey, false,
@@ -142,15 +141,34 @@ public static class ClickerConflicts
     /// <summary>Warnings for hotkeys that are allowed but fire more often than the user may expect.</summary>
     private static void AddHotkeyRisks(List<ClickerConflict> result, ClickerHotkey? hotkey, bool master)
     {
-        if (hotkey is null || hotkey.IsEmpty) return;
-        string de = master ? "Der Master-Hotkey" : "Der Hotkey";
-        string en = master ? "The master hotkey" : "The hotkey";
+        var risks = master ? HotkeyRisks(hotkey, "Der Master-Hotkey", "The master hotkey") : HotkeyRisks(hotkey, "Der Hotkey", "The hotkey");
+        foreach (var (risk, message) in risks)
+        {
+            var kind = risk switch
+            {
+                HotkeyRisk.BareMouseButton => master ? ClickerConflictKind.MasterIsBareMouseButton : ClickerConflictKind.HotkeyIsBareMouseButton,
+                HotkeyRisk.ModifierOnly => master ? ClickerConflictKind.MasterIsModifierOnly : ClickerConflictKind.HotkeyIsModifierOnly,
+                HotkeyRisk.Escape => master ? ClickerConflictKind.MasterHasEscape : ClickerConflictKind.HotkeyHasEscape,
+                _ => master ? ClickerConflictKind.MasterHasWheel : ClickerConflictKind.HotkeyHasWheel
+            };
+            result.Add(new(kind, false, message));
+        }
+    }
+
+    /// <summary>
+    /// The risk texts of one hotkey (bare left/right mouse button, modifiers only, Esc, wheel), in that order; <paramref name="de"/> and
+    /// <paramref name="en"/> name the hotkey as the subject of the sentence ("Der Hotkey"). Shared by the clicker and the mouse patterns.
+    /// </summary>
+    internal static List<(HotkeyRisk Risk, string Message)> HotkeyRisks(ClickerHotkey? hotkey, string de, string en)
+    {
+        var result = new List<(HotkeyRisk, string)>();
+        if (hotkey is null || hotkey.IsEmpty) return result;
         var keys = hotkey.Keys ?? new List<int>();
 
         if (hotkey.Modifiers == ClickerModifiers.None && keys is [ClickerVk.LButton or ClickerVk.RButton])
         {
             bool left = keys[0] == ClickerVk.LButton;
-            result.Add(new(master ? ClickerConflictKind.MasterIsBareMouseButton : ClickerConflictKind.HotkeyIsBareMouseButton, false, left
+            result.Add((HotkeyRisk.BareMouseButton, left
                 ? L.T($"{de} ist die linke Maustaste allein: jeder Linksklick löst ihn aus, auch in Menüs und im Spiel (nicht über dem Clipper).",
                     $"{en} is the left mouse button alone: every left click triggers it, in menus and games too (not over the clipper).")
                 : L.T($"{de} ist die rechte Maustaste allein: jeder Rechtsklick löst ihn aus, auch in Menüs und im Spiel (nicht über dem Clipper).",
@@ -159,19 +177,27 @@ public static class ClickerConflicts
         if (hotkey.IsModifierOnly)
         {
             var combo = hotkey.ToDisplayString();
-            result.Add(new(master ? ClickerConflictKind.MasterIsModifierOnly : ClickerConflictKind.HotkeyIsModifierOnly, false,
+            result.Add((HotkeyRisk.ModifierOnly,
                 L.T($"{de} besteht nur aus Modifikatortasten ({combo}): jede Tastenkombination damit, z. B. Strg+C, löst ihn mit aus.",
                     $"{en} is modifiers only ({combo}): every shortcut that uses them, e.g. Ctrl+C, triggers it too.")));
         }
         if (keys.Contains(ClickerVk.Escape))
-            result.Add(new(master ? ClickerConflictKind.MasterHasEscape : ClickerConflictKind.HotkeyHasEscape, false,
+            result.Add((HotkeyRisk.Escape,
                 L.T($"{de} enthält Esc: Esc schließt auch Menüs und Dialoge, und jeder solche Druck löst ihn mit aus.",
                     $"{en} contains Esc: Esc also closes menus and dialogs, and every such press triggers it too.")));
         if (keys.Any(ClickerVk.IsWheel))
-            result.Add(new(master ? ClickerConflictKind.MasterHasWheel : ClickerConflictKind.HotkeyHasWheel, false,
+            result.Add((HotkeyRisk.Wheel,
                 L.T($"{de} nutzt das Mausrad: jedes Scrollen löst ihn aus. Eine Scroll-Bewegung zählt als ein Druck, gehalten solange du weiterscrollst.",
                     $"{en} uses the mouse wheel: every scroll triggers it. One scroll gesture counts as one press, held while you keep scrolling.")));
+        return result;
     }
+
+    /// <summary>The warning for a hotkey that a clipper binding (<see cref="ClipperOwner"/>) fires together with.</summary>
+    internal static string ClipperClashText(string owner, bool master) => master
+        ? L.T($"Der Master-Hotkey ist schon belegt: {owner}. Beide Aktionen würden gleichzeitig ausgelöst.",
+            $"The master hotkey is already used by {owner}. Both actions would fire together.")
+        : L.T($"Der Hotkey ist schon belegt: {owner}. Beide Aktionen würden gleichzeitig ausgelöst.",
+            $"The hotkey is already used by {owner}. Both actions would fire together.");
 
     /// <summary>
     /// The clipper binding (action hotkeys, stream-deck tiles, shortcut-bar entries - everything <c>HotkeyService.RegisterAll</c>
