@@ -12,7 +12,8 @@ using WinForms = System.Windows.Forms;
 namespace WKI_Clipper.Views.AutoClicker;
 
 /// <summary>
-/// The small "AutoClicker · 25 cps" label while the clicker runs: topmost, click-through, never focusable and never in Alt-Tab.
+/// The small "AutoClicker · 25 cps" label while the clicker runs, a mouse pattern plays or one is recorded ("Mausbewegung · Kreis",
+/// "Aufnahme läuft · Strg+Alt+R beendet"): topmost, click-through, never focusable and never in Alt-Tab.
 /// It is marked WDA_EXCLUDEFROMCAPTURE like the crosshair and the recording badge, so it stays out of clips, stream and screenshots.
 /// <see cref="TryShow"/> refuses to show it when that exclusion cannot be set - a label that might end up in a clip is worse than none.
 /// Colours come from the theme's palette keys, so a theme switch follows.
@@ -109,9 +110,10 @@ public sealed class ClickerIndicatorWindow : Window
 }
 
 /// <summary>
-/// Keeps <see cref="ClickerIndicatorWindow"/> in step with the clicker: up while it runs (and the user wants the label, and the capture
-/// path can hide it - <see cref="ClickerIndicatorRules"/>), hidden otherwise. It only reads the capture settings; it never asks the
-/// buffer to restart. Created and used on the UI thread; the controller's events are marshalled here.
+/// Keeps <see cref="ClickerIndicatorWindow"/> in step with the clicker and the mouse patterns: up while one of the label's parts applies
+/// and the capture path can hide it (<see cref="ClickerIndicatorRules"/>), hidden otherwise. A settings save refreshes it too (pattern
+/// names, the record hotkey). It only reads the capture settings; it never asks the buffer to restart. Created and used on the UI
+/// thread; the controller's events are marshalled here.
 /// </summary>
 public sealed class ClickerIndicatorPresenter : IDisposable
 {
@@ -181,7 +183,7 @@ public sealed class ClickerIndicatorPresenter : IDisposable
             }
 
             _window ??= new ClickerIndicatorWindow();
-            _window.Text = ClickerIndicatorRules.Text(state.Cps);
+            _window.Text = ClickerIndicatorRules.Text(state, settings);
             if (!_window.IsVisible)
             {
                 var screen = WinForms.Screen.FromPoint(WinForms.Cursor.Position);

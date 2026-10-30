@@ -221,6 +221,90 @@ public sealed class ClickerPresentationTests
         Assert.False(ClickerIndicatorRules.ShouldShow(running, WithAmf()));
     }
 
+    // ---- mouse patterns on the label ----
+
+    private static readonly string IdA = new('a', 32);
+    private static readonly string IdB = new('b', 32);
+    private static readonly string IdC = new('c', 32);
+
+    private static AppSettings WithPatterns(AppSettings? settings = null)
+    {
+        var s = settings ?? new AppSettings();
+        s.AutoClicker.Clicker.MousePatterns.Add(new MousePattern { Id = IdA, Name = "Kreis" });
+        s.AutoClicker.Clicker.MousePatterns.Add(new MousePattern { Id = IdB, Name = "Welle" });
+        return s;
+    }
+
+    [Fact]
+    public void Indicator_shows_recording_even_with_indicator_option_off()
+    {
+        var settings = WithPatterns();
+        settings.AutoClicker.Clicker.ShowActiveIndicator = false;
+        var recording = State(ClickerPhase.Ready, s => s with { Recording = true });
+
+        Assert.True(ClickerIndicatorRules.ShouldShow(recording, settings));
+        Assert.Equal("Aufnahme läuft · Strg+Alt+R beendet", ClickerIndicatorRules.Text(recording, settings));
+
+        // A playing pattern and a running clicker follow the option.
+        Assert.False(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Running, s => s with { Playing = IdA }), settings));
+        settings.AutoClicker.Clicker.ShowActiveIndicator = true;
+        Assert.True(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Ready, s => s with { Playing = IdA }), settings));
+        Assert.False(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Ready), settings));
+    }
+
+    [Fact]
+    public void Indicator_text_joins_clicker_and_pattern()
+    {
+        var settings = WithPatterns();
+
+        Assert.Equal("AutoClicker · 25 cps  ·  Mausbewegung · Kreis +1",
+            ClickerIndicatorRules.Text(State(ClickerPhase.Running, s => s with { Cps = 25, Playing = IdA + "," + IdB }), settings));
+        Assert.Equal("Mausbewegung · Welle", ClickerIndicatorRules.Text(State(ClickerPhase.Ready, s => s with { Playing = IdB.ToUpperInvariant() }), settings));
+        Assert.Equal("AutoClicker · 25 cps", ClickerIndicatorRules.Text(State(ClickerPhase.Running, s => s with { Cps = 25 }), settings));
+
+        // A pattern deleted meanwhile has no name: the next one names the label, or none at all.
+        Assert.Equal("Mausbewegung · Welle +1", ClickerIndicatorRules.Text(State(ClickerPhase.Ready, s => s with { Playing = IdC + "," + IdB }), settings));
+        Assert.Equal("Mausbewegung", ClickerIndicatorRules.Text(State(ClickerPhase.Ready, s => s with { Playing = IdC }), settings));
+
+        settings.AutoClicker.Clicker.PatternRecordHotkey = new ClickerHotkey { Keys = { ClickerVk.XButton1 } };
+        Assert.Equal("AutoClicker · 3 cps  ·  Aufnahme läuft · Maus 4 beendet",
+            ClickerIndicatorRules.Text(State(ClickerPhase.Running, s => s with { Cps = 3, Recording = true }), settings));
+    }
+
+    [Fact]
+    public void Indicator_hidden_under_amf_capture()
+    {
+        var amf = WithPatterns(WithAmf());
+        amf.AutoClicker.Clicker.ShowActiveIndicator = true;
+
+        Assert.False(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Ready, s => s with { Recording = true }), amf));
+        Assert.False(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Ready, s => s with { Playing = IdA }), amf));
+        Assert.True(ClickerIndicatorRules.ShouldShow(State(ClickerPhase.Ready, s => s with { Recording = true }), WithPatterns()));
+    }
+
+    // ---- recording toasts ----
+
+    [Theory]
+    [InlineData("Ok", "Muster 3", 2.4, "'Muster 3' aufgenommen (2,4 s)", false)]
+    [InlineData("Ok", "Kreis", 0.04, "'Kreis' aufgenommen (0 s)", false)]
+    [InlineData("Cut", "Kreis", 60, "'Kreis' aufgenommen (60 s) - nach 60 s abgeschnitten", false)]
+    [InlineData("Empty", null, 0, "Keine Bewegung aufgenommen", true)]
+    [InlineData("Cancelled", null, 0, "Aufnahme verworfen", true)]
+    [InlineData(PatternRecordedInfo.Full, null, 0, "Aufnahme verworfen - es gibt schon 50 Muster", true)]
+    [InlineData(PatternRecordedInfo.Failed, null, 0, "Aufnahme konnte nicht gespeichert werden", true)]
+    public void A_finished_recording_gets_a_toast(string outcome, string? name, double seconds, string body, bool warning)
+    {
+        var n = ClickerNotices.ForPatternRecorded(new PatternRecordedInfo(outcome, name, seconds))!;
+
+        Assert.Equal("Mausbewegung", n.Title);
+        Assert.Equal(body, n.Body);
+        Assert.Equal(warning, n.IsWarning);
+    }
+
+    [Fact]
+    public void An_unknown_recording_outcome_gets_no_toast()
+        => Assert.Null(ClickerNotices.ForPatternRecorded(new PatternRecordedInfo("FromTheFuture", null, 0)));
+
     [Fact]
     public void The_label_never_changes_what_the_capture_path_must_honour()
     {
@@ -286,6 +370,25 @@ public sealed class ClickerPresentationEnglishTests
             Assert.Equal("An administrator window (x.exe) blocks the clicks", ClickerStateText.ElevatedNotice("x.exe"));
             Assert.Equal("AutoClicker · 2.5 cps", ClickerIndicatorRules.Text(2.5));
             Assert.Equal("Ready · master switch off", ClickerStateText.Pill(ClickerState.Off with { Phase = ClickerPhase.Ready, MasterAllowed = false }));
+        }
+    }
+
+    [Fact]
+    public void The_pattern_texts_speak_english()
+    {
+        using (TestLanguage.English())
+        {
+            var settings = new AppSettings();
+            settings.AutoClicker.Clicker.MousePatterns.Add(new MousePattern { Id = new string('a', 32), Name = "Kreis" });
+            var playing = ClickerState.Off with { Phase = ClickerPhase.Ready, Playing = new string('a', 32) };
+            var recording = ClickerState.Off with { Phase = ClickerPhase.Ready, Recording = true };
+
+            Assert.Equal("Mouse pattern · Kreis", ClickerIndicatorRules.Text(playing, settings));
+            Assert.Equal("Recording · Ctrl+Alt+R stops it", ClickerIndicatorRules.Text(recording, settings));
+            var ok = ClickerNotices.ForPatternRecorded(new PatternRecordedInfo("Cut", "Pattern 3", 2.4))!;
+            Assert.Equal("Mouse patterns", ok.Title);
+            Assert.Equal("'Pattern 3' recorded (2.4 s) - cut off after 60 s", ok.Body);
+            Assert.Equal("No movement recorded", ClickerNotices.ForPatternRecorded(new PatternRecordedInfo("Empty", null, 0))!.Body);
         }
     }
 }

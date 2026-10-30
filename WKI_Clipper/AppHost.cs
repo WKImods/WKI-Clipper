@@ -186,7 +186,10 @@ public sealed class AppHost : IDisposable
     /// <summary>Locks the native clicker while a blacklisted game runs; "Blacklist ignorieren" lives here for the session.</summary>
     public AutoClickerGuard AutoClickerGuard { get; }
 
-    /// <summary>The native AutoClicker: keeps its helper process alive while "Clicker bereit" is on, mirrors its state, collects the statistics.</summary>
+    /// <summary>
+    /// The native AutoClicker: keeps its helper process alive while "Clicker bereit" or "Mausbewegung bereit" is on, mirrors its state,
+    /// collects the statistics and the recorded mouse patterns.
+    /// </summary>
     public ClickerController Clicker { get; }
 
     /// <summary>
@@ -299,9 +302,10 @@ public sealed class AppHost : IDisposable
         // A hotkey of an entry changed (editor, prune): the global registration follows. Other changes (icons, order) do not touch it.
         Shortcuts.ItemsChanged += (_, _) => RefreshShortcutHotkeys();
 
-        // The statistics are written on the UI thread, which owns the settings (the controller reads the pipe on a pool thread).
+        // The statistics and recorded mouse patterns are written on the UI thread, which owns the settings (the controller reads the
+        // pipe on a pool thread). The patterns' samples live next to settings.json, one file each.
         Clicker = new ClickerController(() => Settings.Current.AutoClicker.Clicker, Settings.Save, new ClickerHostLauncher(),
-            post: work => RunOnUiThread(work));
+            new MousePatternStore(Settings.AppDataDir), post: work => RunOnUiThread(work));
         Settings.SettingsChanged += (_, _) => Clicker.OnSettingsChanged();
         // Only a lock, a click limit and a time limit are worth a toast; every other end shows in the state pill.
         Clicker.RunFinished += run =>
@@ -309,9 +313,15 @@ public sealed class AppHost : IDisposable
             if (ClickerNotices.ForRunEnd(run) is { } notice)
                 ToastService.Show(notice.IsWarning ? ToastKind.Warning : ToastKind.Info, notice.Title, notice.Body, durationSeconds: 6);
         };
+        // Every recording gets one: the label may be hidden (AMD's capture), and a discarded one must not pass silently.
+        Clicker.PatternRecorded += recorded =>
+        {
+            if (ClickerNotices.ForPatternRecorded(recorded) is { } notice)
+                ToastService.Show(notice.IsWarning ? ToastKind.Warning : ToastKind.Info, notice.Title, notice.Body, durationSeconds: 6);
+        };
 
         AutoClickerGuard = new AutoClickerGuard(() => Settings.Current.AutoClicker, new SystemProcessProbe(), Clicker);
-        // Switching "Clicker bereit" on while a blacklisted game runs: the guard looks again at once (it only polls for the clicker while it is on).
+        // Switching the helper on (either switch) while a blacklisted game runs: the guard looks again at once (it only polls while the helper is wanted).
         Clicker.ArmedChanged += AutoClickerGuard.OnForegroundChanged;
 
         WireCaptureExclusivity();

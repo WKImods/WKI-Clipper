@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -35,10 +36,13 @@ public interface IClickerHostLauncher
     void LaunchRelease(ClickerRelease release);
 }
 
-/// <summary>What the guard needs from the native clicker: whether it is switched on, and the lock for a blacklisted program.</summary>
+/// <summary>What the guard needs from the native clicker: whether its helper is wanted, and the lock for a blacklisted program.</summary>
 public interface IClickerLock
 {
-    /// <summary>"Clicker bereit" is on (the helper process runs or is about to).</summary>
+    /// <summary>
+    /// The helper process is wanted: "Clicker bereit" or "Mausbewegung bereit" is on (<see cref="MousePatternRules.HostWanted"/>), so
+    /// it runs or is about to. The lock stops the clicker and the mouse patterns alike.
+    /// </summary>
     bool Armed { get; }
 
     /// <summary>A blacklisted program runs: a running clicker stops and starts are refused until <see cref="Unlock"/>. Idempotent.</summary>
@@ -47,10 +51,10 @@ public interface IClickerLock
     void Unlock();
 }
 
-/// <summary>Where the controller stands, as the status row shows it.</summary>
+/// <summary>Where the controller stands, as the status row shows it. The phase is the helper's: it also runs for the mouse patterns alone.</summary>
 public enum ClickerPhase
 {
-    /// <summary>"Clicker bereit" is off; no helper process.</summary>
+    /// <summary>"Clicker bereit" and "Mausbewegung bereit" are off; no helper process.</summary>
     Off,
     /// <summary>The helper process is starting or restarting.</summary>
     Starting,
@@ -67,9 +71,13 @@ public enum ClickerFault { None, StartFailed, HandshakeFailed, Crashed, LockNotC
 /// What the UI mirrors. <see cref="LastStop"/> is the reason of the last run's end while no run is going (null before the first run);
 /// the text is made at display time (<see cref="ClickerStateText"/>), so a language switch needs no new state. <see cref="MasterAllowed"/>
 /// is false while a master hotkey is set and its switch is off: every hotkey press and Start is refused then.
+/// The mouse patterns (mouse-patterns design 4.6) add <see cref="PatternsArmed"/> ("Mausbewegung bereit") and, copied from the helper,
+/// <see cref="Recording"/>, <see cref="Playing"/> (the ids of the patterns playing, comma-joined; null when none) and
+/// <see cref="PatternsBlockedBy"/> (exe file name of the elevated window that refused the pattern moves).
 /// </summary>
 public sealed record ClickerState(ClickerPhase Phase, bool Locked, string? LockedBy, long Clicks, double Cps, long ElapsedMs,
-    string? BlockedByElevated, StopReason? LastStop, string? LastStopDetail, ClickerFault Fault, bool MasterAllowed = true)
+    string? BlockedByElevated, StopReason? LastStop, string? LastStopDetail, ClickerFault Fault, bool MasterAllowed = true,
+    bool PatternsArmed = false, bool Recording = false, string? Playing = null, string? PatternsBlockedBy = null)
 {
     public static readonly ClickerState Off = new(ClickerPhase.Off, false, null, 0, 0, 0, null, null, null, ClickerFault.None);
 
@@ -79,6 +87,20 @@ public sealed record ClickerState(ClickerPhase Phase, bool Locked, string? Locke
 /// <summary>A run that ended, as the controller saw it. <paramref name="LockedBy"/> is the display name of the lock holder at that moment.</summary>
 public sealed record ClickerRunInfo(RunRecord Record, StopReason Reason, string? Detail, string? LockedBy);
 
+/// <summary>
+/// A pattern recording ended, as the clipper took it in. <paramref name="Outcome"/> is a <see cref="PatternRecordingOutcome"/> name
+/// (Ok, Cut, Empty, Cancelled) or one of the clipper's own <see cref="Full"/> and <see cref="Failed"/>; only Ok and Cut saved a pattern.
+/// <paramref name="Name"/> is the saved pattern's name, <paramref name="Seconds"/> the length of its motion.
+/// </summary>
+public sealed record PatternRecordedInfo(string Outcome, string? Name, double Seconds)
+{
+    /// <summary>A new recording and no target, but the list already holds <see cref="MousePatternRules.MaxPatterns"/> patterns.</summary>
+    public const string Full = "Full";
+
+    /// <summary>The samples were unreadable or could not be written: nothing was saved.</summary>
+    public const string Failed = "Failed";
+}
+
 /// <summary>The waiting times of the controller. The timers run on the controller's <see cref="TimeProvider"/>, so tests drive them by hand.</summary>
 public sealed record ClickerControllerTiming(TimeSpan HandshakeTimeout, TimeSpan ConfigDebounce, TimeSpan ShutdownWait, TimeSpan LockConfirm)
 {
@@ -86,24 +108,37 @@ public sealed record ClickerControllerTiming(TimeSpan HandshakeTimeout, TimeSpan
 }
 
 /// <summary>
-/// The clipper's side of the AutoClicker (design section 7). While "Clicker bereit" (<see cref="ClickerSettings.Armed"/>) is on it
+/// The clipper's side of the AutoClicker (design section 7). While "Clicker bereit" (<see cref="ClickerSettings.Armed"/>) or
+/// "Mausbewegung bereit" (<see cref="ClickerSettings.MousePatternsArmed"/>) is on - <see cref="MousePatternRules.HostWanted"/> - it
 /// keeps one helper process alive: creates the pipe, starts the process, does the hello handshake, pushes the settings (debounced
 /// 200 ms), mirrors the helper's state, writes every finished run into the statistics and tells the helper about the lock (blacklist)
 /// and the pickers. An unexpected end of the helper is answered with one restart, then <see cref="ClickerPhase.Error"/> until the
 /// switch is turned off and on again (<see cref="Retry"/>). A helper that does not confirm a lock within a second is killed; its
 /// replacement starts locked.
+/// <para>
+/// Mouse patterns (mouse-patterns design 5.2): the samples live in <see cref="IMousePatternStore"/> and travel in their own messages,
+/// never inside the config: after the handshake's config one <see cref="PatternDataMessage"/> per pattern whose samples load, later
+/// the samples of every pattern whose <see cref="MousePattern.Revision"/> differs from the one this helper last got, right after the
+/// config that names it. A finished recording (<see cref="PatternRecordedMessage"/>) becomes a new pattern or replaces the motion of
+/// <see cref="RecordTarget"/>: samples written first, then the settings saved. A helper that ends while it records leaves nothing
+/// behind but a "Cancelled" <see cref="PatternRecorded"/>.
+/// </para>
 ///
-/// Threads: everything may be called from any thread; <see cref="StateChanged"/>, <see cref="RunFinished"/> and
-/// <see cref="ArmedChanged"/> are raised on pool threads (the view marshals itself). Nothing here blocks on the pipe except
-/// <see cref="Dispose"/>, which waits up to the shutdown time for the helper to say goodbye.
+/// Threads: everything may be called from any thread unless said otherwise; <see cref="StateChanged"/>, <see cref="RunFinished"/>
+/// and <see cref="ArmedChanged"/> are raised on pool threads (the view marshals itself), <see cref="PatternRecorded"/> on the settings'
+/// thread. Nothing here blocks on the pipe except <see cref="Dispose"/>, which waits up to the shutdown time for the helper to say goodbye.
 /// </summary>
 public sealed class ClickerController : IClickerLock, IDisposable
 {
     private const int MaxLockKills = 3;
 
+    /// <summary>Samples ready to go to the helper (<paramref name="Text"/> is <see cref="PatternCodec"/> text) for one revision of a pattern.</summary>
+    private sealed record PatternText(int Revision, string Text);
+
     private readonly Func<ClickerSettings> _settings;
     private readonly Action _save;
     private readonly IClickerHostLauncher _launcher;
+    private readonly IMousePatternStore _patternStore;
     private readonly Action<Action> _post;
     private readonly ClickerControllerTiming _timing;
     private readonly TimeProvider _time;
@@ -114,6 +149,11 @@ public sealed class ClickerController : IClickerLock, IDisposable
     private readonly ITimer _debounce;
     private readonly ITimer _lockTimer;
     private readonly List<RunRecord> _pendingRuns = new();
+    private readonly List<PatternRecordedMessage> _pendingRecordings = new();
+
+    // Samples loaded ahead (handshake) or taken from a recording, until they went to a helper (under the gate). Keyed by pattern id.
+    private readonly Dictionary<string, PatternText> _patternText = new(StringComparer.OrdinalIgnoreCase);
+    private volatile string? _recordTarget;
 
     private Session? _session;
     private int _nextSessionId;
@@ -133,15 +173,17 @@ public sealed class ClickerController : IClickerLock, IDisposable
     private ClickerState _state = ClickerState.Off;
 
     /// <param name="settings">The live section (read on every use, so edits apply at once).</param>
-    /// <param name="save">Saves the settings (after a run was added to the statistics).</param>
+    /// <param name="save">Saves the settings (after a run was added to the statistics, after a recording or a deleted pattern).</param>
+    /// <param name="patternStore">Where the samples of the mouse patterns live.</param>
     /// <param name="post">Runs a change of the settings on the thread that owns them (the UI thread); tests pass a direct call.</param>
     /// <param name="time">Clock of the handshake, debounce, lock and goodbye timers (tests pass a manual one). Only <see cref="Dispose"/> waits in real time.</param>
-    public ClickerController(Func<ClickerSettings> settings, Action save, IClickerHostLauncher launcher,
+    public ClickerController(Func<ClickerSettings> settings, Action save, IClickerHostLauncher launcher, IMousePatternStore patternStore,
         Action<Action>? post = null, ClickerControllerTiming? timing = null, int? parentPid = null, TimeProvider? time = null)
     {
         _settings = settings;
         _save = save;
         _launcher = launcher;
+        _patternStore = patternStore;
         _post = post ?? (work => work());
         _timing = timing ?? ClickerControllerTiming.Default;
         _time = time ?? TimeProvider.System;
@@ -161,15 +203,43 @@ public sealed class ClickerController : IClickerLock, IDisposable
     /// <summary>Raised for every run the helper reports, after it went into the statistics.</summary>
     public event Action<ClickerRunInfo>? RunFinished;
 
-    /// <summary>"Clicker bereit" was switched on or off (pool thread).</summary>
+    /// <summary>
+    /// A pattern recording ended (settings' thread): raised after an Ok/Cut result was saved, for a result that saved nothing, and with
+    /// "Cancelled" when the helper ended during a recording.
+    /// </summary>
+    public event Action<PatternRecordedInfo>? PatternRecorded;
+
+    /// <summary><see cref="Armed"/> flipped: "Clicker bereit" or "Mausbewegung bereit" was switched so that the helper is wanted now, or no longer (pool thread).</summary>
     public event Action? ArmedChanged;
 
-    /// <summary>"Clicker bereit" is on.</summary>
-    public bool Armed => _settings().Armed;
+    /// <summary>The helper is wanted: "Clicker bereit" or "Mausbewegung bereit" is on (<see cref="MousePatternRules.HostWanted"/>).</summary>
+    public bool Armed => MousePatternRules.HostWanted(_settings());
+
+    /// <summary>The pattern the next recording replaces ("Neu aufnehmen"); null = the next recording becomes a new pattern. Not saved.</summary>
+    public string? RecordTarget => _recordTarget;
+
+    /// <summary>Marks the pattern the next recording replaces, or clears the mark (null).</summary>
+    public void SetRecordTarget(string? patternId) => _recordTarget = string.IsNullOrWhiteSpace(patternId) ? null : patternId;
+
+    /// <summary>
+    /// Removes a pattern: out of the settings (saved, so the helper stops it with the next config), then its samples file. Call on the
+    /// settings' thread (the UI thread).
+    /// </summary>
+    public void DeletePattern(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        var patterns = _settings().MousePatterns;
+        int removed = patterns?.RemoveAll(p => p is not null && string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? 0;
+        if (string.Equals(_recordTarget, id, StringComparison.OrdinalIgnoreCase)) _recordTarget = null;
+        lock (_gate) _patternText.Remove(id);
+        if (removed > 0) _save();
+        // After the save: a crash in between leaves an unused file behind, never a pattern without samples.
+        _patternStore.Delete(id);
+    }
 
     // ---------------- lifecycle ----------------
 
-    /// <summary>The app is up: from now on the controller follows <see cref="ClickerSettings.Armed"/>. Starts the helper when it is already on.</summary>
+    /// <summary>The app is up: from now on the controller follows <see cref="Armed"/>. Starts the helper when it is already wanted.</summary>
     public void Initialize()
     {
         lock (_gate)
@@ -208,7 +278,7 @@ public sealed class ClickerController : IClickerLock, IDisposable
         if (armedChanged) RaiseArmedChanged();
     }
 
-    /// <summary>Starts a helper again after an error, without switching "Clicker bereit" off and on.</summary>
+    /// <summary>Starts a helper again after an error, without switching it off and on.</summary>
     public void Retry()
     {
         lock (_gate)
@@ -318,25 +388,29 @@ public sealed class ClickerController : IClickerLock, IDisposable
         }
 
         RunRecord[] pending;
+        PatternRecordedMessage[] recordings;
         lock (_gate)
         {
             pending = _pendingRuns.ToArray();
             _pendingRuns.Clear();
+            recordings = _pendingRecordings.ToArray();
+            _pendingRecordings.Clear();
             _disposing = false;
         }
         if (pending.Length > 0) ApplyRuns(pending);
+        foreach (var recording in recordings) ApplyRecording(recording);
         if (_launcher is IDisposable launcher) launcher.Dispose();
     }
 
     // ---------------- reconcile ----------------
 
     /// <summary>
-    /// Brings the helper in line with the switch (caller holds the gate): starts it when it should run and does not, shuts it down
-    /// when it runs and should not. Returns true when the switch flipped since the last call.
+    /// Brings the helper in line with the switches (caller holds the gate): starts it when it should run and does not, shuts it down
+    /// when it runs and should not. Returns true when <see cref="Armed"/> flipped since the last call.
     /// </summary>
     private bool ReconcileLocked()
     {
-        bool armed = _settings().Armed;
+        bool armed = MousePatternRules.HostWanted(_settings());
         bool flipped = armed != _armedSeen;
         _armedSeen = armed;
         if (!armed)
@@ -444,7 +518,10 @@ public sealed class ClickerController : IClickerLock, IDisposable
         }
     }
 
-    /// <summary>The host speaks first (hello with its version and pid); the answer is hello, the lock and picker state, then the configuration.</summary>
+    /// <summary>
+    /// The host speaks first (hello with its version and pid); the answer is hello, the lock and picker state, the configuration, then
+    /// the samples of the mouse patterns.
+    /// </summary>
     private async Task<bool> HandshakeAsync(Session s)
     {
         using (var timeout = new CancellationTokenSource(_timing.HandshakeTimeout, _time))
@@ -479,6 +556,7 @@ public sealed class ClickerController : IClickerLock, IDisposable
             }
         }
 
+        PreloadPatternTexts();   // the files are read here, not under the gate the push below holds
         lock (_gate)
         {
             if (_disposed || !ReferenceEquals(_session, s)) return false;
@@ -536,6 +614,7 @@ public sealed class ClickerController : IClickerLock, IDisposable
         switch (message)
         {
             case StateMessage state:
+                s.RecordingSeen = state.Recording;   // also for a session on its way out: its end may still need a notice
                 lock (_gate)
                 {
                     if (!ReferenceEquals(_session, s)) return;
@@ -547,6 +626,12 @@ public sealed class ClickerController : IClickerLock, IDisposable
 
             case RunEndedMessage ended:
                 OnRunEnded(ended);
+                break;
+
+            case PatternRecordedMessage recorded:
+                // The result comes before the state that ends the recording: this recording has had its answer.
+                s.RecordingSeen = false;
+                OnPatternRecorded(recorded);
                 break;
 
             case LogMessage log:
@@ -593,6 +678,116 @@ public sealed class ClickerController : IClickerLock, IDisposable
         }
     }
 
+    // ---------------- mouse pattern recordings ----------------
+
+    private void OnPatternRecorded(PatternRecordedMessage recorded)
+    {
+        bool deferred;
+        lock (_gate)
+        {
+            deferred = _disposing;
+            if (deferred) _pendingRecordings.Add(recorded);   // Dispose applies it on its own thread, like a run
+        }
+        if (!deferred) _post(() => ApplyRecording(recorded));
+    }
+
+    /// <summary>Takes a recording's result in and tells about it (on the settings' thread).</summary>
+    private void ApplyRecording(PatternRecordedMessage recorded)
+    {
+        PatternRecordedInfo info;
+        try
+        {
+            info = StoreRecording(recorded);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("MousePatterns: the recording could not be taken in: " + ex.Message);
+            info = new PatternRecordedInfo(PatternRecordedInfo.Failed, null, 0);
+        }
+        RaisePatternRecorded(info);
+    }
+
+    /// <summary>
+    /// Ok/Cut: the samples go to the store first; only when they are on disk does the pattern change (target: program, length, revision;
+    /// new: defaults of design 4.2) and the settings get saved, which pushes the config and the new samples to the helper. Anything else
+    /// saves nothing.
+    /// </summary>
+    private PatternRecordedInfo StoreRecording(PatternRecordedMessage recorded)
+    {
+        string outcome = recorded.Outcome;
+        if (outcome is not (nameof(PatternRecordingOutcome.Ok) or nameof(PatternRecordingOutcome.Cut)))
+        {
+            Logger.Info($"MousePatterns: recording ended without a pattern ({outcome}).");
+            return new PatternRecordedInfo(outcome == nameof(PatternRecordingOutcome.Empty) ? outcome : nameof(PatternRecordingOutcome.Cancelled), null, 0);
+        }
+        if (!PatternCodec.TryDecode(recorded.Data, out var data))
+        {
+            Logger.Warn("MousePatterns: the helper sent unreadable samples - the recording is discarded.");
+            return new PatternRecordedInfo(PatternRecordedInfo.Failed, null, 0);
+        }
+
+        var clicker = _settings();
+        clicker.MousePatterns ??= new List<MousePattern>();
+        var patterns = clicker.MousePatterns;
+        var target = _recordTarget is { } targetId
+            ? patterns.FirstOrDefault(p => p is not null && string.Equals(p.Id, targetId, StringComparison.OrdinalIgnoreCase))
+            : null;
+        if (target is null && patterns.Count(p => p is not null) >= MousePatternRules.MaxPatterns)
+        {
+            Logger.Warn("MousePatterns: a new recording was discarded - the list is full.");
+            return new PatternRecordedInfo(PatternRecordedInfo.Full, null, 0);
+        }
+
+        string id = target?.Id ?? Guid.NewGuid().ToString("N");
+        try
+        {
+            _patternStore.Save(id, data);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Logger.Warn($"MousePatterns: the samples of {id} could not be written - the recording is discarded: {ex.Message}");
+            return new PatternRecordedInfo(PatternRecordedInfo.Failed, null, 0);
+        }
+
+        string? program = AutoClickerBlacklist.Canonical(recorded.Program);
+        if (target is null)
+        {
+            // Active and without a hotkey: harmless until the user gives it one.
+            target = new MousePattern { Id = id, Name = MousePatternRules.NextName(patterns), Program = program, Revision = 1 };
+            patterns.Add(target);
+        }
+        else
+        {
+            target.Program = program;
+            if (program is null) target.OnlyInProgram = false;   // nothing left to bind to
+            target.Revision = target.Revision >= int.MaxValue ? 1 : Math.Max(0, target.Revision) + 1;
+        }
+        target.DurationMs = data.DurationMs;
+        lock (_gate) _patternText[id] = new PatternText(target.Revision, recorded.Data!);
+        _recordTarget = null;
+        _save();
+
+        Logger.Info($"MousePatterns: recorded {id} r{target.Revision} ({outcome}, {data.DurationMs:0} ms).");
+        return new PatternRecordedInfo(outcome, target.Name, data.DurationMs / 1000.0);
+    }
+
+    /// <summary>The helper ended while it recorded: nothing was kept, say so (not while the clipper itself goes away).</summary>
+    private void OnRecordingLost()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _aborted) return;
+        }
+        Logger.Info("MousePatterns: the helper ended during a recording - nothing was kept.");
+        _post(() => RaisePatternRecorded(new PatternRecordedInfo(nameof(PatternRecordingOutcome.Cancelled), null, 0)));
+    }
+
+    private void RaisePatternRecorded(PatternRecordedInfo info)
+    {
+        try { PatternRecorded?.Invoke(info); }
+        catch (Exception ex) { Logger.Warn("AutoClicker: a pattern-recorded handler threw: " + ex.Message); }
+    }
+
     /// <summary>The session's read loop ended (pipe closed, error, cancel): clean up and, when nobody asked for it, restart once.</summary>
     private void OnSessionEnded(Session s)
     {
@@ -622,7 +817,7 @@ public sealed class ClickerController : IClickerLock, IDisposable
         {
             lock (_gate)
             {
-                if (!_disposed && !s.Deliberate && _settings().Armed)
+                if (!_disposed && !s.Deliberate && MousePatternRules.HostWanted(_settings()))
                 {
                     var fault = s.Ready ? ClickerFault.Crashed : ClickerFault.HandshakeFailed;
                     if (_restartsLeft > 0)
@@ -640,6 +835,8 @@ public sealed class ClickerController : IClickerLock, IDisposable
             }
         }
         PublishState();
+        // Killed, crashed or shut down mid-recording (lock timeout, both switches off): no result will come (design 4.2).
+        if (s.RecordingSeen) OnRecordingLost();
     }
 
     /// <summary>
@@ -694,9 +891,76 @@ public sealed class ClickerController : IClickerLock, IDisposable
             ArmDebounceLocked();
             return;
         }
-        if (!force && encoded == _lastPushed) return;
+        if (!force && encoded == _lastPushed) return;   // a new recording changes a revision, so it is never "unchanged"
         _lastPushed = encoded;
         Enqueue(s, snapshot!);
+        PushPatternDataLocked(s, snapshot!.Settings);
+    }
+
+    /// <summary>
+    /// Right after the config that names them: the samples of every pattern whose revision this helper has not had yet (all of them
+    /// on a new helper). The helper plays a pattern only with samples of the revision its config names. A pattern without readable
+    /// samples is sent nothing (and not tried again until its revision changes); it simply cannot play.
+    /// </summary>
+    private void PushPatternDataLocked(Session s, ClickerSettings pushed)
+    {
+        var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in pushed.MousePatterns ?? new List<MousePattern>())
+        {
+            if (p is null || !MousePatternRules.IsValidId(p.Id) || !listed.Add(p.Id)) continue;
+            if (s.SentPatterns.TryGetValue(p.Id, out int sent) && sent == p.Revision) continue;
+            s.SentPatterns[p.Id] = p.Revision;
+            if (TakePatternTextLocked(p.Id, p.Revision) is { } text) Enqueue(s, new PatternDataMessage(p.Id, p.Revision, text));
+            else Logger.Info($"MousePatterns: no samples for {p.Id} r{p.Revision} - the pattern cannot play until it is recorded again.");
+        }
+        foreach (var gone in s.SentPatterns.Keys.Where(id => !listed.Contains(id)).ToList()) s.SentPatterns.Remove(gone);
+    }
+
+    /// <summary>
+    /// The samples of one revision: the ones loaded ahead or taken from the recording (used once), otherwise read from the store here,
+    /// under the gate - only for a revision that changed without a recording of this clipper, which is rare.
+    /// </summary>
+    private string? TakePatternTextLocked(string id, int revision)
+    {
+        if (_patternText.TryGetValue(id, out var ready) && ready.Revision == revision)
+        {
+            _patternText.Remove(id);
+            return ready.Text;
+        }
+        return LoadPatternText(id);
+    }
+
+    /// <summary>The samples of every listed pattern from the store into <see cref="_patternText"/>, outside the gate (the handshake's push takes them).</summary>
+    private void PreloadPatternTexts()
+    {
+        var wanted = new List<(string Id, int Revision)>();
+        try
+        {
+            foreach (var p in _settings().MousePatterns ?? new List<MousePattern>())
+                if (p is not null && MousePatternRules.IsValidId(p.Id)) wanted.Add((p.Id, p.Revision));
+        }
+        catch (InvalidOperationException) { /* the list changed while it was read: the push loads what is missing itself */ }
+
+        foreach (var (id, revision) in wanted)
+        {
+            lock (_gate)
+            {
+                if (_patternText.TryGetValue(id, out var ready) && ready.Revision == revision) continue;
+            }
+            if (LoadPatternText(id) is not { } text) continue;
+            lock (_gate) _patternText[id] = new PatternText(revision, text);
+        }
+    }
+
+    private string? LoadPatternText(string id)
+    {
+        if (!_patternStore.TryLoad(id, out var data)) return null;
+        try { return PatternCodec.Encode(data); }
+        catch (ArgumentException ex)
+        {
+            Logger.Warn($"MousePatterns: the samples of {id} cannot be sent: {ex.Message}");
+            return null;
+        }
     }
 
     private void ArmDebounceLocked()
@@ -758,16 +1022,18 @@ public sealed class ClickerController : IClickerLock, IDisposable
 
     private ClickerState BuildStateLocked()
     {
-        if (_disposed || !_initialized || !_settings().Armed) return ClickerState.Off;
+        var settings = _settings();
+        if (_disposed || !_initialized || !MousePatternRules.HostWanted(settings)) return ClickerState.Off;
 
         string? lockedBy = _lockedBy is null ? null : (string.IsNullOrWhiteSpace(_lockedBy.DisplayName) ? _lockedBy.ExeName : _lockedBy.DisplayName);
         var host = _hostState;
         var s = _session;
+        bool patternsArmed = settings.MousePatternsArmed;
 
         if (_fault != ClickerFault.None)
-            return ClickerState.Off with { Phase = ClickerPhase.Error, Locked = _lockedBy is not null, LockedBy = lockedBy, Fault = _fault };
+            return ClickerState.Off with { Phase = ClickerPhase.Error, Locked = _lockedBy is not null, LockedBy = lockedBy, Fault = _fault, PatternsArmed = patternsArmed };
         if (s is not { Ready: true } || host is null)
-            return ClickerState.Off with { Phase = ClickerPhase.Starting, Locked = _lockedBy is not null, LockedBy = lockedBy };
+            return ClickerState.Off with { Phase = ClickerPhase.Starting, Locked = _lockedBy is not null, LockedBy = lockedBy, PatternsArmed = patternsArmed };
 
         StopReason? lastStop = null;
         string? detail = null;
@@ -777,7 +1043,8 @@ public sealed class ClickerController : IClickerLock, IDisposable
             if (_lastRunEnded is { } ended && ended.Reason == name) detail = ended.Detail;
         }
         return new ClickerState(host.Running ? ClickerPhase.Running : ClickerPhase.Ready, _lockedBy is not null, lockedBy,
-            host.Clicks, host.Cps, host.ElapsedMs, host.BlockedByElevated, lastStop, detail, ClickerFault.None, host.MasterAllowed);
+            host.Clicks, host.Cps, host.ElapsedMs, host.BlockedByElevated, lastStop, detail, ClickerFault.None, host.MasterAllowed,
+            patternsArmed, host.Recording, host.Playing, host.PatternsBlockedBy);
     }
 
     /// <summary>Makes the state, and when it differs from the last one raises <see cref="StateChanged"/>. Serialized, so handlers see the states in order.</summary>
@@ -821,6 +1088,12 @@ public sealed class ClickerController : IClickerLock, IDisposable
         public volatile bool Connected;
         public volatile bool Ready;
         public int ReleaseLaunched;
+
+        /// <summary>Pattern id -> the revision whose samples this helper got (or that had none to send). Under the controller's gate.</summary>
+        public readonly Dictionary<string, int> SentPatterns = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The helper's last word was "recording" and no result followed yet (written by the read loop only).</summary>
+        public volatile bool RecordingSeen;
 
         /// <summary>The controller ended it on purpose (switch off, lock timeout, dispose): no restart, no error.</summary>
         public volatile bool Deliberate;

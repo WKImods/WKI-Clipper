@@ -13,18 +13,18 @@ public enum GuardAction { LockClicker, UnlockClicker }
 public readonly record struct GuardDecision(GuardAction Action, BlacklistEntry? Match);
 
 /// <summary>
-/// Locks the native clicker (<see cref="IClickerLock"/>) for as long as a blacklisted game runs or is in front. The decision is a pure
-/// function (<see cref="DecideNative"/>); the instance only feeds it: the game in front (<see cref="OnGameChanged"/>), every window
-/// switch (<see cref="OnForegroundChanged"/>) and a poll of the running process names.
+/// Locks the native clicker and its mouse patterns (<see cref="IClickerLock"/>) for as long as a blacklisted game runs or is in front.
+/// The decision is a pure function (<see cref="DecideNative"/>); the instance only feeds it: the game in front (<see cref="OnGameChanged"/>),
+/// every window switch (<see cref="OnForegroundChanged"/>) and a poll of the running process names.
 ///
-/// The poll is cheap by design. Only while the clicker is switched on ("Clicker bereit") and the blacklist is in force does a 3 s tick
-/// read the process list, so a game that starts in the background locks it, too. While the clicker is off nothing is polled and no
-/// process list is read: the game in front alone decides, so switching on in a blacklisted game starts locked.
-/// "Blacklist ignorieren" on or an empty blacklist stops the poll and lifts the lock.
+/// The poll is cheap by design. Only while the helper is wanted (<see cref="IClickerLock.Armed"/>: "Clicker bereit" or "Mausbewegung
+/// bereit" is on) and the blacklist is in force does a 3 s tick read the process list, so a game that starts in the background locks it,
+/// too. While both are off nothing is polled and no process list is read: the game in front alone decides, so switching on in a
+/// blacklisted game starts locked. "Blacklist ignorieren" on or an empty blacklist stops the poll and lifts the lock.
 /// </summary>
 public sealed class AutoClickerGuard : IDisposable
 {
-    /// <summary>Time between two checks while the clicker is switched on.</summary>
+    /// <summary>Time between two checks while the helper is wanted.</summary>
     public const int PollIntervalMs = 3000;
 
     private readonly Func<AutoClickerSettings> _settings;
@@ -74,7 +74,7 @@ public sealed class AutoClickerGuard : IDisposable
     /// <summary>Raised when <see cref="IgnoreBlacklist"/> flipped (any thread).</summary>
     public event Action? IgnoreChanged;
 
-    /// <summary>True while the poll is armed (the clicker is switched on and the blacklist is in force).</summary>
+    /// <summary>True while the poll is armed (the helper is wanted and the blacklist is in force).</summary>
     internal bool IsPolling => _polling;
 
     // ---------------- pure rules ----------------
@@ -121,12 +121,12 @@ public sealed class AutoClickerGuard : IDisposable
         _background(Evaluate);
     }
 
-    /// <summary>Any window came to the front, or the clicker was switched on or off: a re-check, in the background.</summary>
+    /// <summary>Any window came to the front, or the helper became wanted or unwanted: a re-check, in the background.</summary>
     public void OnForegroundChanged() => _background(Evaluate);
 
     /// <summary>
-    /// One check: locks or unlocks the clicker, and keeps the poll armed exactly while the clicker is switched on and the blacklist is
-    /// in force. Safe from any thread; a call that arrives while a check runs is not lost: the running check goes once more.
+    /// One check: locks or unlocks the clicker, and keeps the poll armed exactly while the helper is wanted and the blacklist is in
+    /// force. Safe from any thread; a call that arrives while a check runs is not lost: the running check goes once more.
     /// </summary>
     public void Evaluate()
     {
@@ -156,7 +156,7 @@ public sealed class AutoClickerGuard : IDisposable
         bool nothingToGuard = _ignore || blacklist is not { Count: > 0 };
         bool watch = !nothingToGuard && _clicker.Armed;
 
-        // Switched off, only the program in front counts (no process list read for a clicker that is off).
+        // Switched off, only the program in front counts (no process list read while no helper is wanted).
         var decision = DecideNative(blacklist, watch ? _processes.RunningNames() : null, _foregroundExe, _ignore);
         try
         {

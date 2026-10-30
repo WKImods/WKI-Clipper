@@ -1,13 +1,14 @@
+using System;
 using System.Globalization;
 
 namespace WKI_Clipper.Services.AutoClicker;
 
-/// <summary>A toast the clipper shows for a run that ended. <paramref name="IsWarning"/> picks the warning look.</summary>
+/// <summary>A toast the clipper shows for a run or a pattern recording that ended. <paramref name="IsWarning"/> picks the warning look.</summary>
 public sealed record ClickerNotice(string Title, string Body, bool IsWarning);
 
 /// <summary>
 /// The few moments the clipper speaks up about the clicker (design section 7: toasts only for a blacklist lock and for a click or time
-/// limit end; every other stop reason shows in the state pill). Pure, so the wording is tested.
+/// limit end; every other stop reason shows in the state pill) and after every pattern recording. Pure, so the wording is tested.
 /// </summary>
 public static class ClickerNotices
 {
@@ -25,6 +26,47 @@ public static class ClickerNotices
             case StopReason.TimeLimit:
                 return new ClickerNotice("AutoClicker",
                     L.T("AutoClicker gestoppt - ", "AutoClicker stopped - ") + StopReasonText.Describe(run.Reason, run.Detail), IsWarning: false);
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// The toast after a pattern recording (mouse-patterns design 4.2): "'Muster 3' aufgenommen (2,4 s)", with "- nach 60 s abgeschnitten"
+    /// when the 60 s limit cut it; a warning when nothing was saved. Null for an outcome this build does not know.
+    /// </summary>
+    public static ClickerNotice? ForPatternRecorded(PatternRecordedInfo info)
+    {
+        string title = L.T("Mausbewegung", "Mouse patterns");
+        switch (info.Outcome)
+        {
+            case nameof(PatternRecordingOutcome.Ok):
+            case nameof(PatternRecordingOutcome.Cut):
+                string name = string.IsNullOrWhiteSpace(info.Name) ? L.T("Muster", "Pattern") : info.Name!;
+                double seconds = double.IsFinite(info.Seconds) && info.Seconds > 0 ? Math.Round(info.Seconds, 1) : 0;
+                string length = ClickerNumber.Format(seconds) + " s";
+                string body = L.T($"'{name}' aufgenommen ({length})", $"'{name}' recorded ({length})");
+                if (info.Outcome == nameof(PatternRecordingOutcome.Cut))
+                {
+                    int limit = MousePatternRules.MaxDurationMs / 1000;
+                    body += L.T($" - nach {limit} s abgeschnitten", $" - cut off after {limit} s");
+                }
+                return new ClickerNotice(title, body, IsWarning: false);
+
+            case nameof(PatternRecordingOutcome.Empty):
+                return new ClickerNotice(title, L.T("Keine Bewegung aufgenommen", "No movement recorded"), IsWarning: true);
+
+            case nameof(PatternRecordingOutcome.Cancelled):
+                return new ClickerNotice(title, L.T("Aufnahme verworfen", "Recording discarded"), IsWarning: true);
+
+            case PatternRecordedInfo.Full:
+                return new ClickerNotice(title,
+                    L.T($"Aufnahme verworfen - es gibt schon {MousePatternRules.MaxPatterns} Muster",
+                        $"Recording discarded - there are {MousePatternRules.MaxPatterns} patterns already"), IsWarning: true);
+
+            case PatternRecordedInfo.Failed:
+                return new ClickerNotice(title, L.T("Aufnahme konnte nicht gespeichert werden", "The recording could not be saved"), IsWarning: true);
 
             default:
                 return null;

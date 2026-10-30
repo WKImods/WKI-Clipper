@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WKI_Clipper.Models;
+using WKI_Clipper.Services;
 using WKI_Clipper.Services.AutoClicker;
 using Xunit;
 
@@ -126,6 +127,53 @@ internal sealed class FakeHostSession : IClickerHostSession
         => new(Running: false, Armed: true, Locked: locked, reason, Clicks: 0, Cps: 0, ElapsedMs: 0, BlockedByElevated: null);
 }
 
+/// <summary>The samples of the mouse patterns in memory. <see cref="FailSave"/> makes every write fail like a full or locked disk.</summary>
+internal sealed class FakePatternStore : IMousePatternStore
+{
+    private readonly Dictionary<string, PatternData> _data = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<string> _deleted = new();
+    private int _saves, _loads;
+
+    public volatile bool FailSave;
+
+    public int Saves { get { lock (_data) return _saves; } }
+    public int Loads { get { lock (_data) return _loads; } }
+    public IReadOnlyList<string> Deleted { get { lock (_data) return _deleted.ToArray(); } }
+
+    /// <summary>Puts samples in place without counting a save (the state before the test).</summary>
+    public void Put(string id, PatternData data) { lock (_data) _data[id] = data; }
+
+    public PatternData? Get(string id) { lock (_data) return _data.TryGetValue(id, out var d) ? d : null; }
+
+    public void Save(string id, PatternData data)
+    {
+        lock (_data)
+        {
+            if (FailSave) throw new IOException("The disk is full.");
+            _data[id] = data;
+            _saves++;
+        }
+    }
+
+    public bool TryLoad(string id, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PatternData? data)
+    {
+        lock (_data)
+        {
+            _loads++;
+            return _data.TryGetValue(id, out data);
+        }
+    }
+
+    public void Delete(string id)
+    {
+        lock (_data)
+        {
+            _data.Remove(id);
+            _deleted.Add(id);
+        }
+    }
+}
+
 internal sealed class FakeHostLauncher : IClickerHostLauncher, IDisposable
 {
     private readonly List<FakeHostSession> _sessions = new();
@@ -178,19 +226,29 @@ public sealed class ClickerControllerTests
     {
         public readonly ClickerSettings Settings = new();
         public readonly FakeHostLauncher Launcher = new();
+        public readonly FakePatternStore Store = new();
         public readonly ManualTime Time = new();
         public readonly ClickerController Controller;
         public readonly List<ClickerState> States = new();
         public readonly List<ClickerRunInfo> Runs = new();
+        private readonly List<PatternRecordedInfo> _recorded = new();
         public int Saves;
 
-        public Rig(bool armed = true, ClickerControllerTiming? timing = null, Action<FakeHostLauncher>? configure = null)
+        public Rig(bool armed = true, ClickerControllerTiming? timing = null, Action<FakeHostLauncher>? configure = null, bool patternsArmed = false)
         {
             Settings.Armed = armed;
+            Settings.MousePatternsArmed = patternsArmed;
             configure?.Invoke(Launcher);
-            Controller = new ClickerController(() => Settings, () => Saves++, Launcher, timing: timing ?? Timing, parentPid: 1234, time: Time);
+            Controller = new ClickerController(() => Settings, () => Interlocked.Increment(ref Saves), Launcher, Store, timing: timing ?? Timing,
+                parentPid: 1234, time: Time);
             Controller.StateChanged += s => { lock (States) States.Add(s); };
             Controller.RunFinished += Runs.Add;
+            Controller.PatternRecorded += r => { lock (_recorded) _recorded.Add(r); };
+        }
+
+        public IReadOnlyList<PatternRecordedInfo> Recorded
+        {
+            get { lock (_recorded) return _recorded.ToArray(); }
         }
 
         /// <summary>Settings were saved (the edit already happened on <see cref="Settings"/>).</summary>
@@ -647,7 +705,7 @@ public sealed class ClickerControllerTests
         var posted = new List<Action>();
         var settings = new ClickerSettings { Armed = true };
         var launcher = new FakeHostLauncher();
-        using var controller = new ClickerController(() => settings, () => { }, launcher, post: posted.Add, time: new ManualTime());
+        using var controller = new ClickerController(() => settings, () => { }, launcher, new FakePatternStore(), post: posted.Add, time: new ManualTime());
         controller.Initialize();
         var host = await launcher.WaitForLaunch(1);
         await host.Handshake();
@@ -901,6 +959,306 @@ public sealed class ClickerControllerTests
 
         Assert.Empty(rig.Launcher.Sessions);
         Assert.False(rig.Controller.Start());
+    }
+
+    // ---- mouse patterns ----
+
+    private static readonly string IdA = new('a', 32);
+    private static readonly string IdB = new('b', 32);
+
+    /// <summary>Valid samples whose first raw step is <paramref name="dx"/>: different numbers make different samples.</summary>
+    private static PatternData Samples(int dx, double durationMs = 2400)
+        => new(new PatternTrack(new[] { 1, 2 }, new[] { dx, 1 }, new[] { 0, 2 }), new PatternTrack(new[] { 1 }, new[] { dx }, new[] { 0 }), durationMs);
+
+    private static MousePattern Pattern(string id, int revision, string name = "Kreis")
+        => new() { Id = id, Name = name, Revision = revision };
+
+    private static string Text(PatternData data) => PatternCodec.Encode(data);
+
+    [Fact]
+    public async Task Helper_runs_when_only_patterns_armed()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+
+        var host = await rig.StartReady();
+
+        Assert.True(rig.Controller.Armed);   // the guard watches the blacklist for the patterns, too
+        var state = rig.Controller.State;
+        Assert.True(state.PatternsArmed);
+        Assert.False((await host.WaitFor<ConfigMessage>()).Settings.Armed);   // the helper itself keeps the clicker side dead
+    }
+
+    [Fact]
+    public async Task Helper_stops_when_both_switches_off()
+    {
+        using var rig = new Rig(armed: true, patternsArmed: true);
+        var host = await rig.StartReady();
+
+        rig.Settings.Armed = false;   // the patterns still want the helper
+        rig.Saved();
+        await rig.Time.AdvanceWhenArmed(Timing.ConfigDebounce);
+        await host.WaitFor<ConfigMessage>(c => !c.Settings.Armed);
+        Assert.DoesNotContain(host.Received, m => m is ShutdownMessage);
+        Assert.True(rig.Controller.Armed);
+        Assert.Equal(ClickerPhase.Ready, rig.Controller.State.Phase);
+
+        rig.Settings.MousePatternsArmed = false;
+        rig.Saved();
+
+        await host.WaitFor<ShutdownMessage>();
+        await rig.WaitState(s => s.Phase == ClickerPhase.Off);
+        Assert.False(rig.Controller.Armed);
+        Assert.Single(rig.Launcher.Sessions);
+    }
+
+    [Fact]
+    public async Task Pattern_data_follows_config_on_handshake()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 3));
+        rig.Settings.MousePatterns.Add(Pattern(IdB, 1, "Welle"));   // no samples on disk: nothing to send, nothing thrown
+        rig.Store.Put(IdA, Samples(7));
+
+        var host = await rig.StartReady();
+
+        var data = await host.WaitFor<PatternDataMessage>();
+        Assert.Equal(IdA, data.Id);
+        Assert.Equal(3, data.Revision);
+        Assert.Equal(Text(Samples(7)), data.Data);
+        var order = host.Received.Select(m => m.GetType()).ToList();
+        Assert.True(order.IndexOf(typeof(ConfigMessage)) < order.IndexOf(typeof(PatternDataMessage)));   // the config names the revision first
+        rig.Controller.Stop();
+        await host.WaitFor<StopMessage>();
+        Assert.Single(host.Received.OfType<PatternDataMessage>());
+    }
+
+    [Fact]
+    public async Task Changed_revision_is_resent_once()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 1));
+        rig.Settings.MousePatterns.Add(Pattern(IdB, 1, "Welle"));
+        rig.Store.Put(IdA, Samples(1));
+        rig.Store.Put(IdB, Samples(2));
+        var host = await rig.StartReady();
+        await host.WaitFor<PatternDataMessage>(d => d.Id == IdB);
+
+        rig.Store.Put(IdA, Samples(5));
+        rig.Settings.MousePatterns[0].Revision = 2;
+        rig.Saved();
+        await rig.Time.AdvanceWhenArmed(Timing.ConfigDebounce);
+        var resent = await host.WaitFor<PatternDataMessage>(d => d.Revision == 2);
+        rig.Settings.MousePatterns[1].Speed = 2;   // a change that is no new recording
+        rig.Saved();
+        await rig.Time.AdvanceWhenArmed(Timing.ConfigDebounce);
+        await host.WaitFor<ConfigMessage>(c => c.Settings.MousePatterns.Count == 2 && c.Settings.MousePatterns[1].Speed == 2);
+        rig.Controller.Stop();
+        await host.WaitFor<StopMessage>();
+
+        Assert.Equal(IdA, resent.Id);
+        Assert.Equal(Text(Samples(5)), resent.Data);
+        var sent = host.Received.OfType<PatternDataMessage>().Select(d => (d.Id, d.Revision)).ToList();
+        Assert.Equal(new[] { (IdA, 1), (IdB, 1), (IdA, 2) }, sent);
+    }
+
+    [Fact]
+    public async Task Recording_creates_new_pattern_with_defaults()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 1, "Muster 1"));
+        var host = await rig.StartReady();
+
+        await host.Say(new PatternRecordedMessage("Ok", Text(Samples(4)), @"C:\Games\Skate.EXE", 2400));
+        await WaitUntil(() => rig.Recorded.Count == 1);
+
+        var p = Assert.Single(rig.Settings.MousePatterns, x => x.Id != IdA);
+        Assert.True(MousePatternRules.IsValidId(p.Id));
+        Assert.Equal("Muster 2", p.Name);
+        Assert.True(p.Active);
+        Assert.Null(p.Hotkey);
+        Assert.Equal(ActivationMode.Hold, p.Mode);
+        Assert.False(p.Repeat);
+        Assert.Equal(1.0, p.Speed);
+        Assert.Equal(PatternReplay.Auto, p.Replay);
+        Assert.False(p.OnlyInProgram);
+        Assert.Equal("Skate.exe", p.Program);
+        Assert.Equal(2400, p.DurationMs);
+        Assert.Equal(Text(Samples(4)), Text(rig.Store.Get(p.Id)!));
+        Assert.Equal(1, rig.Saves);
+        Assert.Equal(new PatternRecordedInfo("Ok", "Muster 2", 2.4), rig.Recorded[0]);
+
+        // The settings save (SettingsChanged in the app) pushes the config naming it, and its samples follow.
+        rig.Saved();
+        await rig.Time.AdvanceWhenArmed(Timing.ConfigDebounce);
+        var data = await host.WaitFor<PatternDataMessage>(d => d.Id == p.Id);
+        Assert.Equal(p.Revision, data.Revision);
+        Assert.Equal(Text(Samples(4)), data.Data);
+        Assert.Contains(host.Received.OfType<ConfigMessage>(), c => c.Settings.MousePatterns.Any(x => x.Id == p.Id && x.Revision == p.Revision));
+    }
+
+    [Fact]
+    public async Task Recording_replaces_target_and_keeps_options()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        var hotkey = new ClickerHotkey { Keys = { 0x46 } };
+        rig.Settings.MousePatterns.Add(new MousePattern
+        {
+            Id = IdA, Name = "Kreis", Hotkey = hotkey, Active = false, Mode = ActivationMode.Toggle, Repeat = true, Speed = 2,
+            Replay = PatternReplay.Raw, Program = "old.exe", OnlyInProgram = true, DurationMs = 1000, Revision = 4
+        });
+        rig.Store.Put(IdA, Samples(1));
+        var host = await rig.StartReady();
+        rig.Controller.SetRecordTarget(IdA);
+        Assert.Equal(IdA, rig.Controller.RecordTarget);
+
+        await host.Say(new PatternRecordedMessage("Cut", Text(Samples(9, 60_000)), "new.exe", 60_000));
+        await WaitUntil(() => rig.Recorded.Count == 1);
+
+        var p = Assert.Single(rig.Settings.MousePatterns);
+        Assert.Equal(IdA, p.Id);
+        Assert.Equal("Kreis", p.Name);
+        Assert.Same(hotkey, p.Hotkey);
+        Assert.False(p.Active);
+        Assert.Equal(ActivationMode.Toggle, p.Mode);
+        Assert.True(p.Repeat);
+        Assert.Equal(2, p.Speed);
+        Assert.Equal(PatternReplay.Raw, p.Replay);
+        Assert.True(p.OnlyInProgram);   // the checkbox stays, the program follows the new recording
+        Assert.Equal("new.exe", p.Program);
+        Assert.Equal(60_000, p.DurationMs);
+        Assert.Equal(5, p.Revision);
+        Assert.Equal(Text(Samples(9, 60_000)), Text(rig.Store.Get(IdA)!));
+        Assert.Null(rig.Controller.RecordTarget);
+        Assert.Equal(new PatternRecordedInfo("Cut", "Kreis", 60), rig.Recorded[0]);
+    }
+
+    [Fact]
+    public async Task Empty_or_cancelled_recording_saves_nothing()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 1));
+        var host = await rig.StartReady();
+        rig.Controller.SetRecordTarget(IdA);
+
+        await host.Say(new PatternRecordedMessage("Empty", null, "game.exe", 0));
+        await host.Say(new PatternRecordedMessage("Cancelled", null, "game.exe", 0));
+        await host.Say(new PatternRecordedMessage("Ok", "p1:garbage", "game.exe", 100));   // unreadable samples are no pattern either
+        await WaitUntil(() => rig.Recorded.Count == 3);
+
+        Assert.Equal(new[] { "Empty", "Cancelled", PatternRecordedInfo.Failed }, rig.Recorded.Select(r => r.Outcome));
+        Assert.Equal(1, Assert.Single(rig.Settings.MousePatterns).Revision);
+        Assert.Equal(0, rig.Store.Saves);
+        Assert.Equal(0, rig.Saves);
+        Assert.Equal(IdA, rig.Controller.RecordTarget);   // the next try still replaces it
+    }
+
+    [Fact]
+    public async Task Session_end_during_recording_creates_nothing()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        var host = await rig.StartReady();
+        await host.Say(FakeHostSession.Idle() with { Recording = true });
+        await rig.WaitState(s => s.Recording);
+
+        host.Exit();   // killed mid-recording: no result ever comes
+
+        await WaitUntil(() => rig.Recorded.Count == 1);
+        Assert.Equal(new PatternRecordedInfo("Cancelled", null, 0), rig.Recorded[0]);
+        Assert.Empty(rig.Settings.MousePatterns);
+        Assert.Equal(0, rig.Store.Saves);
+        Assert.Equal(0, rig.Saves);
+        Assert.False(rig.Controller.State.Recording);
+    }
+
+    [Fact]
+    public async Task A_recording_that_ended_with_a_result_is_not_reported_again_when_the_helper_ends()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        var host = await rig.StartReady();
+        await host.Say(FakeHostSession.Idle() with { Recording = true });
+        await rig.WaitState(s => s.Recording);
+
+        await host.Say(new PatternRecordedMessage("Empty", null, null, 0));
+        await WaitUntil(() => rig.Recorded.Count == 1);
+        host.Exit();
+        await rig.Launcher.WaitForLaunch(2);   // the session's end was handled
+        await Task.Delay(50);
+
+        Assert.Single(rig.Recorded);
+    }
+
+    [Fact]
+    public async Task A_recording_whose_samples_cannot_be_written_changes_nothing()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 1));
+        var host = await rig.StartReady();
+        rig.Store.FailSave = true;
+
+        rig.Controller.SetRecordTarget(IdA);
+        await host.Say(new PatternRecordedMessage("Ok", Text(Samples(3)), "game.exe", 2400));
+        rig.Controller.SetRecordTarget(null);
+        await host.Say(new PatternRecordedMessage("Ok", Text(Samples(3)), "game.exe", 2400));
+        await WaitUntil(() => rig.Recorded.Count == 2);
+
+        Assert.All(rig.Recorded, r => Assert.Equal(PatternRecordedInfo.Failed, r.Outcome));
+        var p = Assert.Single(rig.Settings.MousePatterns);
+        Assert.Equal(1, p.Revision);   // no new revision for samples that are not on disk
+        Assert.Null(p.Program);
+        Assert.Equal(0, rig.Saves);
+    }
+
+    [Fact]
+    public async Task A_full_pattern_list_takes_no_new_recording_but_a_target_still_gets_one()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        for (int i = 0; i < MousePatternRules.MaxPatterns; i++)
+            rig.Settings.MousePatterns.Add(Pattern(i.ToString("x32"), 1, "P" + i));
+        var host = await rig.StartReady();
+
+        await host.Say(new PatternRecordedMessage("Ok", Text(Samples(3)), "game.exe", 2400));
+        await WaitUntil(() => rig.Recorded.Count == 1);
+        rig.Controller.SetRecordTarget(5.ToString("x32"));
+        await host.Say(new PatternRecordedMessage("Ok", Text(Samples(3)), "game.exe", 2400));
+        await WaitUntil(() => rig.Recorded.Count == 2);
+
+        Assert.Equal(PatternRecordedInfo.Full, rig.Recorded[0].Outcome);
+        Assert.Equal(new PatternRecordedInfo("Ok", "P5", 2.4), rig.Recorded[1]);
+        Assert.Equal(MousePatternRules.MaxPatterns, rig.Settings.MousePatterns.Count);
+        Assert.Equal(1, rig.Store.Saves);
+    }
+
+    [Fact]
+    public async Task The_pattern_state_of_the_helper_is_mirrored()
+    {
+        using var rig = new Rig(armed: true, patternsArmed: true);
+        var host = await rig.StartReady();
+
+        await host.Say(FakeHostSession.Idle() with { Recording = true, Playing = IdA + "," + IdB, PatternsBlockedBy = "taskmgr.exe" });
+
+        var state = await rig.WaitState(s => s.Recording);
+        Assert.True(state.PatternsArmed);
+        Assert.Equal(IdA + "," + IdB, state.Playing);
+        Assert.Equal("taskmgr.exe", state.PatternsBlockedBy);
+    }
+
+    [Fact]
+    public void Delete_pattern_removes_file_and_entry()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 1));
+        rig.Settings.MousePatterns.Add(Pattern(IdB, 1, "Welle"));
+        rig.Store.Put(IdA, Samples(1));
+        rig.Store.Put(IdB, Samples(2));
+        rig.Controller.SetRecordTarget(IdA);
+
+        rig.Controller.DeletePattern(IdA.ToUpperInvariant());   // ids are file names: case does not matter
+
+        Assert.Equal(IdB, Assert.Single(rig.Settings.MousePatterns).Id);
+        Assert.Null(rig.Store.Get(IdA));
+        Assert.NotNull(rig.Store.Get(IdB));
+        Assert.Equal(1, rig.Saves);
+        Assert.Null(rig.Controller.RecordTarget);   // the target is gone, the next recording is a new pattern
     }
 
     private static Task WaitUntil(Func<bool> condition) => Wait.Until(condition);
