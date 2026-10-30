@@ -74,6 +74,8 @@ internal sealed class FakeInput : IInputSink
 
     public readonly List<InputEvent> Events = new();
     public int ReleaseAllCalls;
+    /// <summary>Calls of <see cref="MoveBy"/> with 0/0 (they send nothing, like the injector's, so <see cref="Events"/> does not show them).</summary>
+    public int ZeroMoves;
     public bool FailEverything;
     public Exception? ThrowOnClick;
 
@@ -102,7 +104,11 @@ internal sealed class FakeInput : IInputSink
     /// <summary>Like the injector, 0/0 sends nothing. The cursor follows 1:1 (linear pointer ballistics).</summary>
     public bool MoveBy(int dx, int dy)
     {
-        if (dx == 0 && dy == 0) return true;
+        if (dx == 0 && dy == 0)
+        {
+            ZeroMoves++;
+            return true;
+        }
         if (!Add("moveby", dx, dy)) return false;
         if (_env is not null) _env.Cursor = new PixelPoint(_env.Cursor.X + dx, _env.Cursor.Y + dy);
         return true;
@@ -184,6 +190,26 @@ internal sealed class FakeEnvironment : IHostEnvironment
     public int DoubleClickTimeMs => DoubleClickMs;
     public bool CapsLockOn => Caps;
     public bool IsKeyDown(int vk) => Down.Contains(vk);
+}
+
+/// <summary>The pattern player's view of Windows: the cursor and the monitors of a <see cref="FakeEnvironment"/>, the replay facts settable.</summary>
+internal sealed class FakePatternEnvironment : IPatternEnvironment
+{
+    private readonly FakeEnvironment _env;
+
+    /// <summary>Defaults like Phillip's PC: a visible pointer, linear ballistics.</summary>
+    public bool Visible = true;
+    public bool Acceleration;
+
+    /// <summary>How often the player asked anything.</summary>
+    public int Reads;
+
+    public FakePatternEnvironment(FakeEnvironment env) => _env = env;
+
+    public bool PointerVisible { get { Reads++; return Visible; } }
+    public bool AccelerationOn { get { Reads++; return Acceleration; } }
+    public PixelPoint CursorPosition { get { Reads++; return _env.Cursor; } }
+    public IReadOnlyList<PixelRect> Monitors { get { Reads++; return _env.MonitorList; } }
 }
 
 /// <summary>An engine on virtual time with every collaborator faked.</summary>
