@@ -41,9 +41,10 @@ hotkey, it stops instantly when the hotkey is released, and it never interferes 
    hotkey again. Idle time at the start and the end is cut off. The tab shows the recorded path as a small drawing.
 9. Blacklist lock and the anti-cheat warning apply to patterns too.
 10. **"Nur in <Programm>"** per pattern (proposed by me after the review, accepted): a pattern remembers the program
-    it was recorded in and by default only plays while that program is in front - otherwise a left-mouse-button
-    pattern made for the skateboard game would also fire on every left click on the desktop or in the browser.
-    Unticking it makes the pattern work everywhere (desktop automation).
+    it was recorded in; with the checkbox ticked it only plays while that program is in front, so a
+    left-mouse-button pattern made for the skateboard game does not fire on every left click on the desktop or in
+    the browser. **Default: not ticked** (Phillip: "standardmäßig kein Haken") - patterns work everywhere until the
+    user ticks it.
 11. The games are offline (the fishing game can also be played as an online party); no anti-cheat concern beyond
     the existing banner. The early in-game check (section 6) stays.
 
@@ -73,7 +74,7 @@ Anti-goals (a failure even if it technically works):
   without a hotkey never plays), Active (checkbox), Mode (Halten / Umschalten, default Halten), Repeat (default
   off), Speed (0.25x - 4x, default 1x), Replay type (Automatisch / Zeiger / Spiel (roh), default Automatisch, see
   4.3), Program (exe name of the foreground process when the recording started) with the checkbox
-  "Nur in <Programm>" (default on, decision 10), plus read-only facts from the recording (duration).
+  "Nur in <Programm>" (default off, decision 10), plus read-only facts from the recording (duration).
 - Program binding: with "Nur in" on, the hotkey's rising edge only starts the pattern while that program owns the
   foreground window, and a running playback stops as soon as another program comes to the front. Re-recording
   replaces the program with the one of the new recording and keeps the checkbox state. Comparison by exe file
@@ -216,7 +217,8 @@ Per pattern, shown under its card; aggregated count in the AutoClicker status ro
 - two **active** patterns share an overlapping hotkey ("startet zusammen mit 'Kreis'"),
 - the pattern hotkey equals the record hotkey,
 - the pattern hotkey collides with a clipper hotkey (existing `ClipperOwner` check),
-- the existing risky-hotkey hints (bare LMB/RMB, wheel, modifier-only, Esc),
+- the existing risky-hotkey hints (bare LMB/RMB, wheel, modifier-only, Esc); for a bare mouse button without
+  "Nur in <Programm>" the hint adds "wirkt überall - 'Nur in <Programm>' anhaken?",
 - shares the hotkey with a clicker that uses click points (4.5),
 - recording data missing or unreadable ("Aufnahme fehlt - neu aufnehmen"; the pattern cannot play).
 Sharing a hotkey with the clicker without click points is a neutral info line, not a warning (it is wanted).
@@ -278,7 +280,7 @@ Constraint kept: only the helper (`--clicker-host`) hooks, reads raw input and c
   rebase rule, coordinator (lock stops playback before the lock is confirmed, suppression, over-clipper,
   program binding at start and while playing, task switcher, recording discarded on lock), protocol round trips, `HostWanted` lifecycle, settings
   normalisation + idempotence, warnings, sub-tab list (now 6). Full suite green, 0 warnings.
-- Early in-game check (first thing after the helper can record and replay, before the UI is built): record a
+- In-game check as the first live-test case (Phillip: "Wir versuchen's einfach" - no separate spike): record a
   motion and replay it with relative injection in the actual fishing and skateboard games, to prove those games
   accept injected relative movement (they see it with `hDevice == 0` / the injected flag; a game that filters it
   cannot be served by `SendInput` at all, and a virtual-device driver is out of scope).
