@@ -238,6 +238,47 @@ public sealed class InputInjectorTests
     }
 
     [Fact]
+    public void MoveBy_sends_one_relative_tagged_move()
+    {
+        var r = new Recorder();
+        var inj = Make(r);
+
+        Assert.True(inj.MoveBy(-7, 12));
+
+        Assert.Equal(new[] { 1 }, r.Calls.ToArray());
+        var input = r.Sent.Single();
+        Assert.Equal(User32.INPUT_MOUSE, input.type);
+        Assert.Equal(User32.MOUSEEVENTF_MOVE, input.u.mi.dwFlags);   // no ABSOLUTE: raw input readers get the counts 1:1
+        Assert.Equal(-7, input.u.mi.dx);
+        Assert.Equal(12, input.u.mi.dy);
+        Assert.Equal((UIntPtr)InputInjector.Tag, input.u.mi.dwExtraInfo);
+
+        r.Sent.Clear();
+        Assert.True(inj.ReleaseAll());
+        Assert.Empty(r.Sent);   // a move presses nothing, so there is nothing to release
+    }
+
+    [Fact]
+    public void MoveBy_zero_sends_nothing()
+    {
+        var r = new Recorder();
+
+        Assert.True(Make(r).MoveBy(0, 0));
+
+        Assert.Empty(r.Calls);
+    }
+
+    [Fact]
+    public void A_refused_relative_move_returns_false()
+    {
+        var r = new Recorder();
+        r.Accept.Enqueue(0);   // UIPI: an elevated window in front
+
+        Assert.False(Make(r).MoveBy(3, 0));
+        Assert.Equal(new[] { 1 }, r.Calls.ToArray());   // not retried: a refused move stops the playback
+    }
+
+    [Fact]
     public void Coordinates_outside_the_desktop_are_clamped_and_a_degenerate_screen_gives_zero()
     {
         Assert.Equal(InputInjector.ToAbsolute(1919, 0, 1920), InputInjector.ToAbsolute(99999, 0, 1920));

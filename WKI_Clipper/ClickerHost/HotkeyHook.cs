@@ -266,6 +266,19 @@ internal sealed class CursorMoveReference
 }
 
 /// <summary>
+/// Receives the pointer track of a pattern recording. Called on the hook thread for every mouse move not injected by the host while
+/// <see cref="IsRecording"/> is true: it must not block, allocate or throw (a slow hook is removed by Windows).
+/// </summary>
+internal interface IPointerSink
+{
+    /// <summary>false: the hook skips the call and the cursor query, so a move stays a plain pass-through.</summary>
+    bool IsRecording { get; }
+
+    /// <summary>The pointer offset of one move in pixels, stamped with the raw input monitor's <see cref="IClock"/>.</summary>
+    void OnPointerMove(double atMs, int dx, int dy);
+}
+
+/// <summary>
 /// The low-level keyboard and mouse hooks (WH_KEYBOARD_LL + WH_MOUSE_LL) on their own thread with a message loop (design section 5).
 /// They observe only: every event is passed on with CallNextHookEx, never swallowed. Events that carry the host's own
 /// <see cref="InputInjector.Tag"/> are skipped, input injected by anyone else counts as physical.
@@ -273,8 +286,13 @@ internal sealed class CursorMoveReference
 /// Windows removes a low-level hook that answers too slowly (LowLevelHooksTimeout) without telling anybody. The callbacks therefore
 /// only stamp their hook's tick, post the event to a <see cref="HotkeyPump"/> and return; a worker thread drains it into the tracker
 /// (whose events run the coordinator, the engine start and the over-the-clipper window walk), releases quiet wheel keys and runs the
-/// watchdog. The watchdog compares each hook's last call with when input of its kind last arrived (<see cref="RawInputMonitor"/>,
-/// or cursor movement without it) and has the hook thread re-install the hooks (and re-sync the key state) when one went deaf.
+/// watchdog. The watchdog compares each hook's last call with when input of its kind last arrived (the <see cref="RawInputMonitor"/>
+/// it is given and disposes, or cursor movement without it) and has the hook thread re-install the hooks (and re-sync the key state)
+/// when one went deaf.
+/// </para>
+/// <para>
+/// Mouse moves are passed on untouched, except while a pattern is recorded: then each one's pointer offset goes to the
+/// <see cref="PointerSink"/> (mouse-patterns design 5.1).
 /// </para>
 /// </summary>
 internal sealed class HotkeyHook : IDisposable
@@ -287,12 +305,18 @@ internal sealed class HotkeyHook : IDisposable
     private static readonly int KeyboardExtraInfoOffset = (int)Marshal.OffsetOf<User32.KBDLLHOOKSTRUCT>(nameof(User32.KBDLLHOOKSTRUCT.dwExtraInfo));
     private static readonly int MouseDataOffset = (int)Marshal.OffsetOf<User32.MSLLHOOKSTRUCT>(nameof(User32.MSLLHOOKSTRUCT.mouseData));
     private static readonly int MouseExtraInfoOffset = (int)Marshal.OffsetOf<User32.MSLLHOOKSTRUCT>(nameof(User32.MSLLHOOKSTRUCT.dwExtraInfo));
+    private static readonly int MousePointXOffset = (int)Marshal.OffsetOf<User32.MSLLHOOKSTRUCT>(nameof(User32.MSLLHOOKSTRUCT.pt))
+                                                    + (int)Marshal.OffsetOf<User32.POINT>(nameof(User32.POINT.X));
+    private static readonly int MousePointYOffset = (int)Marshal.OffsetOf<User32.MSLLHOOKSTRUCT>(nameof(User32.MSLLHOOKSTRUCT.pt))
+                                                    + (int)Marshal.OffsetOf<User32.POINT>(nameof(User32.POINT.Y));
 
     private readonly HotkeyPump _pump;
     private readonly Func<bool> _hookBlind;
     private readonly Func<long> _clock;
     private readonly HookWatchdog _watchdog = new();
-    private readonly RawInputMonitor _rawInput = new();
+    private readonly RawInputMonitor _rawInput;
+    private readonly IClock _motionClock;
+    private IPointerSink? _pointerSink;
     private readonly CursorMoveReference _cursorReference = new();   // worker only
     private readonly AutoResetEvent _wake = new(false);
     private readonly ManualResetEventSlim _ready = new(false);
@@ -311,18 +335,28 @@ internal sealed class HotkeyHook : IDisposable
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
 
+    /// <param name="rawInput">The watchdog's reference; started by <see cref="Start"/>, disposed with the hook.</param>
     /// <param name="hookBlind">
     /// true while the hooks cannot see input for a reason other than being dead: an elevated window in front, whose input UIPI does not
     /// deliver to a non-elevated low-level hook. Called on the worker thread, so it must not touch state shared with other threads.
     /// </param>
     /// <param name="clock">Milliseconds for the wheel hold timing (default <see cref="Environment.TickCount64"/>).</param>
     /// <param name="isInjected">The key or button the clicker sends right now (see <see cref="HotkeyPump"/>).</param>
-    public HotkeyHook(HotkeyTracker tracker, Func<int, bool> isKeyDown, Func<bool>? hookBlind = null, Func<long>? clock = null,
-        Func<int, bool>? isInjected = null)
+    public HotkeyHook(HotkeyTracker tracker, RawInputMonitor rawInput, Func<int, bool> isKeyDown, Func<bool>? hookBlind = null,
+        Func<long>? clock = null, Func<int, bool>? isInjected = null)
     {
         _pump = new HotkeyPump(tracker, isKeyDown, isInjected);
+        _rawInput = rawInput;
+        _motionClock = rawInput.Clock;
         _hookBlind = hookBlind ?? (() => false);
         _clock = clock ?? (() => Environment.TickCount64);
+    }
+
+    /// <summary>Where the pointer offsets of a pattern recording go; null = nowhere. Any thread.</summary>
+    public IPointerSink? PointerSink
+    {
+        get => Volatile.Read(ref _pointerSink);
+        set => Volatile.Write(ref _pointerSink, value);
     }
 
     /// <summary>
@@ -450,7 +484,7 @@ internal sealed class HotkeyHook : IDisposable
         {
             Volatile.Write(ref _mouseTick, Environment.TickCount);
             int message = (int)wParam;
-            if (message != User32.WM_MOUSEMOVE)   // by far the most frequent event; nothing to do for it
+            if (message != User32.WM_MOUSEMOVE)   // by far the most frequent event; nothing to do for it outside a recording
             {
                 try
                 {
@@ -460,8 +494,23 @@ internal sealed class HotkeyHook : IDisposable
                 }
                 catch { Interlocked.Increment(ref _callbackErrors); }
             }
+            else if (PointerSink is { IsRecording: true } sink)
+            {
+                try { RecordPointer(sink, lParam); }
+                catch { Interlocked.Increment(ref _callbackErrors); }
+            }
         }
         return User32.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+
+    // The hook runs before Windows moves the cursor, so GetCursorPos still has the position before this move: pt minus it is the move's
+    // own offset. Differences of successive pt values would break in games that put the pointer back to the centre after every move.
+    private void RecordPointer(IPointerSink sink, IntPtr lParam)
+    {
+        if ((ulong)(long)Marshal.ReadIntPtr(lParam, MouseExtraInfoOffset) == InputInjector.Tag || !User32.GetCursorPos(out var before)) return;
+        int dx = Marshal.ReadInt32(lParam, MousePointXOffset) - before.X;
+        int dy = Marshal.ReadInt32(lParam, MousePointYOffset) - before.Y;
+        if (dx != 0 || dy != 0) sink.OnPointerMove(_motionClock.NowMs, dx, dy);
     }
 
     private void Record(HookInput input)

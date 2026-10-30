@@ -9,10 +9,10 @@ namespace WKI_Clipper.Tests;
 /// <summary>Which raw input records count as the hook watchdog's reference: only those Windows turns into a hook event.</summary>
 public sealed class RawInputEventsTests
 {
-    private static readonly IntPtr Pen = new(0x2A), Tablet = new(0x3B);
+    private static readonly IntPtr Pen = new(0x2A), Tablet = new(0x3B), Sensor = new(0x4C);
 
-    private static User32.RAWMOUSE Mouse(int x = 0, int y = 0, ushort flags = 0, ushort buttons = 0, ushort data = 0)
-        => new() { usFlags = flags, usButtonFlags = buttons, usButtonData = data, lLastX = x, lLastY = y };
+    private static User32.RAWMOUSE Mouse(int x = 0, int y = 0, ushort flags = 0, ushort buttons = 0, ushort data = 0, uint extra = 0)
+        => new() { usFlags = flags, usButtonFlags = buttons, usButtonData = data, lLastX = x, lLastY = y, ulExtraInformation = extra };
 
     private static User32.RAWKEYBOARD Key(ushort makeCode, ushort vKey) => new() { MakeCode = makeCode, VKey = vKey };
 
@@ -88,5 +88,46 @@ public sealed class RawInputEventsTests
         Assert.Equal(16, Marshal.SizeOf<User32.RAWKEYBOARD>());
         Assert.Equal(24, (int)Marshal.OffsetOf<User32.RAWINPUT>(nameof(User32.RAWINPUT.data)));
         Assert.Equal(48, Marshal.SizeOf<User32.RAWINPUT>());
+    }
+
+    // RAWMOUSE has a USHORT followed by a ULONG-aligned union: two bytes of padding sit after usFlags.
+    [Fact]
+    public void Rawmouse_layout_matches_native()
+    {
+        static int Offset(string field) => (int)Marshal.OffsetOf<User32.RAWMOUSE>(field);
+
+        Assert.Equal(0, Offset(nameof(User32.RAWMOUSE.usFlags)));
+        Assert.Equal(4, Offset(nameof(User32.RAWMOUSE.usButtonFlags)));
+        Assert.Equal(6, Offset(nameof(User32.RAWMOUSE.usButtonData)));
+        Assert.Equal(8, Offset(nameof(User32.RAWMOUSE.ulRawButtons)));
+        Assert.Equal(12, Offset(nameof(User32.RAWMOUSE.lLastX)));
+        Assert.Equal(16, Offset(nameof(User32.RAWMOUSE.lLastY)));
+        Assert.Equal(20, Offset(nameof(User32.RAWMOUSE.ulExtraInformation)));
+        Assert.Equal(24, Marshal.SizeOf<User32.RAWMOUSE>());
+    }
+
+    [Fact]
+    public void Cursor_info_and_mouse_parameters_match_native()
+    {
+        Assert.Equal(24, Marshal.SizeOf<User32.CURSORINFO>());   // x64: cbSize, flags, HCURSOR, POINT
+        Assert.Equal(8, (int)Marshal.OffsetOf<User32.CURSORINFO>(nameof(User32.CURSORINFO.hCursor)));
+        Assert.Equal(12, Marshal.SizeOf<User32.MOUSEPARAMS>());   // SPI_GETMOUSE: int[3]
+        Assert.Equal(8, (int)Marshal.OffsetOf<User32.MOUSEPARAMS>(nameof(User32.MOUSEPARAMS.Acceleration)));
+    }
+
+    // ---- the pattern recorder's raw track: physical relative motion only ----
+
+    [Fact]
+    public void Raw_sink_skips_absolute_injected_and_deviceless_records()
+    {
+        Assert.True(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Sensor, Mouse(3, -2)));
+        Assert.True(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Sensor, Mouse(0, 1, extra: 0x1234)));   // someone else's extra info
+
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEKEYBOARD, Sensor, Mouse(3, -2)));
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Tablet, Mouse(30000, 20000, User32.MOUSE_MOVE_ABSOLUTE)));
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, IntPtr.Zero, Mouse(3, -2)));   // injected (by anyone)
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Sensor, Mouse(3, -2, extra: (uint)InputInjector.Tag)));
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Sensor, Mouse(buttons: 0x0001)));   // a click, no motion
+        Assert.False(RawInputEvents.IsRecordableMotion(User32.RIM_TYPEMOUSE, Sensor, Mouse(5, 5, User32.MOUSE_ATTRIBUTES_CHANGED)));
     }
 }

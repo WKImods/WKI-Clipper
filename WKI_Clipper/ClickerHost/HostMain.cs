@@ -127,9 +127,11 @@ internal static class HostMain
             () => WindowsHostEnvironment.IsCursorOverProcess(args.ParentPid));
         HostLog.Forward = (level, text) => server.Send(new LogMessage(level, text));
 
+        // The hook watchdog's reference and the source of a pattern recording's raw track; the hook starts and disposes it.
+        var rawInput = new RawInputMonitor(clock);
         // UIPI: with an elevated window in front, a non-elevated host's low-level hooks see nothing - the watchdog must not take that for a dead hook.
-        using var hook = new HotkeyHook(tracker, env.IsKeyDown, () => !env.HostElevated && WindowsHostEnvironment.IsForegroundWindowElevated(),
-            isInjected: vk => vk == engine.OutputVk);
+        using var hook = new HotkeyHook(tracker, rawInput, env.IsKeyDown,
+            () => !env.HostElevated && WindowsHostEnvironment.IsForegroundWindowElevated(), isInjected: vk => vk == engine.OutputVk);
         if (!hook.Start()) HostLog.Error("The hotkey hooks are not running (yet): hotkeys do not work until they are.");
         using var zoneTimer = new System.Threading.Timer(_ =>
         {

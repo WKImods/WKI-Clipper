@@ -105,10 +105,49 @@ internal static partial class User32
     [DllImport("user32.dll")]
     public static extern uint GetDoubleClickTime();
 
+    // --- Mouse acceleration and cursor visibility (the pattern player's replay choice, mouse-patterns design 4.3) ---
+
+    /// <summary>SystemParametersInfo: the two acceleration thresholds and the acceleration level, as <see cref="MOUSEPARAMS"/>.</summary>
+    public const uint SPI_GETMOUSE = 0x0003;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEPARAMS
+    {
+        public int Threshold1;
+        public int Threshold2;
+        /// <summary>Non-zero while "Zeigerbeschleunigung verbessern" (Enhance pointer precision) is on.</summary>
+        public int Acceleration;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, out MOUSEPARAMS pvParam, uint fWinIni);
+
+    /// <summary>Whether Windows' pointer ballistics are non-linear ("Zeigerbeschleunigung verbessern" on); null when it does not answer.</summary>
+    public static bool? IsMouseAccelerationOn()
+        => SystemParametersInfoW(SPI_GETMOUSE, 0, out MOUSEPARAMS mouse, 0) ? mouse.Acceleration != 0 : null;
+
+    /// <summary>CURSORINFO.flags: the cursor is shown.</summary>
+    public const uint CURSOR_SHOWING = 0x00000001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CURSORINFO
+    {
+        public uint cbSize;
+        public uint flags;
+        public IntPtr hCursor;
+        public POINT ptScreenPos;
+    }
+
+    /// <summary>The global cursor: shown or hidden (<see cref="CURSOR_SHOWING"/>), its handle and position. Set cbSize before the call.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetCursorInfo(ref CURSORINFO pci);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassNameW(IntPtr hWnd, [Out] char[] lpClassName, int nMaxCount);
 
-    // --- Raw input: the hook watchdog's keyboard/mouse-only reference ---
+    // --- Raw input: the hook watchdog's keyboard/mouse-only reference and the pattern recorder's raw track ---
 
     public const int WM_INPUT = 0x00FF;
     public const ushort HID_USAGE_PAGE_GENERIC = 0x01;
@@ -151,16 +190,18 @@ internal static partial class User32
     public const ushort RI_MOUSE_HWHEEL = 0x0800;
     public const ushort KEYBOARD_OVERRUN_MAKE_CODE = 0x00FF;
 
-    [StructLayout(LayoutKind.Sequential)]
+    /// <summary>Explicit offsets: the union of ulButtons after usFlags is ULONG-aligned, so two bytes of padding sit in between.</summary>
+    [StructLayout(LayoutKind.Explicit)]
     public struct RAWMOUSE
     {
-        public ushort usFlags;
-        public ushort usButtonFlags;   // with usButtonData the ULONG-aligned union of ulButtons
-        public ushort usButtonData;
-        public uint ulRawButtons;
-        public int lLastX;
-        public int lLastY;
-        public uint ulExtraInformation;
+        [FieldOffset(0)] public ushort usFlags;
+        [FieldOffset(4)] public ushort usButtonFlags;   // with usButtonData the union of ulButtons
+        [FieldOffset(6)] public ushort usButtonData;
+        [FieldOffset(8)] public uint ulRawButtons;
+        [FieldOffset(12)] public int lLastX;
+        [FieldOffset(16)] public int lLastY;
+        /// <summary>The dwExtraInfo of injected input (truncated to 32 bits), so our own <c>InputInjector.Tag</c> shows here.</summary>
+        [FieldOffset(20)] public uint ulExtraInformation;
     }
 
     [StructLayout(LayoutKind.Sequential)]

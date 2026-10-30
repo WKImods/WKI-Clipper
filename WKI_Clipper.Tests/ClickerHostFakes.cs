@@ -99,6 +99,15 @@ internal sealed class FakeInput : IInputSink
         return true;
     }
 
+    /// <summary>Like the injector, 0/0 sends nothing. The cursor follows 1:1 (linear pointer ballistics).</summary>
+    public bool MoveBy(int dx, int dy)
+    {
+        if (dx == 0 && dy == 0) return true;
+        if (!Add("moveby", dx, dy)) return false;
+        if (_env is not null) _env.Cursor = new PixelPoint(_env.Cursor.X + dx, _env.Cursor.Y + dy);
+        return true;
+    }
+
     public bool MouseDown(ClickerMouseButton button)
     {
         if (ThrowOnClick is not null) throw ThrowOnClick;

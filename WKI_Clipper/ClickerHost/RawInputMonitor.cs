@@ -53,6 +53,31 @@ internal sealed class RawInputEvents
 
     public static bool IsKeyboardEvent(in User32.RAWKEYBOARD keyboard)
         => keyboard.VKey != 0xFF && keyboard.MakeCode != User32.KEYBOARD_OVERRUN_MAKE_CODE;
+
+    /// <summary>
+    /// A record for the pattern recorder's raw track (mouse-patterns design 4.3, 5.1): relative motion of a physical mouse. Absolute
+    /// devices (pens, tablets, remote desktops) report positions, not counts; input injected by anyone has no device; ours also carries
+    /// <see cref="InputInjector.Tag"/>, so a running playback or glide is never recorded.
+    /// </summary>
+    public static bool IsRecordableMotion(uint type, IntPtr device, in User32.RAWMOUSE mouse)
+        => type == User32.RIM_TYPEMOUSE
+           && device != IntPtr.Zero
+           && (mouse.usFlags & (User32.MOUSE_MOVE_ABSOLUTE | User32.MOUSE_ATTRIBUTES_CHANGED)) == 0
+           && mouse.ulExtraInformation != (uint)InputInjector.Tag
+           && (mouse.lLastX != 0 || mouse.lLastY != 0);
+}
+
+/// <summary>
+/// Receives the raw track of a pattern recording. Called on the raw input thread for every physical relative mouse record while
+/// <see cref="IsRecording"/> is true: it must not block, allocate or throw.
+/// </summary>
+internal interface IRawMouseSink
+{
+    /// <summary>false: the monitor skips the call (and the clock read) altogether.</summary>
+    bool IsRecording { get; }
+
+    /// <summary>Mouse counts of one record, stamped with the monitor's <see cref="IClock"/>.</summary>
+    void OnRawMouse(double atMs, int dx, int dy);
 }
 
 /// <summary>
@@ -65,6 +90,10 @@ internal sealed class RawInputEvents
 /// It lives on its own thread with a message-only window: the hook thread must answer its callbacks quickly (a mouse reports 1000+
 /// times a second), and a stalled hook thread - the very failure the watchdog looks for - must not stop this reference as well.
 /// </para>
+/// <para>
+/// The same window feeds the pattern recorder's raw track (<see cref="MouseSink"/>): a process can register raw mouse input for one
+/// window only, so a second registration would take this reference away.
+/// </para>
 /// </summary>
 internal sealed class RawInputMonitor : IDisposable
 {
@@ -75,6 +104,7 @@ internal sealed class RawInputMonitor : IDisposable
 
     private readonly string _className = "WKI_ClickerRawInput_" + Interlocked.Increment(ref s_instances);
     private readonly ManualResetEventSlim _ready = new(false);
+    private IRawMouseSink? _mouseSink;
     private User32.WindowProc? _windowProc;   // kept: the window class holds no reference to the delegate
     private Thread? _thread;
     private int _threadId;
@@ -83,6 +113,19 @@ internal sealed class RawInputMonitor : IDisposable
     private int _keyboardTick, _mouseTick;   // Environment.TickCount of the last raw input event of each kind
     private IntPtr _keyboardDevice, _mouseDevice;   // the device that sent it
     private readonly RawInputEvents _events = new();
+
+    /// <param name="clock">Stamps the raw track of a pattern recording (QPC; the watchdog ticks stay in the GetTickCount domain).</param>
+    public RawInputMonitor(IClock clock) => Clock = clock;
+
+    /// <summary>The time base of the recorded motion; the hook stamps the pointer track with it too, so both tracks share it.</summary>
+    public IClock Clock { get; }
+
+    /// <summary>Where physical relative mouse motion goes (<see cref="RawInputEvents.IsRecordableMotion"/>); null = nowhere. Any thread.</summary>
+    public IRawMouseSink? MouseSink
+    {
+        get => Volatile.Read(ref _mouseSink);
+        set => Volatile.Write(ref _mouseSink, value);
+    }
 
     public RawInputState State => (RawInputState)Volatile.Read(ref _state);
 
@@ -218,6 +261,9 @@ internal sealed class RawInputMonitor : IDisposable
                     Volatile.Write(ref _mouseDevice, device);
                     Volatile.Write(ref _mouseTick, Environment.TickCount);
                 }
+
+                if (MouseSink is { IsRecording: true } sink && RawInputEvents.IsRecordableMotion(input.header.dwType, device, input.data.mouse))
+                    sink.OnRawMouse(Clock.NowMs, input.data.mouse.lLastX, input.data.mouse.lLastY);
             }
         }
         return User32.DefWindowProcW(hWnd, msg, wParam, lParam);   // WM_INPUT needs it to free the raw input

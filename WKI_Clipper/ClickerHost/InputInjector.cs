@@ -22,14 +22,20 @@ internal sealed class Win32SendInput : ISendInput
 }
 
 /// <summary>
-/// What the click engine sends. Every method returns true when Windows took ALL events of the call; false (UIPI blocking an elevated
-/// window, a locked desktop) leaves the engine to flag it. A press stays tracked until its release went out, so
+/// What the click engine and the pattern player send. Every method returns true when Windows took ALL events of the call; false (UIPI
+/// blocking an elevated window, a locked desktop) leaves the caller to flag it. A press stays tracked until its release went out, so
 /// <see cref="ReleaseAll"/> can always undo what this sink did.
 /// </summary>
 internal interface IInputSink
 {
     /// <summary>Moves the cursor to a virtual-screen pixel (absolute, multi-monitor, negative coordinates ok).</summary>
     bool MoveTo(int x, int y);
+
+    /// <summary>
+    /// A relative move by mouse counts (MOUSEEVENTF_MOVE without ABSOLUTE): other programs' raw input gets the counts 1:1, the pointer
+    /// moves through Windows' pointer ballistics. Presses nothing, so nothing to track; 0/0 sends nothing and returns true.
+    /// </summary>
+    bool MoveBy(int dx, int dy);
 
     bool MouseDown(ClickerMouseButton button);
     bool MouseUp(ClickerMouseButton button);
@@ -54,8 +60,8 @@ internal interface IInputSink
 }
 
 /// <summary>
-/// SendInput for the clicker (design section 4): mouse buttons, absolute virtual-desktop moves normalised to 0..65535 over the virtual
-/// screen, keyboard by scan code (extended flag where needed). Every event carries <see cref="Tag"/> in dwExtraInfo so the host's own
+/// SendInput for the clicker (design section 4) and the pattern player: mouse buttons, absolute virtual-desktop moves normalised to
+/// 0..65535 over the virtual screen, relative moves, keyboard by scan code (extended flag where needed). Every event carries <see cref="Tag"/> in dwExtraInfo so the host's own
 /// hooks skip it. Return counts are checked, a failed release is retried, and a Shift that went down for a failed key is released again.
 /// </summary>
 internal sealed class InputInjector : IInputSink
@@ -109,6 +115,16 @@ internal sealed class InputInjector : IInputSink
             var vs = _virtualScreen();
             _inputs[0] = Mouse(User32.MOUSEEVENTF_MOVE | User32.MOUSEEVENTF_ABSOLUTE | User32.MOUSEEVENTF_VIRTUALDESK,
                 ToAbsolute(x, vs.X, vs.W), ToAbsolute(y, vs.Y, vs.H));
+            return Send(1) == 1;
+        }
+    }
+
+    public bool MoveBy(int dx, int dy)
+    {
+        if (dx == 0 && dy == 0) return true;
+        lock (_lock)
+        {
+            _inputs[0] = Mouse(User32.MOUSEEVENTF_MOVE, dx, dy);
             return Send(1) == 1;
         }
     }
