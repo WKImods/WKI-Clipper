@@ -35,17 +35,21 @@ public partial class CrosshairView : UserControl
 
     /// <summary>
     /// A user's pick in "Gilt für" lasts while the widget is on screen; when it opens again the editor follows the
-    /// detected game (see <see cref="CrosshairProfileEditor.FollowDetectedGame"/>).
+    /// detected game (see <see cref="CrosshairProfileEditor.FollowDetectedGame"/>). Hiding this view itself (the tab switch
+    /// of the container) keeps the pick; the container releases it when the whole widget leaves the screen.
     /// </summary>
     private void OnVisibleChanged()
     {
         if (_editor is not null)
         {
-            if (!IsVisible) _editor.ReleaseUserPick();
+            if (!IsVisible) { if (Visibility == Visibility.Visible) _editor.ReleaseUserPick(); }
             else { SyncToDetectedGame(); _targetBar?.Refresh(); _shownOverrides = _editor.HasOverrides; }
         }
         PublishEditTarget();
     }
+
+    /// <summary>The widget left the screen: the next time it opens the editor follows the detected game again.</summary>
+    public void ReleaseUserPick() => _editor?.ReleaseUserPick();
 
     /// <summary>
     /// Until the user picks a target, the editor shows the detected game's profile when it has crosshair values of

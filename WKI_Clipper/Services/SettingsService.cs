@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WKI_Clipper.Models;
+using WKI_Clipper.Services.AutoClicker;
 
 namespace WKI_Clipper.Services;
 
@@ -19,7 +20,7 @@ public sealed class SettingsService
     };
 
     /// <summary>Current settings schema version — bump when migrating.</summary>
-    public const int CurrentSchemaVersion = 10;
+    public const int CurrentSchemaVersion = 12;
 
     public string SettingsFilePath { get; }
     /// <summary>Previous version of settings.json, kept by every Save (see <see cref="Save"/>).</summary>
@@ -116,6 +117,13 @@ public sealed class SettingsService
         s.Shortcuts.Items ??= new();
         s.Shortcuts.RecentGames ??= new();
         s.Theme ??= new ThemeSettings();
+        s.AutoClicker ??= new AutoClickerSettings();
+        // Hand-edited blacklists: null entries, doubled or path-form exes are cleaned up like the profile keys below.
+        s.AutoClicker.Blacklist = AutoClickerBlacklist.Normalize(s.AutoClicker.Blacklist);
+        if (string.IsNullOrWhiteSpace(s.AutoClicker.GamingUtilitiesTab)) s.AutoClicker.GamingUtilitiesTab = "Crosshair";
+        // The native clicker: a hand-edited file may carry out-of-range numbers, null lists or a broken hotkey.
+        s.AutoClicker.Clicker ??= new ClickerSettings();
+        ClickerSettingsRules.Normalize(s.AutoClicker.Clicker);
         // Per-game profiles: keys of a hand-edited file may differ in case/path form from the ones the lookup uses.
         s.GameProfiles = GameProfiles.Normalize(s.GameProfiles);
     }
@@ -304,6 +312,28 @@ public sealed class SettingsService
             s.SchemaVersion = 10;
             changed = true;
             Logger.Info("Settings migrated to schema v10: shortcut bar section ensured");
+        }
+
+        // v10 → v11: Gaming Utilities widget (crosshair + AutoClicker tabs). The section arrives with its defaults (empty
+        // blacklist, warning not yet acknowledged, crosshair tab); only the version is stamped.
+        if (s.SchemaVersion < 11)
+        {
+            s.AutoClicker ??= new AutoClickerSettings();
+            s.SchemaVersion = 11;
+            changed = true;
+            Logger.Info("Settings migrated to schema v11: Gaming Utilities / AutoClicker section ensured");
+        }
+
+        // v11 → v12: the native clicker. The Clicker sub-section arrives with its defaults (Ctrl+Alt+Y, 25 per second, not armed);
+        // "Clicker bereit" is always off after an upgrade so the helper process never starts without the user's say-so.
+        if (s.SchemaVersion < 12)
+        {
+            s.AutoClicker ??= new AutoClickerSettings();
+            s.AutoClicker.Clicker ??= new ClickerSettings();
+            s.AutoClicker.Clicker.Armed = false;
+            s.SchemaVersion = 12;
+            changed = true;
+            Logger.Info("Settings migrated to schema v12: native AutoClicker section ensured (not armed)");
         }
 
         return changed;

@@ -4,8 +4,9 @@ Replay clipper, screen recorder and gaming overlay for Windows — one tray app 
 pile of tools. Instant replay of up to 30 minutes, a gallery with notes, trimming and
 one-click Discord compression, an Xbox-style widget board with a shortcut bar for your games,
 launchers and browsers, OBS control, Spotify and WhatsApp, a performance overlay with FPS that
-you can place anywhere, your own accent and glass colours, a crosshair with per-game profiles
-and clip combos on your controller. No account, no telemetry, no cloud.
+you can place anywhere, your own accent and glass colours, a crosshair with per-game profiles,
+a built-in auto clicker with a game blacklist, and clip combos on your controller. No account,
+no telemetry, no cloud.
 
 **[Download the latest release](https://github.com/WKImods/WKI-Clipper/releases/latest)**
 
@@ -27,9 +28,11 @@ drag mode. The UI starts in German; switch to English under Settings → About.<
 | `Ctrl+F10` | Pause/resume the replay buffer |
 | `Ctrl+Alt+G` | Open/close the widget board |
 | `Ctrl+Alt+C` | Show/hide the crosshair |
+| `Ctrl+Alt+Y` | Start/stop the [AutoClicker](#autoclicker) — only while *Clicker ready* is on; set in the AutoClicker tab |
 | *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off · any [shortcut bar](#shortcut-bar) entry (bound in its edit dialog) |
 
-All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks).
+All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks); the
+AutoClicker's own hotkeys are recorded in its tab.
 
 ### Controller
 
@@ -82,7 +85,7 @@ switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 | | **Audio** | Devices, levels, gain, sync offset, separate mic track, sound cues |
 | | **Gallery** | Clips, recordings, GIFs and screenshots — search, favourites, notes, trim, Discord compress, game filter |
 | | **Performance** | CPU, GPU, GPU temperature and fan, RAM, VRAM, FPS — plus the on-screen overlay |
-| | **Crosshair** | PNG crosshair overlay, optionally with its own look per game |
+| | **Gaming Utilities** | Tab *Crosshair*: PNG crosshair overlay, optionally with its own look per game. Tab *AutoClicker*: a built-in auto clicker (rate, hotkeys, failsafes, zones, click points, presets, statistics) with a game blacklist and whitelist |
 | Stream | **Streaming** | Software stream deck for OBS |
 | | **Mixer** | Fader, dB readout and mute per OBS audio input, synced both ways |
 | | **Sources** | Scene switcher and per-source visibility for the current scene |
@@ -317,6 +320,82 @@ through a kernel driver.
 
 <img src="docs/screenshots/performance.png" height="360" alt="Performance widget: FPS (once a game is detected), CPU and GPU load, GPU temperature and fan, GPU and VRAM clock">
 
+## Gaming Utilities
+
+One widget, two tabs: **Crosshair** (see [Crosshair](#crosshair)) and **AutoClicker**. The last tab you
+used is remembered.
+
+<img src="docs/screenshots/gaming-utilities-crosshair.png" height="420" alt="Gaming Utilities widget on the Crosshair tab: the Crosshair and AutoClicker tabs at the top, Applies to, the crosshair library and the image adjustments">
+
+**New in 0.18.0:** the Crosshair widget is now **Gaming Utilities** — the crosshair works exactly
+as before on its own tab (same hotkey, same per-game profiles), and the new **AutoClicker** tab
+is a complete auto clicker built into the clipper: rate, hotkeys, failsafes, zones, click points,
+presets, statistics and a game blacklist.
+
+### AutoClicker
+
+A **built-in auto clicker**, part of the clipper itself (MIT like the rest of it) - no extra program
+needed.
+
+- **Warning:** auto clickers can break the rules of online games with anti-cheat (BattlEye,
+  Easy Anti-Cheat, Vanguard ...) and lead to bans. A banner says so until you press *Understood*;
+  nothing is locked by it. Use it at your own risk.
+- **Clicker ready:** the switch at the top starts a small helper process (`WKI_Clipper.exe --clicker-host`)
+  that watches the hotkey (default `Ctrl+Alt+Y`) and sends the clicks. Only this helper installs the
+  keyboard and mouse hooks and sends input; the clipper itself installs no input hooks and never
+  injects input. Off = no helper, no hook, no clicks. The status pill shows *Off*, *Ready*,
+  *Running · 25 cps · 1,234 clicks*, *Locked: <game> is on the blacklist*, *Stopped: <reason>*, or
+  that an administrator window blocks the clicks. *Start*/*Stop* work like the hotkey.
+
+<img src="docs/screenshots/autoclicker-simple.png" height="420" alt="AutoClicker tab, Simple: Clicker ready switch with the status pill, rate per second, mouse button or keyboard key, Toggle or Hold and the hotkey box">
+
+- **Simple:** clicks per second, minute, hour or day (1–500), a mouse button (left, right, middle)
+  or a keyboard key (with upper/lower case for letters), Toggle or Hold, and the hotkey.
+  **Any input can be the hotkey:** click the box and press it — keys incl. Esc, Backspace, Print
+  Screen, F13-F24 and media keys, modifiers alone (Ctrl+Shift, AltGr), up to 5 keys, any mouse
+  button incl. the left one, or the mouse wheel (up/down/tilt; one scroll gesture counts as one
+  press, held while you keep scrolling), mouse input over the box. The combo is taken when you let
+  go. *Cancel*, a click elsewhere or leaving the window cancels; *Default* resets it to `Ctrl+Alt+Y`.
+  Risky choices (the left button alone, modifiers only, Esc, the wheel, the output key inside the
+  hotkey ...) are allowed and get a warning under the box; mouse hotkeys do not fire over the
+  clipper's own windows.
+
+<img src="docs/screenshots/autoclicker-advanced.png" height="420" alt="AutoClicker tab, Advanced: cycle length, extended limit, random variation, hold time, double click, click and time limits, strict modifiers and the master switch hotkey">
+
+- **Advanced:**
+  - *Rate or interval:* a cycle length (1 ms up to 999 h) instead of a rate, and an *extended
+    limit* that raises the maximum from 500 to 1000 per unit.
+  - *Randomisation:* every interval varies at random around the set rate (spread 0–200 %,
+    35 % by default); the average rate stays what you set.
+  - *Hold time (duty cycle):* how much of each cycle the button or key stays down (0–100 %), or
+    *hold down until stopped* instead of clicking.
+  - *Double click* (capped at 10 double clicks per second).
+  - *Click limit* and *time limit* (seconds, minutes or hours) end a run on their own.
+  - *Strict modifiers:* an extra modifier held on top of the hotkey's own stops it from matching.
+  - *Master switch:* a second hotkey (Toggle or Hold; recorded like the hotkey, *Clear* removes it)
+    that has to allow the clicker before the hotkey can start it; switching it off stops a run.
+  - *Running indicator:* the small "AutoClicker · 25 cps" label while it runs — never in your
+    clips, stream or screenshots; hidden when the capture method cannot exclude it.
+
+<img src="docs/screenshots/autoclicker-zones.png" height="420" alt="AutoClicker tab, Zones and safety: corner, edge and Alt+Tab stops, the zone list with Draw zones, the game blacklist with Ignore blacklist and the whitelist">
+
+- **Zones & safety:** moving the mouse into a screen corner or to an edge stops it (per monitor,
+  size adjustable), so does Alt+Tab / Task View. Draw **stop**, **pause** and **start** zones on
+  screen: inside a stop zone the run ends, inside a pause zone it waits, entering a start zone
+  starts it and leaving it stops that run again (a cursor already parked in the zone starts
+  nothing). The **game blacklist** lives here: while a listed game runs or is in front, the
+  clicker is locked (a toast tells you when it stopped a run). *Ignore blacklist* lifts the lock
+  until the clipper restarts. The **whitelist** (optional): a run only starts while one of the
+  listed programs is in front and stops as soon as another program comes to the front.
+- **Click points:** a sequence of screen points (x, y, clicks, jitter radius) picked on screen; the
+  clicker moves there before clicking and walks the route in order, optionally stopping when the
+  route is done.
+- **Presets:** three built-in ones (Standard, Rapid Fire, Precision), your own presets (save, rename,
+  delete, export/import as JSON; hotkeys are never part of a preset) and **statistics** (sessions,
+  total clicks and time, the last 100 runs with their stop reason, reset).
+- **Measuring:** `tools/measure-clicks.ps1` opens a counting window and prints the real rate and the
+  timing jitter (mean CPS, interval stddev, min/max) of whatever clicks into it, e.g.
+  `powershell -ExecutionPolicy Bypass -File tools\measure-clicks.ps1 -Seconds 20 -TargetCps 100`.
 ## Crosshair
 
 Import your own PNGs into a small library, pick one, place it, toggle it with `Ctrl+Alt+C`.
@@ -439,6 +518,8 @@ Everything is configurable in the board. The file behind it is
   "Theme":        { "AccentPreset": "wki-orange", "GlassPreset": "violet" },  // "AccentCustom" / "GlassCustom": "#RRGGBB"
   "Discord":      { "SmallTargetBytes": 20000000, "LargeTargetBytes": 500000000, "OnlyWhenNoGame": false },
   "GameProfiles": { "armareforgersteam.exe": { "DisplayName": "Arma Reforger", "ClipSeconds": 300 } },
+  "AutoClicker":  { "Blacklist": [ { "ExeName": "cs2.exe", "DisplayName": "Counter-Strike 2" } ],
+                    "Clicker": { "Armed": false, "ClickSpeed": 25, "ClickUnit": "Second" } },  // plus zones, click points, presets, stats
   "Behavior":     { "Language": "Deutsch" }
 }
 ```
@@ -456,7 +537,10 @@ Everything is configurable in the board. The file behind it is
 | FPS values, overlay look and position | Performance widget → On-screen overlay (drag it with the board open for *Free*) |
 | Shortcut bar: entries, order, hotkeys, default browser | Gear on the shortcut bar |
 | Accent and glass colours | Sidebar footer → *Colours* |
-| Crosshair per game | Crosshair widget → *Applies to* |
+| Crosshair per game | Gaming Utilities widget → *Crosshair* tab → *Applies to* |
+| AutoClicker rate, output, hotkey | Gaming Utilities widget → *AutoClicker* tab → *Simple* / *Advanced* |
+| AutoClicker failsafes, zones, blacklist / whitelist | Gaming Utilities widget → *AutoClicker* tab → *Zones & safety* |
+| AutoClicker presets and statistics | Gaming Utilities widget → *AutoClicker* tab → *Presets* |
 
 **Folder rules.** The buffer folder must be a full path — not a bare drive (`D:`), not a
 drive root, not inside the install folder, and not the clips or screenshots folder or
@@ -507,6 +591,12 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
   +-- PerformanceMonitorService  counters + GPU sensors (D3DKMT), only while visible
   +-- PerfOverlayPlacement     eight anchors or a free spot on one monitor (pure, tested)
   +-- ShortcutService          shortcut bar: scan, start paths, hotkeys (resolver and catalogs tested)
+  +-- AutoClickerGuard         locks the AutoClicker while a blacklisted game runs or is in front (decision pure, tested)
+  +-- ClickerController        runs the AutoClicker helper process (--clicker-host) while "Clicker ready" is on, pipe protocol, stats
+  AutoClicker helper (WKI_Clipper.exe --clicker-host, only while "Clicker ready" is on)
+  +-- HotkeyHook               the only low-level keyboard/mouse hooks (hotkey and master switch)
+  +-- ClickEngine              timing, randomisation, hold time, limits, zones, click-point route
+  +-- InputInjector            sends the clicks and key presses (SendInput)
   +-- ThemeService             accent + glass palettes applied live (ThemePaletteBuilder tested)
   Streaming
   +-- ObsWebSocketService      OBS control via obs-websocket v5 (auto-reconnect, events)
@@ -522,6 +612,10 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
 - **Anti-cheat:** nothing is injected into or read from the game process — only Windows'
   own capture APIs and, for FPS, Windows' own present log (a passive ETW session). Should
   be fine with BattlEye/EAC, but there is no guarantee.
+- **AutoClicker and anti-cheat:** the clicks are ordinary Windows input, but Windows marks
+  them as injected and many online games forbid auto clickers — a ban is possible. Put such
+  games on the blacklist. An administrator window in front cannot receive the clicks (the
+  status pill says so).
 - **FPS needs a Windows permission:** admin rights or membership in the group *Performance
   Log Users*; the Performance widget says how to add it. FPS is measured for the game in
   front only.

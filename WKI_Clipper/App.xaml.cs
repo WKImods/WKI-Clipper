@@ -15,10 +15,27 @@ public partial class App : Application
     private Mutex? _singleInstanceMutex;
     public static AppHost Host { get; private set; } = null!;
     private WidgetHost? _widgetHost;
+    private bool _clickerHostMode;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Release mode of the native AutoClicker (after a helper was killed): let go of its keys and leave, before anything else.
+        if (Services.AutoClicker.ClickerRelease.IsInvocation(e.Args))
+        {
+            _clickerHostMode = true;
+            Shutdown(ClickerHost.HostMain.RunRelease(e.Args));
+            return;
+        }
+
+        // Helper-process mode of the native AutoClicker: none of the app below runs - no mutex, settings, logger file, tray or window.
+        if (ClickerHost.HostMain.IsHostInvocation(e.Args))
+        {
+            _clickerHostMode = true;
+            RunClickerHost(e.Args);
+            return;
+        }
 
         DispatcherUnhandledException += (s, ex) =>
         {
@@ -31,6 +48,8 @@ public partial class App : Application
         {
             Logger.Error("AppDomain unhandled exception", (ex.ExceptionObject as Exception)
                 ?? new Exception(ex.ExceptionObject?.ToString() ?? "unknown"));
+            // The process dies and the job kills the helper without a release: end it now and let go of what it may hold.
+            try { Host?.Clicker.Abort(); } catch { }
         };
 
         Logger.Rotate();
@@ -225,6 +244,19 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// The host runs on a pool thread (it blocks on its pipe); the application, which has no window, ends with the host's exit code
+    /// once it is done. Everything the host needs is in <see cref="ClickerHost.HostMain"/>.
+    /// </summary>
+    private void RunClickerHost(string[] args)
+    {
+        System.Threading.Tasks.Task.Run(() => ClickerHost.HostMain.Run(args)).ContinueWith(t =>
+        {
+            int code = t.IsCompletedSuccessfully ? t.Result : ClickerHost.HostMain.ExitFailure;
+            Dispatcher.BeginInvoke(new Action(() => Shutdown(code)));
+        });
+    }
+
     private async void OnHotkeyPressed(object? sender, string action)
     {
         Logger.Info($"Hotkey fired: {action}");
@@ -327,8 +359,8 @@ public partial class App : Application
         if (on && !hasImage)
         {
             ToastService.Show(Views.ToastKind.Warning, "Crosshair",
-                L.T("Kein Bild gewählt — im Crosshair-Widget ein PNG hinzufügen.",
-                    "No image selected — add a PNG in the crosshair widget."), durationSeconds: 5);
+                L.T("Kein Bild gewählt — im Widget Gaming Utilities (Tab Fadenkreuz) ein PNG hinzufügen.",
+                    "No image selected — add a PNG in the Gaming Utilities widget (Crosshair tab)."), durationSeconds: 5);
             return;
         }
         ToastService.Show(Views.ToastKind.Info, "Crosshair",
@@ -342,6 +374,7 @@ public partial class App : Application
     /// </summary>
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
+        if (_clickerHostMode) { base.OnSessionEnding(e); return; }   // the host process never touches the clipper's log
         Logger.Info($"Session ending ({e.ReasonSessionEnding}) — shutting the capture down cleanly.");
         // Widgets first: the web widgets flush their browser storage on dispose.
         try { _widgetHost?.Dispose(); } catch (Exception ex) { Logger.Warn("Widget dispose failed: " + ex.Message); }
@@ -351,6 +384,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (_clickerHostMode) { base.OnExit(e); return; }
         Logger.Info("App exiting.");
         try { _widgetHost?.Dispose(); } catch { }
         try { Host?.Dispose(); } catch { }

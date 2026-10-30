@@ -33,6 +33,7 @@ public sealed class AppSettings
     public GamepadSettings Gamepad { get; set; } = new();
     public ShortcutSettings Shortcuts { get; set; } = new();
     public ThemeSettings Theme { get; set; } = new();
+    public AutoClickerSettings AutoClicker { get; set; } = new();
 
     /// <summary>
     /// Per-game overrides (F9 length, crosshair look), keyed by the lower-case exe file name. Keys are cleaned up
@@ -396,6 +397,35 @@ public sealed class ThemeSettings
     public string? AccentCustom { get; set; }
     public string GlassPreset { get; set; } = "violet";
     public string? GlassCustom { get; set; }
+}
+
+/// <summary>One program on the AutoClicker blacklist: while it runs or is in front, the native clicker is locked.</summary>
+public sealed class BlacklistEntry
+{
+    /// <summary>File name with ".exe" (e.g. "ArmaReforgerSteam.exe"); compared case-insensitively, never a full path.</summary>
+    public string ExeName { get; set; } = "";
+
+    /// <summary>Label for the list; the exe is the identity, this is only for people.</summary>
+    public string DisplayName { get; set; } = "";
+}
+
+/// <summary>
+/// The "Gaming Utilities" widget's own state: the AutoClicker blacklist, whether the anti-cheat warning was acknowledged, the
+/// last selected tab and the native clicker's settings. Every field has an initializer, so a settings file written before the section existed loads the defaults.
+/// "Blacklist ignorieren" is deliberately NOT here: it lasts for one clipper session only.
+/// </summary>
+public sealed class AutoClickerSettings
+{
+    public List<BlacklistEntry> Blacklist { get; set; } = new();
+
+    /// <summary>The user pressed "Verstanden" on the anti-cheat warning; the banner stays hidden from then on.</summary>
+    public bool WarningAcknowledged { get; set; }
+
+    /// <summary>Last selected tab of the Gaming Utilities widget: "Crosshair" or "AutoClicker".</summary>
+    public string GamingUtilitiesTab { get; set; } = "Crosshair";
+
+    /// <summary>The native clicker (schema v12). The blacklist above is its blacklist too.</summary>
+    public ClickerSettings Clicker { get; set; } = new();
 }
 
 /// <summary>

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace WKI_Clipper.Native;
 
-internal static class User32
+internal static partial class User32
 {
     public const int WM_HOTKEY = 0x0312;
 
@@ -69,6 +69,20 @@ internal static class User32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    /// <summary>The dwExtraInfo of the input message being handled (the AutoClicker tags its injected input there).</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetMessageExtraInfo();
+
+    /// <summary>The desktop that receives input; fails (zero) while the secure desktop of a lock screen or UAC prompt has it.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr OpenInputDesktop(uint dwFlags, [MarshalAs(UnmanagedType.Bool)] bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseDesktop(IntPtr hDesktop);
+
+    public const uint DESKTOP_READOBJECTS = 0x0001;
+
     // --- Extended window styles (widget windows toggle NOACTIVATE when pinned) ---
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -76,6 +90,13 @@ internal static class User32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    /// <summary>Width / height of the rectangle that spans all monitors.</summary>
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
 
     public const int GWL_EXSTYLE = -20;
     public const int GWL_STYLE = -16;
@@ -157,6 +178,12 @@ internal static class User32
     public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
     public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    public static extern int DwmGetWindowAttributeInt(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    /// <summary>Non-zero when DWM hides the window although it is "visible" (another virtual desktop, suspended app).</summary>
+    public const int DWMWA_CLOAKED = 14;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT

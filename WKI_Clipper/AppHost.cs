@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
+using WKI_Clipper.Services.AutoClicker;
 using WKI_Clipper.Views;
 
 namespace WKI_Clipper;
@@ -92,6 +93,7 @@ public sealed class AppHost : IDisposable
         _frameTimes?.SetTargetProcess(game?.Pid ?? 0);
         LogProfileChange(game);
         RememberShortcutGame(game);
+        AutoClickerGuard.OnGameChanged(game);
         try { GameChanged?.Invoke(game); }
         catch (Exception ex) { Logger.Warn("GameChanged handler threw: " + ex.Message); }
     }
@@ -180,6 +182,12 @@ public sealed class AppHost : IDisposable
 
     /// <summary>The shell behind <see cref="Shortcuts"/> (the edit dialog reads Start-menu shortcuts through it, too).</summary>
     public IShortcutShell ShortcutShell { get; }
+
+    /// <summary>Locks the native clicker while a blacklisted game runs; "Blacklist ignorieren" lives here for the session.</summary>
+    public AutoClickerGuard AutoClickerGuard { get; }
+
+    /// <summary>The native AutoClicker: keeps its helper process alive while "Clicker bereit" is on, mirrors its state, collects the statistics.</summary>
+    public ClickerController Clicker { get; }
 
     /// <summary>
     /// Set by App once the widget host exists: closes the board, and does nothing while it is closed (a hotkey start).
@@ -290,6 +298,21 @@ public sealed class AppHost : IDisposable
             toast: msg => ToastService.Show(ToastKind.Warning, L.T("Verknüpfungsleiste", "Shortcut bar"), msg, durationSeconds: 6));
         // A hotkey of an entry changed (editor, prune): the global registration follows. Other changes (icons, order) do not touch it.
         Shortcuts.ItemsChanged += (_, _) => RefreshShortcutHotkeys();
+
+        // The statistics are written on the UI thread, which owns the settings (the controller reads the pipe on a pool thread).
+        Clicker = new ClickerController(() => Settings.Current.AutoClicker.Clicker, Settings.Save, new ClickerHostLauncher(),
+            post: work => RunOnUiThread(work));
+        Settings.SettingsChanged += (_, _) => Clicker.OnSettingsChanged();
+        // Only a lock, a click limit and a time limit are worth a toast; every other end shows in the state pill.
+        Clicker.RunFinished += run =>
+        {
+            if (ClickerNotices.ForRunEnd(run) is { } notice)
+                ToastService.Show(notice.IsWarning ? ToastKind.Warning : ToastKind.Info, notice.Title, notice.Body, durationSeconds: 6);
+        };
+
+        AutoClickerGuard = new AutoClickerGuard(() => Settings.Current.AutoClicker, new SystemProcessProbe(), Clicker);
+        // Switching "Clicker bereit" on while a blacklisted game runs: the guard looks again at once (it only polls for the clicker while it is on).
+        Clicker.ArmedChanged += AutoClickerGuard.OnForegroundChanged;
 
         WireCaptureExclusivity();
         WireGameFolders();
@@ -473,9 +496,27 @@ public sealed class AppHost : IDisposable
             displayName: f => Games.DisplayNameFor(f.ExePath, f.ProcessName));
         GameDetector.GameChanged += OnGameChanged;
         Foreground.ForegroundWindowChanged += GameDetector.OnForegroundChanged;
+        // A blacklisted program that comes to the front locks a switched-on clicker at once, not only at the next poll tick.
+        Foreground.ForegroundWindowChanged += _ => AutoClickerGuard.OnForegroundChanged();
         // A save may also create or delete the profile of the game in front (crosshair widget, F9 length list).
         Settings.SettingsChanged += (_, _) => { GameDetector?.Reevaluate(); LogProfileChange(CurrentGame); };
         Foreground.Start();
+
+        // Look once, off the startup path. The native clicker's helper starts after that look, so a blacklisted game that already runs
+        // has locked it before it first runs.
+        _ = Task.Run(() =>
+        {
+            AutoClickerGuard.Evaluate();
+            Clicker.Initialize();
+        });
+    }
+
+    /// <summary>Runs <paramref name="work"/> on the UI thread (at once when already there, without waiting otherwise).</summary>
+    private static void RunOnUiThread(Action work)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess()) work();
+        else dispatcher.BeginInvoke(work);
     }
 
     /// <summary>
@@ -611,6 +652,8 @@ public sealed class AppHost : IDisposable
         Spotify.Dispose();
         Gamepad.Dispose();
         Shortcuts.Dispose();
+        AutoClickerGuard.Dispose();
+        Clicker.Dispose();   // after the guard: nothing can lock it any more; says goodbye to the helper (up to a second)
         Hotkeys.Dispose();
         ManualRecording.Dispose();
         ReplayBuffer.Dispose();

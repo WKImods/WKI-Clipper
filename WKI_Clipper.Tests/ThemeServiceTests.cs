@@ -294,6 +294,8 @@ public sealed class ThemeServiceTests
             }
             Load("ChatView", () => new ChatView());
             Load("CrosshairView", () => new CrosshairView());
+            Load("GamingUtilitiesView", () => new GamingUtilitiesView());
+            Load("AutoClickerView", () => new AutoClickerView());
             Load("MusicView", () => new MusicView());
             Load("PreflightView", () => new PreflightView());
             Load("StreamingView", () => new StreamingView());

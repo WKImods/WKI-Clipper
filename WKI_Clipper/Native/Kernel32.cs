@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace WKI_Clipper.Native;
 
-internal static class Kernel32
+internal static partial class Kernel32
 {
     public const uint CTRL_C_EVENT = 0;
     public const uint CTRL_BREAK_EVENT = 1;

@@ -17,6 +17,7 @@ public sealed class HotkeyService : IDisposable
     private HwndSource? _hwndSource;
     private readonly Dictionary<int, string> _idToAction = new();
     private int _nextId = 0x9000;
+    private int _suspended;
 
     public event EventHandler<string>? HotkeyPressed;
     public event EventHandler<string>? HotkeyRegistrationFailed;
@@ -108,10 +109,26 @@ public sealed class HotkeyService : IDisposable
         return L.T($"Verknüpfung \"{name}\"", $"shortcut \"{name}\"");
     }
 
+    /// <summary>
+    /// Takes every binding off until the matching <see cref="Resume"/> (calls nest; UI thread). A hotkey recorder needs this: Windows
+    /// hands a registered key-down to WM_HOTKEY, never to the recording window, and the action would fire as well.
+    /// </summary>
+    public void Suspend()
+    {
+        if (_suspended++ == 0) UnregisterAll();
+    }
+
+    /// <summary>Ends one <see cref="Suspend"/>; the last one registers everything again.</summary>
+    public void Resume()
+    {
+        if (_suspended == 0) return;
+        if (--_suspended == 0) RegisterAll();
+    }
+
     public void RegisterAll()
     {
         UnregisterAll();
-        if (_hwndSource is null) return;
+        if (_hwndSource is null || _suspended > 0) return;   // a settings change while suspended takes effect at Resume
 
         foreach (var (action, binding) in _settings.Current.Hotkeys)
             RegisterOne(action, binding);

@@ -48,7 +48,8 @@ public static class WidgetCatalog
         WidgetId.Audio       => "Audio",
         WidgetId.Gallery     => L.T("Galerie", "Gallery"),
         WidgetId.Performance => L.T("Leistung", "Performance"),
-        WidgetId.Crosshair   => L.T("Fadenkreuz", "Crosshair"),
+        // The widget id stays "Crosshair" (saved layouts, hotkeys); the widget is the home of the crosshair AND the AutoClicker tab.
+        WidgetId.Crosshair   => L.T("Gaming Utilities", "Gaming Utilities"),
         WidgetId.Streaming   => "Streaming",
         WidgetId.Mixer       => "Mixer",
         WidgetId.Sources     => L.T("Quellen", "Sources"),

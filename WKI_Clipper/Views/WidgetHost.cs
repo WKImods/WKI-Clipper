@@ -6,6 +6,7 @@ using System.Windows.Controls.Primitives;
 using WKI_Clipper.Models;
 using WKI_Clipper.Native;
 using WKI_Clipper.Services;
+using WKI_Clipper.Views.AutoClicker;
 using WinForms = System.Windows.Forms;
 
 namespace WKI_Clipper.Views;
@@ -40,6 +41,8 @@ public sealed class WidgetHost : IDisposable
     }
 
     private CrosshairOverlayWindow? _crosshair;
+    /// <summary>The "AutoClicker · 25 cps" label; follows the clicker's state by itself and never touches the capture path.</summary>
+    private readonly ClickerIndicatorPresenter _clickerIndicator;
     /// <summary>Last known "an overlay must stay out of capture", to detect the flip that needs a capture-path switch.</summary>
     private bool? _lastExclusionRequired;
 
@@ -61,6 +64,7 @@ public sealed class WidgetHost : IDisposable
         _host.CrosshairRefresh = ApplyCrosshair;
         _host.PerfOverlayRefresh = ApplyPerfOverlay;
         _host.GameChanged += OnGameChangedForOverlay;
+        _clickerIndicator = new ClickerIndicatorPresenter(host);
         _displaySignature = DisplaySignature();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -86,8 +90,7 @@ public sealed class WidgetHost : IDisposable
         var s = settings.Crosshair;   // the standard: Enabled lives here and nowhere else
 
         // Keep the config widget's checkbox in sync (hotkey toggles bypass the UI).
-        if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
-            cv.SyncEnabled(s.Enabled);
+        CrosshairContent()?.SyncEnabled(s.Enabled);
 
         ReconcileCapturePath();
 
@@ -197,8 +200,7 @@ public sealed class WidgetHost : IDisposable
         _host.Settings.Save();
 
         // A first drag may have created the profile: the selector lists it from now on.
-        if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
-            cv.RefreshTargets();
+        CrosshairContent()?.RefreshTargets();
     }
 
     /// <summary>
@@ -312,9 +314,15 @@ public sealed class WidgetHost : IDisposable
     private void RefreshCrosshairForGame()
     {
         ApplyCrosshair();
-        if (_windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is CrosshairView cv)
-            cv.OnGameChanged();
+        CrosshairContent()?.OnGameChanged();
     }
+
+    /// <summary>
+    /// The crosshair configuration inside the "Gaming Utilities" widget (the widget keeps the id <see cref="WidgetId.Crosshair"/>), or null
+    /// while its window is not built. Every host-to-view call about the crosshair goes through here.
+    /// </summary>
+    private CrosshairView? CrosshairContent()
+        => _windows.TryGetValue(WidgetId.Crosshair, out var cw) && cw.WidgetContent is GamingUtilitiesView gu ? gu.Crosshair : null;
 
     private void OnPerfSampleForOverlay(PerfSample _)
     {
@@ -534,7 +542,7 @@ public sealed class WidgetHost : IDisposable
         WidgetId.Audio       => new AudioSettingsView(),
         WidgetId.Gallery     => new ClipsView(),
         WidgetId.Performance => new PerformanceView(),
-        WidgetId.Crosshair   => new CrosshairView(),
+        WidgetId.Crosshair   => new GamingUtilitiesView(),
         WidgetId.Streaming   => new StreamingView(),
         WidgetId.Mixer       => new MixerView(),
         WidgetId.Sources     => new SourcesView(),
@@ -1656,6 +1664,7 @@ public sealed class WidgetHost : IDisposable
         _perfFpsLease = null;
         try { _perfOverlay?.Close(); } catch { }
         _host.CrosshairRefresh = null;
+        try { _clickerIndicator.Dispose(); } catch { }
         foreach (var w in _windows.Values)
         {
             if (w.WidgetContent is IDisposable d) { try { d.Dispose(); } catch { } }

@@ -32,8 +32,7 @@ public sealed class ShortcutSettingsTests : IDisposable
         bool changed = SettingsService.MigrateIfNeeded(s);
 
         Assert.True(changed);
-        Assert.Equal(10, s.SchemaVersion);
-        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);
+        Assert.Equal(SettingsService.CurrentSchemaVersion, s.SchemaVersion);   // migrates all the way up (v11 added the AutoClicker section)
         Assert.NotNull(s.Shortcuts);
         Assert.True(s.Shortcuts.Expanded);
         Assert.Empty(s.Shortcuts.Items);

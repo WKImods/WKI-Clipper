@@ -89,4 +89,17 @@ internal static class DisplayGeometry
         if (User32.GetWindowRect(hwnd, out var r) && (r.Left != ix || r.Top != iy))
             SetWindowPos(hwnd, IntPtr.Zero, ix, iy, 0, 0, flags);
     }
+
+    /// <summary>
+    /// Moves AND sizes the window to a physical rectangle (a picker overlay covering exactly one monitor). Same second-call rule as
+    /// <see cref="MoveTo"/>: crossing onto a monitor with another scale makes WPF rescale the window on the way.
+    /// </summary>
+    public static void PlaceAt(Window w, int x, int y, int width, int height)
+    {
+        var hwnd = new WindowInteropHelper(w).EnsureHandle();
+        const uint flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, flags);
+        if (User32.GetWindowRect(hwnd, out var r) && (r.Left != x || r.Top != y || r.Width != width || r.Height != height))
+            SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, flags);
+    }
 }
