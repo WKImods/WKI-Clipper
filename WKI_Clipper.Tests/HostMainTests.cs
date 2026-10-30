@@ -126,6 +126,28 @@ public sealed class HostMainTests
         Assert.True(waiter.WaitUntil(clock.NowMs - 5));   // a deadline in the past returns at once
     }
 
+    private sealed class CountingClock : IClock
+    {
+        private readonly StopwatchClock _inner = new();
+        public int Reads;
+        public double NowMs { get { Reads++; return _inner.NowMs; } }
+        public DateTime UtcNow => _inner.UtcNow;
+    }
+
+    [Fact]
+    public void A_waiter_without_spin_sleeps_to_the_deadline_instead_of_spinning()
+    {
+        var clock = new CountingClock();
+        using var waiter = new HighResWaiter(clock, spin: false);   // the pattern player's: it ticks every millisecond while playing
+
+        double deadline = clock.NowMs + 20;
+        clock.Reads = 0;
+        Assert.True(waiter.WaitUntil(deadline));
+
+        Assert.True(clock.NowMs >= deadline);
+        Assert.InRange(clock.Reads, 1, 200);   // a spin over the last millisecond alone reads the clock about a thousand times or more
+    }
+
     [Fact]
     public async Task A_wake_cuts_a_long_wait_short_and_stays_set_until_cleared()
     {

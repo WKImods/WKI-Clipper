@@ -38,7 +38,8 @@ internal interface IWaiter : IDisposable
 
 /// <summary>
 /// The engine's sleeper (design section 4): a high-resolution waitable timer is armed for ~1 ms before the deadline, the rest is a short
-/// spin, and the stop signal is a second wait object so a stop wakes a long wait at once. Long waits go in chunks of at most
+/// spin (a waiter made without spin sleeps it too: the pattern player's), and the stop signal is a second wait object so a stop wakes a
+/// long wait at once. Long waits go in chunks of at most
 /// <see cref="MaxChunkMs"/>; the timer is armed with a relative due time, so a system clock step cannot park the thread. No global timer-resolution change: without the
 /// high-resolution timer (older Windows) a normal timer is used together with timeBeginPeriod(1), only while a run is active.
 /// </summary>
@@ -52,25 +53,35 @@ internal sealed class HighResWaiter : IWaiter
 
     public const double MaxChunkMs = 250;
 
+    /// <summary>The shortest sleep handed to the timer (a waiter without spin sleeps even the last few microseconds).</summary>
+    private const double MinSleepMs = 0.05;
+
     private readonly IClock _clock;
     private readonly IntPtr _timer;
     private readonly IntPtr _wakeEvent;
     private readonly bool _highResolution;
+    private readonly bool _spin;
     private readonly double _earlyMs;
     private readonly IntPtr[] _handles;
     private int _wake;
     private int _sessions;
     private bool _disposed;
 
-    public HighResWaiter(IClock clock)
+    /// <param name="spin">
+    /// false: never spins - the timer alone wakes the thread, up to its resolution (about a millisecond) late. For the pattern player,
+    /// which ticks every millisecond while it plays and is cumulative (a late tick costs no accuracy): with the spin it would keep a core
+    /// busy for as long as a pattern plays.
+    /// </param>
+    public HighResWaiter(IClock clock, bool spin = true)
     {
         _clock = clock;
+        _spin = spin;
         _wakeEvent = Kernel32.CreateEventW(IntPtr.Zero, bManualReset: true, bInitialState: false, null);
         _timer = Kernel32.CreateWaitableTimerExW(IntPtr.Zero, null, Kernel32.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, Kernel32.TIMER_ALL_ACCESS);
         _highResolution = _timer != IntPtr.Zero;
         if (!_highResolution)
             _timer = Kernel32.CreateWaitableTimerExW(IntPtr.Zero, null, 0, Kernel32.TIMER_ALL_ACCESS);
-        _earlyMs = _highResolution ? EarlyMs : FallbackEarlyMs;
+        _earlyMs = !spin ? 0 : _highResolution ? EarlyMs : FallbackEarlyMs;
         _handles = new[] { _timer, _wakeEvent };
         HostLog.Info(_highResolution ? "Waiter: high-resolution waitable timer."
             : _timer != IntPtr.Zero ? "Waiter: no high-resolution timer, using a normal timer with timeBeginPeriod(1) while running."
@@ -85,9 +96,9 @@ internal sealed class HighResWaiter : IWaiter
             double remaining = deadlineMs - _clock.NowMs;
             if (remaining <= 0) return true;
 
-            if (remaining > _earlyMs + 0.05)
+            if (!_spin || remaining > _earlyMs + MinSleepMs)
             {
-                double sleepMs = Math.Min(remaining - _earlyMs, MaxChunkMs);
+                double sleepMs = Math.Min(Math.Max(remaining - _earlyMs, MinSleepMs), MaxChunkMs);
                 if (SleepChunk(sleepMs)) return false;
                 continue;
             }

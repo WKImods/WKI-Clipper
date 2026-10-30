@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services.AutoClicker;
@@ -10,6 +11,12 @@ namespace WKI_Clipper.ClickerHost;
 /// from the clipper and hotkey changes go through the <see cref="ActivationStateMachine"/>, whose Start/Stop become engine calls;
 /// the engine's own events (state, run ended) flow back to the clipper. Everything is serialized by one lock. Hotkey changes arrive
 /// on the hotkey worker thread, never on the hook thread itself (see <see cref="HotkeyHook"/>).
+/// <para>
+/// The mouse patterns have their own <see cref="PatternCoordinator"/> with its own gate (mouse-patterns design 5.1): this class forwards
+/// config, samples, lock and picker to it - always outside its own gate, the pattern side never takes this gate while holding its own -
+/// and adds the pattern status to the state message. The clicker side honours "Clicker bereit" (<see cref="ClickerSettings.Armed"/>):
+/// while it is off the helper may still run for the patterns, and the clicker hotkeys, start zones and starts from the UI do nothing.
+/// </para>
 /// </summary>
 internal sealed class HostCoordinator
 {
@@ -19,8 +26,10 @@ internal sealed class HostCoordinator
     private readonly Func<PixelPoint> _cursor;
     private readonly Action<ClickerMessage> _send;
     private readonly Func<bool> _overClipper;
+    private readonly PatternCoordinator? _patterns;
     private readonly ActivationStateMachine _machine = new();
     private readonly object _gate = new();
+    private bool _armed;   // the clicker's own switch from the last config
 
     // Set while no run of ours is waiting for its run-ended message to be queued: Reset by a successful start (under the gate), Set by
     // OnRunEnded after the send. OnRunEnded takes the gate first, so a run's Set can never come before its Reset.
@@ -35,8 +44,9 @@ internal sealed class HostCoordinator
     private volatile bool _hotkeyHasMouse, _masterHasMouse;
 
     /// <param name="overClipper">Whether the cursor is over one of the clipper's windows right now (called on the hotkey worker thread, only for a mouse hotkey's press).</param>
+    /// <param name="patterns">The mouse patterns' coordinator; null = none (the tracker then watches the clicker hotkeys only).</param>
     public HostCoordinator(IClickEngine engine, HotkeyTracker tracker, ZoneTracker zones, Func<PixelPoint> cursor, Action<ClickerMessage> send,
-        Func<bool>? overClipper = null)
+        Func<bool>? overClipper = null, PatternCoordinator? patterns = null)
     {
         _engine = engine;
         _tracker = tracker;
@@ -44,11 +54,17 @@ internal sealed class HostCoordinator
         _cursor = cursor;
         _send = send;
         _overClipper = overClipper ?? (() => false);
+        _patterns = patterns;
 
         _tracker.HotkeyChanged = OnHotkeyChanged;
         _tracker.MasterChanged = OnMasterChanged;
         _engine.StateChanged += _ => PublishState();
         _engine.RunEnded += OnRunEnded;
+        if (patterns is not null)
+        {
+            _tracker.BindingChanged = patterns.OnBinding;
+            patterns.StateChanged += () => PublishState();
+        }
     }
 
     /// <summary>A message from the clipper (called on the pipe reader's thread). The version check of hello and shutdown are the server's business.</summary>
@@ -63,24 +79,40 @@ internal sealed class HostCoordinator
             case StartMessage: StartFromClipper(); break;
             case StopMessage: StopFromClipper(); break;
             case PickerMessage p: Picker(p.Active); break;
+            case PatternDataMessage d: SetPatternData(d); break;
         }
     }
 
     private void ApplyConfig(ClickerSettings raw)
     {
         var settings = ClickerSettingsRules.Normalize(raw);
+        bool armed = settings.Armed;
         lock (_gate)
         {
+            _armed = armed;
             _mode = settings.ActivationMode;
             _hotkeyHasMouse = settings.Hotkey?.HasMouseInput == true;
             _masterHasMouse = settings.MasterHotkey?.HasMouseInput == true;
             _engine.Configure(settings);
             _zones.Configure(settings.ZonesEnabled, settings.Zones);
             Apply(_machine.Configure(settings.ActivationMode, settings.MasterHotkey is not null, settings.MasterMode));
+            if (!armed && _engine.IsRunning) _engine.Stop(StopReason.Manual);   // switched off while it runs; the helper stays for the patterns
         }
-        // After the lock: the tracker raises its events on this thread and they take the lock themselves.
-        _tracker.Configure(settings.Hotkey, settings.MasterHotkey, settings.StrictModifiers);
+        // After the lock: the pattern side and the tracker raise their events on this thread and those take the lock themselves.
+        var bindings = _patterns?.Configure(settings) ?? (IReadOnlyList<TrackedBinding>)Array.Empty<TrackedBinding>();
+        _tracker.Configure(armed ? settings.Hotkey : null, armed ? settings.MasterHotkey : null, settings.StrictModifiers, bindings);
         PublishState();
+    }
+
+    private void SetPatternData(PatternDataMessage message)
+    {
+        if (_patterns is null) return;
+        if (!PatternCodec.TryDecode(message.Data, out var data))
+        {
+            HostLog.Warn("Pattern " + message.Id + ": the samples from the clipper are unreadable; the pattern cannot play.");
+            return;
+        }
+        _patterns.SetData(message.Id, message.Revision, data);
     }
 
     private void Lock(string reason)
@@ -91,6 +123,8 @@ internal sealed class HostCoordinator
             _engine.SetLocked(true);
             Apply(_machine.OnLock());
         }
+        // Before the state below: the clipper takes Locked as the confirmation that nothing of ours moves any more (design 4.6).
+        _patterns?.Lock();
         PublishState();
     }
 
@@ -102,18 +136,23 @@ internal sealed class HostCoordinator
             _engine.SetLocked(false);
             _machine.OnUnlock();
         }
+        _patterns?.Unlock();
         PublishState();
     }
 
     private void Picker(bool active)
     {
         lock (_gate) Apply(_machine.OnPicker(active));
+        _patterns?.OnSuppression(active);
         PublishState();
     }
 
     private void StartFromClipper()
     {
-        lock (_gate) Apply(_machine.OnStartRequested(ActivationReason.None));
+        lock (_gate)
+        {
+            if (_armed) Apply(_machine.OnStartRequested(ActivationReason.None));
+        }
     }
 
     private void StopFromClipper()
@@ -156,6 +195,7 @@ internal sealed class HostCoordinator
     {
         lock (_gate)
         {
+            if (!_armed) return;
             bool canStart = !_engine.IsRunning && !_machine.IsLocked && !_machine.IsPickerOpen && _machine.MasterAllowed;
             switch (_zones.PollStart(_cursor(), _engine.IsRunning, canStart))
             {
@@ -213,8 +253,10 @@ internal sealed class HostCoordinator
         lock (_gate)
         {
             var snap = _engine.Snapshot;
-            var state = new StateMessage(snap.Running, Armed: true, _machine.IsLocked, snap.Running ? null : _lastReason,
-                snap.Clicks, snap.Cps, snap.ElapsedMs, snap.BlockedByElevated, _machine.MasterAllowed);
+            var patterns = _patterns?.Status ?? PatternStatus.Idle;   // lock-free: the pattern side is never waited for here
+            var state = new StateMessage(snap.Running, _armed, _machine.IsLocked, snap.Running ? null : _lastReason,
+                snap.Clicks, snap.Cps, snap.ElapsedMs, snap.BlockedByElevated, _machine.MasterAllowed,
+                patterns.Recording, patterns.Playing, patterns.BlockedBy);
             if (!force && !snap.Running && state == _lastSent) return;
             _lastSent = state;
             // Inside the gate so the outbox order equals the order the snapshots were read in (a stale "running" must never overtake
@@ -223,9 +265,13 @@ internal sealed class HostCoordinator
         }
     }
 
-    /// <summary>The clipper is going away (or the pipe broke): ends a run and waits briefly for its run-ended message to be queued.</summary>
+    /// <summary>
+    /// The clipper is going away (or the pipe broke): ends every pattern playback and a recording (unreported), ends a run and waits
+    /// briefly for its run-ended message to be queued.
+    /// </summary>
     public void Shutdown(TimeSpan wait)
     {
+        _patterns?.Shutdown();
         _engine.SetLocked(true);
         _engine.Stop(StopReason.ClipperClosed);
         _runEndedQueued.Wait(wait);

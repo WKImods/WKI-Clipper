@@ -22,7 +22,7 @@ public sealed class HostCoordinatorTests
         public PixelPoint Cursor = new(0, 0);
         public bool OverClipper;
         public readonly HostCoordinator Coordinator;
-        public ClickerSettings Settings = new();
+        public ClickerSettings Settings = new() { Armed = true };   // the helper honours "Clicker bereit" since the mouse patterns
 
         public Rig(Action<ClickerSettings>? configure = null)
         {
@@ -596,6 +596,160 @@ public sealed class HostCoordinatorTests
         Assert.Equal(2, r.Engine.Starts.Count);
         Assert.True(r.Engine.Running);
         Assert.Empty(r.Engine.Stops);
+    }
+
+    // ---- the clicker's own switch and the mouse patterns (mouse-patterns design 4.5, 4.6) ----
+
+    [Fact]
+    public void Clicker_hotkey_dead_when_only_patterns_armed()
+    {
+        var r = new Rig(s =>
+        {
+            s.Armed = false;
+            s.MousePatternsArmed = true;
+            s.ZonesEnabled = true;
+            s.Zones = new() { StartZone() };
+        });
+
+        r.HotkeyDown();
+        r.Coordinator.Handle(new StartMessage());
+        r.Coordinator.PollStartZone();
+        r.Cursor = new PixelPoint(150, 150);
+        r.Coordinator.PollStartZone();
+
+        Assert.Empty(r.Engine.Starts);
+        Assert.False(r.States.Last().Armed);
+
+        r.HotkeyUp();
+        r.Settings.Armed = true;
+        r.Push();
+        r.HotkeyDown();
+        Assert.Single(r.Engine.Starts);
+
+        r.Settings.Armed = false;         // switched off while it runs (the helper stays for the patterns)
+        r.Push();
+        Assert.Equal(new[] { StopReason.Manual }, r.Engine.Stops.ToArray());
+    }
+
+    private const string PatternId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// <summary>A coordinator with real mouse patterns behind it; every message is logged with what played and recorded at that moment.</summary>
+    private sealed class PatternRig : IDisposable
+    {
+        public readonly FakeClock Clock = new() { Now = 1000 };
+        public readonly FakeEnvironment Host = new();
+        public readonly FakeEngine Engine = new();
+        public readonly HotkeyTracker Tracker = new();
+        public readonly PatternPlayer Player;
+        public readonly PatternRecorder Recorder;
+        public readonly PatternCoordinator Patterns;
+        public readonly HostCoordinator Coordinator;
+        public readonly List<(ClickerMessage Message, int Playing, bool Recording)> Sent = new();
+        public readonly ClickerSettings Settings = new() { Armed = true, MousePatternsArmed = true };
+
+        public PatternRig()
+        {
+            Player = new PatternPlayer(new FakeInput(Clock, Host), new FakeWaiter(Clock), Clock, new FakePatternEnvironment(Host), ownThread: false);
+            Recorder = new PatternRecorder(Clock, new ManualTime());
+            Patterns = new PatternCoordinator(Player, Recorder, () => Host.Fg, () => false, Send);
+            Coordinator = new HostCoordinator(Engine, Tracker, new ZoneTracker(), () => Host.Cursor, Send, () => false, Patterns);
+            Settings.MousePatterns.Add(new MousePattern { Id = PatternId, Name = "Kreis", Hotkey = new ClickerHotkey { Keys = { F8 } }, Repeat = true });
+            Coordinator.Handle(new ConfigMessage(Settings));
+        }
+
+        private void Send(ClickerMessage message)
+        {
+            lock (Sent) Sent.Add((message, Player.Playing.Count, Recorder.IsRecording));
+        }
+
+        public static string Samples()
+        {
+            var track = new PatternTrack(Enumerable.Range(0, 50).ToArray(), Enumerable.Repeat(1, 50).ToArray(), new int[50]);
+            return PatternCodec.Encode(new PatternData(track, track, 49));
+        }
+
+        public void RecordPress()
+        {
+            foreach (var vk in new[] { ClickerVk.LControl, ClickerVk.LMenu, 0x52 }) Tracker.OnKey(vk, true);
+            foreach (var vk in new[] { 0x52, ClickerVk.LMenu, ClickerVk.LControl }) Tracker.OnKey(vk, false);
+        }
+
+        public IEnumerable<StateMessage> States => Sent.Select(s => s.Message).OfType<StateMessage>();
+
+        public void Dispose()
+        {
+            Recorder.Dispose();
+            Player.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Lock_confirmation_after_patterns_stopped()
+    {
+        using var r = new PatternRig();
+        r.Coordinator.Handle(new PatternDataMessage(PatternId, 0, PatternRig.Samples()));
+        r.Tracker.OnKey(F8, true);
+        Assert.True(r.Player.IsPlaying(PatternId));
+        r.Sent.Clear();
+
+        r.Coordinator.Handle(new LockMessage("game.exe"));
+
+        var confirmation = r.Sent.First(s => s.Message is StateMessage { Locked: true });
+        Assert.Equal(0, confirmation.Playing);   // stopped before the clipper hears "locked"
+        Assert.Null(((StateMessage)confirmation.Message).Playing);
+        r.Tracker.OnKey(F8, false);
+
+        r.Coordinator.Handle(new UnlockMessage());
+        r.RecordPress();
+        Assert.True(r.Recorder.IsRecording);
+        r.Sent.Clear();
+        r.Coordinator.Handle(new LockMessage("game.exe"));
+
+        int cancelled = r.Sent.FindIndex(s => s.Message is PatternRecordedMessage { Outcome: "Cancelled" });
+        int locked = r.Sent.FindIndex(s => s.Message is StateMessage { Locked: true });
+        Assert.InRange(cancelled, 0, locked - 1);
+        Assert.False(r.Sent[locked].Recording);
+        Assert.False(((StateMessage)r.Sent[locked].Message).Recording);
+    }
+
+    [Fact]
+    public void Pattern_samples_from_the_clipper_reach_the_patterns_and_garbage_is_ignored()
+    {
+        using var r = new PatternRig();
+
+        r.Coordinator.Handle(new PatternDataMessage(PatternId, 0, "p1:not base64!"));
+        r.Tracker.OnKey(F8, true);
+        Assert.False(r.Player.IsPlaying(PatternId));
+        r.Tracker.OnKey(F8, false);
+
+        r.Coordinator.Handle(new PatternDataMessage(PatternId, 0, PatternRig.Samples()));
+        r.Tracker.OnKey(F8, true);
+        Assert.True(r.Player.IsPlaying(PatternId));
+        Assert.Equal(PatternId, r.States.Last().Playing);
+
+        r.Tracker.OnKey(F8, false);
+        Assert.Null(r.States.Last().Playing);
+        r.RecordPress();
+        Assert.True(r.States.Last().Recording);
+    }
+
+    [Fact]
+    public void The_clicker_and_a_pattern_on_the_same_hotkey_start_together()
+    {
+        using var r = new PatternRig();
+        r.Settings.Hotkey = new ClickerHotkey { Keys = { F8 } };
+        r.Settings.ActivationMode = ActivationMode.Hold;
+        r.Coordinator.Handle(new ConfigMessage(r.Settings));
+        r.Coordinator.Handle(new PatternDataMessage(PatternId, 0, PatternRig.Samples()));
+
+        r.Tracker.OnKey(F8, true);
+        Assert.Single(r.Engine.Starts);
+        Assert.True(r.Player.IsPlaying(PatternId));
+        Assert.True(r.States.Last().Running);   // the pattern does not change the clicker's state
+
+        r.Tracker.OnKey(F8, false);
+        Assert.Equal(new[] { StopReason.HoldReleased }, r.Engine.Stops.ToArray());
+        Assert.False(r.Player.IsPlaying(PatternId));
     }
 
     // ---- ordering of what goes to the clipper ----

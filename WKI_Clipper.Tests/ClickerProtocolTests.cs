@@ -52,6 +52,67 @@ public sealed class ClickerProtocolTests
         Assert.True(state.MasterAllowed);
     }
 
+    // ---- mouse patterns (protocol v2) ----
+
+    [Fact]
+    public void New_messages_round_trip()
+    {
+        Assert.Equal(2, ClickerProtocol.Version);
+
+        var data = new PatternDataMessage("0123456789abcdef0123456789abcdef", 3, "p1:AAAA");
+        Assert.Equal(data, RoundTrip(data));
+        var recorded = new PatternRecordedMessage("Cut", "p1:BBBB", "game.exe", 60000);
+        Assert.Equal(recorded, RoundTrip(recorded));
+        var cancelled = new PatternRecordedMessage("Cancelled", null, null, 0);
+        Assert.Equal(cancelled, RoundTrip(cancelled));
+        var state = new StateMessage(false, true, false, null, 0, 0, 0, null, MasterAllowed: true,
+            Recording: true, Playing: "a,b", PatternsBlockedBy: "admin.exe");
+        Assert.Equal(state, RoundTrip(state));
+
+        // The config carries the patterns' metadata (never samples) and the record hotkey.
+        var s = new ClickerSettings
+        {
+            MousePatternsArmed = true,
+            MousePatterns = { new MousePattern { Id = "0123456789abcdef0123456789abcdef", Name = "Kreis", Hotkey = new ClickerHotkey { Keys = { ClickerVk.LButton } },
+                                                 Mode = ActivationMode.Toggle, Repeat = true, Speed = 2, Replay = PatternReplay.Raw, Program = "game.exe",
+                                                 OnlyInProgram = true, DurationMs = 2400, Revision = 4 } }
+        };
+        var back = RoundTrip(new ConfigMessage(s)).Settings;
+        Assert.True(back.MousePatternsArmed);
+        Assert.True(ClickerHotkey.SameCombo(s.PatternRecordHotkey, back.PatternRecordHotkey));
+        var p = Assert.Single(back.MousePatterns);
+        Assert.Equal(("Kreis", ActivationMode.Toggle, true, 2.0, PatternReplay.Raw, "game.exe", true, 2400.0, 4),
+            (p.Name, p.Mode, p.Repeat, p.Speed, p.Replay, p.Program, p.OnlyInProgram, p.DurationMs, p.Revision));
+        Assert.True(ClickerHotkey.SameCombo(s.MousePatterns[0].Hotkey, p.Hotkey));
+    }
+
+    [Fact]
+    public void New_types_are_known()
+    {
+        var data = ClickerProtocol.Encode(new PatternDataMessage("x", 1, "p1:"));
+        var recorded = ClickerProtocol.Encode(new PatternRecordedMessage("Empty", null, null, 0));
+        Assert.StartsWith("{\"t\":\"patternData\"", data);
+        Assert.StartsWith("{\"t\":\"patternRecorded\"", recorded);
+
+        Assert.Equal(DecodeStatus.Ok, ClickerProtocol.Decode(data).Status);   // a type missing from the known list would decode as Unknown
+        Assert.Equal(DecodeStatus.Ok, ClickerProtocol.Decode(recorded).Status);
+        Assert.Equal(DecodeStatus.Malformed, ClickerProtocol.Decode("{\"t\":\"patternData\",\"revision\":\"many\"}").Status);
+    }
+
+    [Fact]
+    public void Old_state_line_without_new_fields_decodes()
+    {
+        const string v1 = "{\"t\":\"state\",\"running\":true,\"armed\":true,\"locked\":false,\"reason\":null,\"clicks\":5,\"cps\":10,"
+                        + "\"elapsedMs\":500,\"blockedByElevated\":null,\"masterAllowed\":true}";
+
+        var state = Assert.IsType<StateMessage>(ClickerProtocol.Decode(v1).Message);
+
+        Assert.True(state.Running);
+        Assert.False(state.Recording);
+        Assert.Null(state.Playing);
+        Assert.Null(state.PatternsBlockedBy);
+    }
+
     [Fact]
     public void The_type_is_the_first_property_of_the_line()
     {

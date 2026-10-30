@@ -7,14 +7,32 @@ using WKI_Clipper.Services.AutoClicker;
 
 namespace WKI_Clipper.ClickerHost;
 
+/// <summary>A named hotkey the tracker watches next to the clicker's: the record hotkey or an active pattern's (mouse-patterns design 5.1).</summary>
+internal sealed record TrackedBinding(string Id, ClickerHotkey Hotkey);
+
 /// <summary>
 /// The physical key state behind the clicker hotkeys, free of Windows: the hook feeds key and button events, the tracker keeps the
-/// down-set and reports when the start hotkey or the master hotkey starts or stops matching (<see cref="HotkeyMatcher"/>). A new
-/// configuration never reports a hotkey that is already held as pressed - only a press made after it counts - but does report a
-/// hotkey that just stopped matching, so the activation logic does not keep a stale "held".
+/// down-set and reports when the start hotkey, the master hotkey or one of the named <see cref="TrackedBinding"/>s starts or stops
+/// matching (<see cref="HotkeyMatcher"/>). A new configuration never reports a hotkey that is already held as pressed - only a press made
+/// after it counts - but does report a hotkey that just stopped matching (a binding that was removed too), so the activation logic does
+/// not keep a stale "held". One key event is evaluated for all of them in one ordered pass: the start hotkey, the master, then the
+/// bindings in their order.
 /// </summary>
 internal sealed class HotkeyTracker
 {
+    private sealed class Binding
+    {
+        public Binding(string id, ClickerHotkey hotkey)
+        {
+            Id = id;
+            Hotkey = hotkey;
+        }
+
+        public string Id { get; }
+        public ClickerHotkey Hotkey { get; }
+        public bool Matched;
+    }
+
     private readonly object _lock = new();
     private readonly object _dispatch = new();   // serializes compute + delivery so events arrive in the order they were computed
     private readonly HashSet<int> _down = new();
@@ -23,6 +41,7 @@ internal sealed class HotkeyTracker
     private bool _strict;
     private bool _hotkeyMatched;
     private bool _masterMatched;
+    private List<Binding> _bindings = new();
 
     /// <summary>
     /// The start hotkey's match changed. Called on the thread that fed the event, outside the tracker's data lock but under its dispatch
@@ -33,11 +52,23 @@ internal sealed class HotkeyTracker
     /// <summary>The master hotkey's match changed. Same rules as <see cref="HotkeyChanged"/>.</summary>
     public Action<bool>? MasterChanged { get; set; }
 
+    /// <summary>A binding's match changed (its <see cref="TrackedBinding.Id"/>, matching). Same rules as <see cref="HotkeyChanged"/>.</summary>
+    public Action<string, bool>? BindingChanged { get; set; }
+
+    /// <summary>Clicker hotkeys only: every binding is dropped (a held one is reported as released).</summary>
     public void Configure(ClickerHotkey? hotkey, ClickerHotkey? master, bool strict)
+        => Configure(hotkey, master, strict, Array.Empty<TrackedBinding>());
+
+    /// <summary>
+    /// The hotkeys to watch. A binding keeps its state across configurations by its id (case-insensitive, like the pattern ids): one that
+    /// is held and still matches stays pressed without a new event. A later duplicate id is ignored.
+    /// </summary>
+    public void Configure(ClickerHotkey? hotkey, ClickerHotkey? master, bool strict, IReadOnlyList<TrackedBinding> bindings)
     {
         lock (_dispatch)
         {
             bool? hotkeyEvent = null, masterEvent = null;
+            List<(string Id, bool Matched)>? bindingEvents = null;
             lock (_lock)
             {
                 _hotkey = hotkey?.Clone();
@@ -45,10 +76,39 @@ internal sealed class HotkeyTracker
                 _strict = strict;
                 hotkeyEvent = Rebase(HotkeyMatcher.IsMatch(_hotkey, _down, strict), ref _hotkeyMatched);
                 masterEvent = Rebase(HotkeyMatcher.IsMatch(_master, _down, strict), ref _masterMatched);
+
+                var next = new List<Binding>(bindings.Count);
+                foreach (var b in bindings)
+                {
+                    if (b?.Id is null || b.Hotkey is null || IndexOf(next, b.Id) >= 0) continue;
+                    int old = IndexOf(_bindings, b.Id);
+                    var binding = new Binding(b.Id, b.Hotkey.Clone()) { Matched = old >= 0 && _bindings[old].Matched };
+                    if (Rebase(HotkeyMatcher.IsMatch(binding.Hotkey, _down, strict), ref binding.Matched) is { } e)
+                        (bindingEvents ??= new()).Add((binding.Id, e));
+                    next.Add(binding);
+                }
+                foreach (var old in _bindings)
+                    if (old.Matched && IndexOf(next, old.Id) < 0) (bindingEvents ??= new()).Add((old.Id, false));   // removed while held
+                _bindings = next;
             }
             if (hotkeyEvent is { } h) HotkeyChanged?.Invoke(h);
             if (masterEvent is { } m) MasterChanged?.Invoke(m);
+            Deliver(bindingEvents);
         }
+    }
+
+    private static int IndexOf(List<Binding> list, string id)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (string.Equals(list[i].Id, id, StringComparison.OrdinalIgnoreCase)) return i;
+        return -1;
+    }
+
+    // Under _dispatch, outside _lock.
+    private void Deliver(List<(string Id, bool Matched)>? events)
+    {
+        if (events is null) return;
+        foreach (var (id, matched) in events) BindingChanged?.Invoke(id, matched);
     }
 
     // Reports a fall to "not matching"; a rise to "matching" is taken over silently (the key was already down).
@@ -65,14 +125,17 @@ internal sealed class HotkeyTracker
         lock (_dispatch)
         {
             bool? hotkeyEvent = null, masterEvent = null;
+            List<(string Id, bool Matched)>? bindingEvents = null;
             lock (_lock)
             {
                 if (!(down ? _down.Add(vk) : _down.Remove(vk))) return;   // auto-repeat or a release we never saw the press of
                 hotkeyEvent = Update(_hotkey, ref _hotkeyMatched);
                 masterEvent = Update(_master, ref _masterMatched);
+                bindingEvents = UpdateBindings();
             }
             if (hotkeyEvent is { } h) HotkeyChanged?.Invoke(h);
             if (masterEvent is { } m) MasterChanged?.Invoke(m);
+            Deliver(bindingEvents);
         }
     }
 
@@ -84,6 +147,15 @@ internal sealed class HotkeyTracker
         return now;
     }
 
+    // Under _lock. Allocates only when a binding changed (rare next to the key events that change nothing).
+    private List<(string Id, bool Matched)>? UpdateBindings()
+    {
+        List<(string Id, bool Matched)>? events = null;
+        foreach (var b in _bindings)
+            if (Update(b.Hotkey, ref b.Matched) is { } e) (events ??= new()).Add((b.Id, e));
+        return events;
+    }
+
     /// <summary>
     /// Drops every key that <paramref name="isDown"/> says is up. A hook that Windows silently removed (or a session lock) loses
     /// key releases; without this a modifier would count as held forever.
@@ -93,14 +165,17 @@ internal sealed class HotkeyTracker
         lock (_dispatch)
         {
             bool? hotkeyEvent = null, masterEvent = null;
+            List<(string Id, bool Matched)>? bindingEvents = null;
             lock (_lock)
             {
                 if (_down.RemoveWhere(vk => !isDown(vk)) == 0) return;
                 hotkeyEvent = Update(_hotkey, ref _hotkeyMatched);
                 masterEvent = Update(_master, ref _masterMatched);
+                bindingEvents = UpdateBindings();
             }
             if (hotkeyEvent is { } h) HotkeyChanged?.Invoke(h);
             if (masterEvent is { } m) MasterChanged?.Invoke(m);
+            Deliver(bindingEvents);
         }
     }
 

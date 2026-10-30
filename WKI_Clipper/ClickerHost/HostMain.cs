@@ -23,6 +23,7 @@ internal static class HostMain
 
     private const int ConnectTimeoutMs = 5000;
     private const int StartZonePollMs = 100;
+    private const int PatternPollMs = 50;
 
     /// <summary>Exit codes of the helper process.</summary>
     public const int ExitOk = 0, ExitBadArguments = 2, ExitNoPipe = 3, ExitVersion = 4, ExitFailure = 5;
@@ -121,23 +122,39 @@ internal static class HostMain
         var engine = new ClickEngine(injector, waiter, clock, env, zones, new Randomizer());
         var tracker = new HotkeyTracker();
 
+        // Mouse patterns (mouse-patterns design 5.1): the player has its own thread and its own waiter (the engine's wake is sticky),
+        // one that sleeps instead of spinning; declared after the waiter, so on the way out the player ends before its waiter is disposed.
+        using var recorder = new PatternRecorder(clock);
+        using var patternWaiter = new HighResWaiter(clock, spin: false);
+        using var player = new PatternPlayer(injector, patternWaiter, clock, new WindowsPatternEnvironment(() => env.Monitors));
+        Func<bool> overClipper = () => WindowsHostEnvironment.IsCursorOverProcess(args.ParentPid);
+
         HostCoordinator? coordinator = null;
         using var server = new HostServer(new ClickerChannel(pipe), Environment.ProcessId, message => coordinator?.Handle(message));
-        coordinator = new HostCoordinator(engine, tracker, zones, () => env.CursorPosition, server.Send,
-            () => WindowsHostEnvironment.IsCursorOverProcess(args.ParentPid));
+        var patterns = new PatternCoordinator(player, recorder, WindowsHostEnvironment.ReadForeground, overClipper, server.Send);
+        coordinator = new HostCoordinator(engine, tracker, zones, () => env.CursorPosition, server.Send, overClipper, patterns);
         HostLog.Forward = (level, text) => server.Send(new LogMessage(level, text));
 
-        // The hook watchdog's reference and the source of a pattern recording's raw track; the hook starts and disposes it.
-        var rawInput = new RawInputMonitor(clock);
+        // The hook watchdog's reference and the source of a pattern recording's raw track; the hook starts and disposes it. Both sinks
+        // stay set: the recorder ignores motion while it does not record, and the hook then skips the cursor query.
+        var rawInput = new RawInputMonitor(clock) { MouseSink = recorder };
         // UIPI: with an elevated window in front, a non-elevated host's low-level hooks see nothing - the watchdog must not take that for a dead hook.
         using var hook = new HotkeyHook(tracker, rawInput, env.IsKeyDown,
-            () => !env.HostElevated && WindowsHostEnvironment.IsForegroundWindowElevated(), isInjected: vk => vk == engine.OutputVk);
+            () => !env.HostElevated && WindowsHostEnvironment.IsForegroundWindowElevated(), isInjected: vk => vk == engine.OutputVk)
+        {
+            PointerSink = recorder
+        };
         if (!hook.Start()) HostLog.Error("The hotkey hooks are not running (yet): hotkeys do not work until they are.");
         using var zoneTimer = new System.Threading.Timer(_ =>
         {
             try { coordinator?.PollStartZone(); }
             catch (Exception ex) { HostLog.Error("Start-zone poll failed", ex); }
         }, null, StartZonePollMs, StartZonePollMs);
+        using var patternTimer = new System.Threading.Timer(_ =>
+        {
+            try { patterns.Poll(); }
+            catch (Exception ex) { HostLog.Error("Pattern poll failed", ex); }
+        }, null, PatternPollMs, PatternPollMs);
 
         HostEnd end;
         try { end = server.RunAsync(cts.Token).GetAwaiter().GetResult(); }
@@ -145,7 +162,9 @@ internal static class HostMain
         HostLog.Info("Conversation ended: " + end);
 
         zoneTimer.Dispose();
-        coordinator.Shutdown(TimeSpan.FromMilliseconds(500));
+        patternTimer.Dispose();
+        coordinator.Shutdown(TimeSpan.FromMilliseconds(500));   // stops every playback and a recording first
+        player.Dispose();                                        // nothing moves any more once this returns
         try { injector.ReleaseAll(); } catch { }
         try { server.FlushAsync(TimeSpan.FromSeconds(1)).GetAwaiter().GetResult(); } catch { }
         hook.Dispose();

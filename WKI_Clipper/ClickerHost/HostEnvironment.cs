@@ -136,6 +136,21 @@ internal sealed class WindowsHostEnvironment : IHostEnvironment
     }
 
     /// <summary>
+    /// The foreground window read afresh, without the cache and the shared buffer of <see cref="Foreground"/>: safe on any thread (the
+    /// pattern coordinator reads it on the hotkey worker, its poll timer and the pattern player's thread). Allocates a little per call.
+    /// </summary>
+    public static ForegroundInfo ReadForeground()
+    {
+        var hwnd = User32.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return ForegroundInfo.None;
+        User32.GetWindowThreadProcessId(hwnd, out uint pid);
+        var buffer = new char[256];
+        int n = User32.GetClassNameW(hwnd, buffer, buffer.Length);
+        var (exe, elevated) = ReadProcess((int)pid);
+        return new ForegroundInfo(hwnd, (int)pid, n > 0 ? new string(buffer, 0, n) : null, exe, elevated);
+    }
+
+    /// <summary>
     /// Whether the cursor is over a window of process <paramref name="pid"/> (the clipper): the topmost visible, uncloaked, not
     /// click-through top-level window under it belongs to that process. Walks the z-order with EnumWindows instead of asking
     /// WindowFromPoint, which sends WM_NCHITTEST to the window's thread - a busy clipper UI must never hold up the hotkey worker this

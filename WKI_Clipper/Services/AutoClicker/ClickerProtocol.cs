@@ -14,8 +14,8 @@ namespace WKI_Clipper.Services.AutoClicker;
 
 /// <summary>
 /// One message of the clicker pipe (design section 6): a JSON object on one line, the kind in the "t" property.
-/// Main to host: hello, config, lock, unlock, start, stop, picker, shutdown. Host to main: hello, state, runEnded, log.
-/// Both sides use the same records and <see cref="ClickerProtocol"/>; a message type one side does not know is skipped.
+/// Main to host: hello, config, lock, unlock, start, stop, picker, shutdown, patternData. Host to main: hello, state, runEnded, log,
+/// patternRecorded. Both sides use the same records and <see cref="ClickerProtocol"/>; a message type one side does not know is skipped.
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "t")]
 [JsonDerivedType(typeof(HelloMessage), "hello")]
@@ -29,6 +29,8 @@ namespace WKI_Clipper.Services.AutoClicker;
 [JsonDerivedType(typeof(StateMessage), "state")]
 [JsonDerivedType(typeof(RunEndedMessage), "runEnded")]
 [JsonDerivedType(typeof(LogMessage), "log")]
+[JsonDerivedType(typeof(PatternDataMessage), "patternData")]
+[JsonDerivedType(typeof(PatternRecordedMessage), "patternRecorded")]
 public abstract record ClickerMessage;
 
 /// <summary>First message of each side. <paramref name="V"/> is the protocol version, <paramref name="Pid"/> the sender's process id (host only).</summary>
@@ -57,9 +59,15 @@ public sealed record ShutdownMessage : ClickerMessage;
 /// <see cref="StopReason"/> name of the last run's end (null while running or before the first run); <paramref name="BlockedByElevated"/>
 /// is the program (exe file name) whose elevated window swallows the clicks, or null.
 /// </summary>
-/// <remarks><paramref name="MasterAllowed"/> came later: a line without it reads as "allowed", so v1 stays compatible both ways.</remarks>
+/// <remarks>
+/// <paramref name="MasterAllowed"/> came later: a line without it reads as "allowed". The mouse patterns (v2) add
+/// <paramref name="Recording"/> (a pattern is being recorded), <paramref name="Playing"/> (the ids of the patterns playing, comma-joined;
+/// null when none) and <paramref name="PatternsBlockedBy"/> (exe file name of the elevated window that refused the pattern moves); a
+/// line without them reads as idle. <paramref name="Armed"/> is the clicker's own switch ("Clicker bereit") from the last config.
+/// </remarks>
 public sealed record StateMessage(bool Running, bool Armed, bool Locked, string? Reason, long Clicks, double Cps, long ElapsedMs,
-    string? BlockedByElevated, bool MasterAllowed = true) : ClickerMessage;
+    string? BlockedByElevated, bool MasterAllowed = true, bool Recording = false, string? Playing = null,
+    string? PatternsBlockedBy = null) : ClickerMessage;
 
 /// <summary>
 /// A run ended. <paramref name="Reason"/> is a <see cref="StopReason"/> name; <paramref name="Detail"/> the number the reason refers to
@@ -69,6 +77,20 @@ public sealed record RunEndedMessage(DateTime StartUtc, double Seconds, long Cli
 
 /// <summary>A log line of the host (warnings and errors); <paramref name="Level"/> is "info", "warn" or "error".</summary>
 public sealed record LogMessage(string Level, string Text) : ClickerMessage;
+
+/// <summary>
+/// The samples of one mouse pattern (mouse-patterns design 5.2), main to host: after the config at the handshake and whenever a
+/// recording changed, never inside the config. <paramref name="Data"/> is <see cref="PatternCodec"/> text; <paramref name="Revision"/>
+/// is the <see cref="MousePattern.Revision"/> the samples belong to (the host plays them only while the config names the same one).
+/// </summary>
+public sealed record PatternDataMessage(string Id, int Revision, string Data) : ClickerMessage;
+
+/// <summary>
+/// A pattern recording ended in the host. <paramref name="Outcome"/> is a <see cref="PatternRecordingOutcome"/> name;
+/// <paramref name="Data"/> (<see cref="PatternCodec"/> text) is set for Ok and Cut only; <paramref name="Program"/> is the exe file name
+/// of the program in front when the recording started (null when unknown); <paramref name="DurationMs"/> the length of the motion.
+/// </summary>
+public sealed record PatternRecordedMessage(string Outcome, string? Data, string? Program, double DurationMs) : ClickerMessage;
 
 public enum DecodeStatus { Ok, Unknown, Malformed }
 
@@ -81,14 +103,14 @@ public readonly record struct ClickerDecode(DecodeStatus Status, ClickerMessage?
 /// <summary>The JSON line codec shared by the clipper and the helper process.</summary>
 public static class ClickerProtocol
 {
-    /// <summary>Bumped on an incompatible change; a host that sees another version ends.</summary>
-    public const int Version = 1;
+    /// <summary>Bumped on an incompatible change; a host that sees another version ends. 2: mouse patterns.</summary>
+    public const int Version = 2;
 
     /// <summary>A line longer than this is a broken or hostile peer, not a message.</summary>
     public const int MaxLineBytes = 8 * 1024 * 1024;
 
     private static readonly string[] KnownTypes =
-        { "hello", "config", "lock", "unlock", "start", "stop", "picker", "shutdown", "state", "runEnded", "log" };
+        { "hello", "config", "lock", "unlock", "start", "stop", "picker", "shutdown", "state", "runEnded", "log", "patternData", "patternRecorded" };
 
     private static readonly Regex PipeNamePattern = new(@"\AWKI_Clipper\.Clicker\.[0-9]{1,10}\.[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
 

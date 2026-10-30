@@ -144,6 +144,92 @@ public sealed class HotkeyTrackerTests
         Assert.Empty(r.Master);
     }
 
+    // ---- named bindings (record hotkey, patterns) ----
+
+    private const string A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    private static ClickerHotkey Key(int vk) => new() { Keys = { vk } };
+
+    /// <summary>Every event of the tracker in delivery order: "hotkey:True", "master:False", "&lt;id&gt;:True" ...</summary>
+    private static List<string> Log(HotkeyTracker tracker)
+    {
+        var log = new List<string>();
+        tracker.HotkeyChanged = on => log.Add("hotkey:" + on);
+        tracker.MasterChanged = on => log.Add("master:" + on);
+        tracker.BindingChanged = (id, on) => log.Add(id + ":" + on);
+        return log;
+    }
+
+    [Fact]
+    public void Binding_fires_with_clicker_on_same_hotkey()
+    {
+        var tracker = new HotkeyTracker();
+        var log = Log(tracker);
+        tracker.Configure(Key(F8), null, strict: false, new[] { new TrackedBinding(A, Key(F8)), new TrackedBinding(B, Key(F8)) });
+
+        tracker.OnKey(F8, true);
+        tracker.OnKey(F8, false);
+
+        // One press, one ordered pass: the clicker first, then the bindings in their order.
+        Assert.Equal(new[] { "hotkey:True", A + ":True", B + ":True", "hotkey:False", A + ":False", B + ":False" }, log);
+    }
+
+    [Fact]
+    public void Inactive_binding_is_not_tracked()
+    {
+        var tracker = new HotkeyTracker();
+        var log = Log(tracker);
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, Key(F8)), new TrackedBinding(B, Key(F8)) });
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, Key(F8)) });   // B was deactivated
+
+        tracker.OnKey(F8, true);
+
+        Assert.Equal(new[] { A + ":True" }, log);
+        tracker.Configure(null, null, strict: false);   // the 3-argument form drops every binding
+        Assert.Equal(new[] { A + ":True", A + ":False" }, log);
+    }
+
+    [Fact]
+    public void Binding_rebase_matches_clicker_rule()
+    {
+        var tracker = new HotkeyTracker();
+        var log = Log(tracker);
+        tracker.OnKey(F8, true);   // held before the binding exists
+
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, Key(F8)) });
+        Assert.Empty(log);         // an already held hotkey never counts as a press
+        tracker.OnKey(F8, false);
+        Assert.Equal(new[] { A + ":False" }, log);   // but its release is reported
+
+        log.Clear();
+        tracker.OnKey(F8, true);
+        Assert.Equal(new[] { A + ":True" }, log);
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, Key(F8)), new TrackedBinding(B, Key(Y)) });
+        Assert.Equal(new[] { A + ":True" }, log);    // unchanged binding while held: no event, it stays pressed
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, Key(Y)), new TrackedBinding(B, Key(F8)) });
+        Assert.Equal(new[] { A + ":True", A + ":False" }, log);   // A no longer matches: released; B is held already: silent
+
+        log.Clear();
+        tracker.Configure(null, null, strict: false, System.Array.Empty<TrackedBinding>());
+        Assert.Equal(new[] { B + ":False" }, log);   // a removed binding that matched is released
+        tracker.OnKey(F8, false);
+        Assert.Equal(new[] { B + ":False" }, log);
+    }
+
+    [Fact]
+    public void Resync_releases_a_held_binding()
+    {
+        var tracker = new HotkeyTracker();
+        var log = Log(tracker);
+        tracker.Configure(null, null, strict: false, new[] { new TrackedBinding(A, new ClickerHotkey { Modifiers = ClickerModifiers.Ctrl, Keys = { ClickerVk.LButton } }) });
+        tracker.OnKey(ClickerVk.LControl, true);
+        tracker.OnKey(ClickerVk.LButton, true);
+
+        tracker.Resync(_ => false);   // the hook died and missed both releases
+
+        Assert.Equal(new[] { A + ":True", A + ":False" }, log);
+    }
+
     // ---- hook helpers ----
 
     [Theory]
