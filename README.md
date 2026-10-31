@@ -5,8 +5,8 @@ pile of tools. Instant replay of up to 30 minutes, a gallery with notes, trimmin
 one-click Discord compression, an Xbox-style widget board with a shortcut bar for your games,
 launchers and browsers, OBS control, Spotify and WhatsApp, a performance overlay with FPS that
 you can place anywhere, your own accent and glass colours, a crosshair with per-game profiles,
-a built-in auto clicker with a game blacklist, and clip combos on your controller. No account,
-no telemetry, no cloud.
+a built-in auto clicker with mouse patterns and a game blacklist, and clip combos on your
+controller. No account, no telemetry, no cloud.
 
 **[Download the latest release](https://github.com/WKImods/WKI-Clipper/releases/latest)**
 
@@ -29,7 +29,8 @@ drag mode. The UI starts in German; switch to English under Settings → About.<
 | `Ctrl+Alt+G` | Open/close the widget board |
 | `Ctrl+Alt+C` | Show/hide the crosshair |
 | `Ctrl+Alt+Y` | Start/stop the [AutoClicker](#autoclicker) — only while *Clicker ready* is on; set in the AutoClicker tab |
-| *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off · any [shortcut bar](#shortcut-bar) entry (bound in its edit dialog) |
+| `Ctrl+Alt+R` | Start/stop recording a [mouse pattern](#mouse-patterns) — only while *Mouse patterns ready* is on; set in the AutoClicker tab |
+| *(unbound)* | Spotify play/pause, next, previous · performance overlay on/off · any [shortcut bar](#shortcut-bar) entry (bound in its edit dialog) · each [mouse pattern](#mouse-patterns) (bound on its card) |
 
 All hotkeys are rebindable in Settings → Hotkeys (press-to-bind, with collision checks); the
 AutoClicker's own hotkeys are recorded in its tab.
@@ -85,7 +86,7 @@ switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 | | **Audio** | Devices, levels, gain, sync offset, separate mic track, sound cues |
 | | **Gallery** | Clips, recordings, GIFs and screenshots — search, favourites, notes, trim, Discord compress, delete to the Recycle Bin, game filter |
 | | **Performance** | CPU, GPU, GPU temperature and fan, RAM, VRAM, FPS — plus the on-screen overlay |
-| | **Gaming Utilities** | Tab *Crosshair*: PNG crosshair overlay, optionally with its own look per game. Tab *AutoClicker*: a built-in auto clicker (rate, hotkeys, failsafes, zones, click points, presets, statistics) with a game blacklist and whitelist |
+| | **Gaming Utilities** | Tab *Crosshair*: PNG crosshair overlay, optionally with its own look per game. Tab *AutoClicker*: a built-in auto clicker (rate, hotkeys, failsafes, zones, click points, mouse patterns, presets, statistics) with a game blacklist and whitelist |
 | Stream | **Streaming** | Software stream deck for OBS |
 | | **Mixer** | Fader, dB readout and mute per OBS audio input, synced both ways |
 | | **Sources** | Scene switcher and per-source visibility for the current scene |
@@ -333,6 +334,11 @@ used is remembered.
 
 <img src="docs/screenshots/gaming-utilities-crosshair.png" height="420" alt="Gaming Utilities widget on the Crosshair tab: the Crosshair and AutoClicker tabs at the top, Applies to, the crosshair library and the image adjustments">
 
+**New in 0.19.0:** [mouse patterns](#mouse-patterns) in the AutoClicker tab — record a mouse
+movement once and replay it on a hotkey, from wherever the mouse is, also in games without a
+pointer — and **Delete** in the gallery's `…` menu, which moves a clip or screenshot to the
+Recycle Bin (see [Gallery & editing](#gallery--editing)).
+
 **New in 0.18.0:** the Crosshair widget is now **Gaming Utilities** — the crosshair works exactly
 as before on its own tab (same hotkey, same per-game profiles), and the new **AutoClicker** tab
 is a complete auto clicker built into the clipper: rate, hotkeys, failsafes, zones, click points,
@@ -396,16 +402,59 @@ needed.
 - **Click points:** a sequence of screen points (x, y, clicks, jitter radius) picked on screen; the
   clicker moves there before clicking and walks the route in order, optionally stopping when the
   route is done.
+- **Mouse patterns:** record a mouse movement and replay it on a hotkey, with its own *Mouse
+  patterns ready* switch next to *Clicker ready* — see [Mouse patterns](#mouse-patterns).
 - **Presets:** three built-in ones (Standard, Rapid Fire, Precision), your own presets (save, rename,
   delete, export/import as JSON; hotkeys are never part of a preset) and **statistics** (sessions,
   total clicks and time, the last 100 runs with their stop reason, reset).
 - **Measuring:** `tools/measure-clicks.ps1` opens a counting window and prints the real rate and the
   timing jitter (mean CPS, interval stddev, min/max) of whatever clicks into it, e.g.
   `powershell -ExecutionPolicy Bypass -File tools\measure-clicks.ps1 -Seconds 20 -TargetCps 100`.
-  `tools/measure-moves.ps1` does the same for mouse patterns (*Mausbewegung*): a measuring window
+  `tools/measure-moves.ps1` does the same for [mouse patterns](#mouse-patterns): a measuring window
   that draws and sums the raw mouse counts and the pointer path it receives, split into bursts
   (duration, dx/dy, physical vs. injected), so a replay can be compared with its recording, e.g.
   `powershell -ExecutionPolicy Bypass -File tools\measure-moves.ps1 -GapMs 1000`.
+
+### Mouse patterns
+
+The AutoClicker's *Mouse patterns* sub-tab records a mouse movement once and replays it on a
+hotkey as often as you like — always from wherever the mouse is, also in games without a
+visible pointer. Patterns only move the mouse: they never click and never press keys.
+
+- **Mouse patterns ready:** the second switch next to *Clicker ready* (its label shows the record
+  hotkey). It runs the same helper process, but on its own: with only one of the two switches on,
+  the other side's hotkeys do nothing. Patterns and the clicker can run at the same time, and the
+  same hotkey may drive both — one press starts all of them. Pattern runs never count in the
+  clicker's statistics.
+- **Recording:** in the game or program press the record hotkey (default `Ctrl+Alt+R`), make the
+  movement, press it again. Only real mouse movement is recorded — no clicks, no keys, nothing the
+  clipper sent itself; the stillness at the start and the end is cut off, and after 60 s the
+  recording ends by itself. Every recording becomes a new pattern, active but without a hotkey, so
+  it does nothing yet; *Record again* on a card replaces that pattern's movement and keeps its
+  name, hotkey and settings. A small drawing on the card shows the recorded path.
+- **Several patterns:** up to 50, each with its own hotkey (any key, mouse button or the wheel,
+  recorded like the clicker's hotkey) and an *active* tick — only active patterns listen. The same
+  hotkey may sit on several patterns; tick the one you need.
+- **Replay:** *Hold* plays while the hotkey is held and stops the moment you let go; *Toggle*
+  starts with one press and stops with the next. *Repeat* on continues seamlessly with the next
+  pass, off means one pass per press. *Tempo* 0.25–4x changes the speed, never the shape. The
+  movement is relative to where it starts and does not drift, at any tempo and over any number of
+  repeats.
+- **Replay type:** *Automatic* (default) decides at every start. *Pointer* moves the pointer
+  pixel-exact from the start point — your own mouse movement is overridden meanwhile. *Game (raw)*
+  sends the movement like a real mouse, which is what games without a pointer read — your own
+  movement adds on top. With Windows' *Enhance pointer precision* on, a game without a pointer that
+  does not read raw input may see the movement larger or smaller (but the same every time).
+- **Only in &lt;program&gt;:** a pattern remembers the program it was recorded in. Ticked, it only
+  plays while that program is in front and stops when another one comes to the front — handy for
+  a pattern on the left mouse button, which would otherwise fire on every click. Off by default.
+- **Safety:** the blacklist lock stops every pattern and discards a running recording; the hotkey
+  picker in the clipper stops them and ignores their hotkeys while it records; Alt+Tab and Win+Tab
+  stop a running pattern; an administrator window in front cannot receive the movement, so the
+  pattern stops and the tab says why. Mouse-button hotkeys do not fire over the clipper's own
+  windows. Warnings under a card name shared hotkeys, collisions with the clipper's hotkeys and
+  risky choices — they never block.
+
 ## Crosshair
 
 Import your own PNGs into a small library, pick one, place it, toggle it with `Ctrl+Alt+C`.
@@ -529,13 +578,16 @@ Everything is configurable in the board. The file behind it is
   "Discord":      { "SmallTargetBytes": 20000000, "LargeTargetBytes": 500000000, "OnlyWhenNoGame": false },
   "GameProfiles": { "armareforgersteam.exe": { "DisplayName": "Arma Reforger", "ClipSeconds": 300 } },
   "AutoClicker":  { "Blacklist": [ { "ExeName": "cs2.exe", "DisplayName": "Counter-Strike 2" } ],
-                    "Clicker": { "Armed": false, "ClickSpeed": 25, "ClickUnit": "Second" } },  // plus zones, click points, presets, stats
+                    "Clicker": { "Armed": false, "MousePatternsArmed": false, "ClickSpeed": 25, "ClickUnit": "Second" } },  // plus zones, click points, mouse patterns, presets, stats
   "Behavior":     { "Language": "Deutsch" }
 }
 ```
 
 `ReplayBuffer.MaxMemoryMB` (settings.json only) sets the RAM budget of the in-memory buffer;
 0 means automatic — the smaller of 2048 MB and 15 % of your RAM.
+
+The recorded movements of the mouse patterns are not in `settings.json` (it only keeps their
+names and options): each one is its own file in `%APPDATA%\WKI_Clipper\mouse-patterns\`.
 
 | Setting | Where |
 |---------|-------|
@@ -550,6 +602,7 @@ Everything is configurable in the board. The file behind it is
 | Crosshair per game | Gaming Utilities widget → *Crosshair* tab → *Applies to* |
 | AutoClicker rate, output, hotkey | Gaming Utilities widget → *AutoClicker* tab → *Simple* / *Advanced* |
 | AutoClicker failsafes, zones, blacklist / whitelist | Gaming Utilities widget → *AutoClicker* tab → *Zones & safety* |
+| AutoClicker mouse patterns and their record hotkey | Gaming Utilities widget → *AutoClicker* tab → *Mouse patterns* |
 | AutoClicker presets and statistics | Gaming Utilities widget → *AutoClicker* tab → *Presets* |
 
 **Folder rules.** The buffer folder must be a full path — not a bare drive (`D:`), not a
@@ -603,11 +656,15 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
   +-- PerfOverlayPlacement     eight anchors or a free spot on one monitor (pure, tested)
   +-- ShortcutService          shortcut bar: scan, start paths, hotkeys (resolver and catalogs tested)
   +-- AutoClickerGuard         locks the AutoClicker while a blacklisted game runs or is in front (decision pure, tested)
-  +-- ClickerController        runs the AutoClicker helper process (--clicker-host) while "Clicker ready" is on, pipe protocol, stats
-  AutoClicker helper (WKI_Clipper.exe --clicker-host, only while "Clicker ready" is on)
-  +-- HotkeyHook               the only low-level keyboard/mouse hooks (hotkey and master switch)
+  +-- ClickerController        runs the AutoClicker helper process (--clicker-host) while "Clicker ready" or "Mouse patterns ready" is on, pipe protocol, stats
+  +-- MousePatternStore        the recorded movements, one file per pattern (PatternCodec)
+  AutoClicker helper (WKI_Clipper.exe --clicker-host, only while "Clicker ready" or "Mouse patterns ready" is on)
+  +-- HotkeyHook               the only low-level keyboard/mouse hooks (hotkeys, master switch, pattern hotkeys)
   +-- ClickEngine              timing, randomisation, hold time, limits, zones, click-point route
-  +-- InputInjector            sends the clicks and key presses (SendInput)
+  +-- PatternRecorder          records physical mouse movement: raw counts and pointer path
+  +-- PatternPlayer            replays patterns relative to where they start, drift-free (PatternCurve tested)
+  +-- PatternCoordinator       pattern hotkeys, Hold/Toggle, program binding, lock and safety stops
+  +-- InputInjector            sends the clicks, key presses and pattern moves (SendInput)
   +-- ThemeService             accent + glass palettes applied live (ThemePaletteBuilder tested)
   Streaming
   +-- ObsWebSocketService      OBS control via obs-websocket v5 (auto-reconnect, events)
@@ -623,10 +680,12 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
 - **Anti-cheat:** nothing is injected into or read from the game process — only Windows'
   own capture APIs and, for FPS, Windows' own present log (a passive ETW session). Should
   be fine with BattlEye/EAC, but there is no guarantee.
-- **AutoClicker and anti-cheat:** the clicks are ordinary Windows input, but Windows marks
-  them as injected and many online games forbid auto clickers — a ban is possible. Put such
-  games on the blacklist. An administrator window in front cannot receive the clicks (the
-  status pill says so).
+- **AutoClicker and anti-cheat:** the clicks and pattern moves are ordinary Windows input, but
+  Windows marks them as injected and many online games forbid auto clickers and movement macros
+  — a ban is possible. Put such games on the blacklist. An administrator window in front cannot
+  receive the clicks or moves (the status pill and the *Mouse patterns* tab say so).
+- **Mouse patterns and click points:** a clicker that walks click points moves the pointer to
+  fixed screen points and fights a pattern on the same hotkey; the *Mouse patterns* tab warns.
 - **FPS needs a Windows permission:** admin rights or membership in the group *Performance
   Log Users*; the Performance widget says how to add it. FPS is measured for the game in
   front only.
