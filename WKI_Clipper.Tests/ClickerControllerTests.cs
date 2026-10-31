@@ -127,17 +127,26 @@ internal sealed class FakeHostSession : IClickerHostSession
         => new(Running: false, Armed: true, Locked: locked, reason, Clicks: 0, Cps: 0, ElapsedMs: 0, BlockedByElevated: null);
 }
 
-/// <summary>The samples of the mouse patterns in memory. <see cref="FailSave"/> makes every write fail like a full or locked disk.</summary>
+/// <summary>
+/// The samples of the mouse patterns in memory. <see cref="FailSave"/> makes every write fail like a full or locked disk;
+/// <see cref="FailLoads"/> makes the next reads of one pattern fail like a file another program holds for a moment.
+/// </summary>
 internal sealed class FakePatternStore : IMousePatternStore
 {
     private readonly Dictionary<string, PatternData> _data = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _failLoads = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _loadsOf = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _deleted = new();
     private int _saves, _loads;
 
     public volatile bool FailSave;
 
+    /// <summary>The next <paramref name="times"/> reads of <paramref name="id"/> report <see cref="PatternLoadStatus.Unavailable"/>.</summary>
+    public void FailLoads(string id, int times) { lock (_data) _failLoads[id] = times; }
+
     public int Saves { get { lock (_data) return _saves; } }
     public int Loads { get { lock (_data) return _loads; } }
+    public int LoadsOf(string id) { lock (_data) return _loadsOf.GetValueOrDefault(id); }
     public IReadOnlyList<string> Deleted { get { lock (_data) return _deleted.ToArray(); } }
 
     /// <summary>Puts samples in place without counting a save (the state before the test).</summary>
@@ -157,10 +166,28 @@ internal sealed class FakePatternStore : IMousePatternStore
 
     public bool TryLoad(string id, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PatternData? data)
     {
+        if (Load(id, out var loaded) == PatternLoadStatus.Ok && loaded is not null)
+        {
+            data = loaded;
+            return true;
+        }
+        data = null;
+        return false;
+    }
+
+    public PatternLoadStatus Load(string id, out PatternData? data)
+    {
         lock (_data)
         {
             _loads++;
-            return _data.TryGetValue(id, out data);
+            _loadsOf[id] = _loadsOf.GetValueOrDefault(id) + 1;
+            data = null;
+            if (_failLoads.TryGetValue(id, out int fail) && fail > 0)
+            {
+                _failLoads[id] = fail - 1;
+                return PatternLoadStatus.Unavailable;
+            }
+            return _data.TryGetValue(id, out data) ? PatternLoadStatus.Ok : PatternLoadStatus.Missing;
         }
     }
 
@@ -1059,6 +1086,46 @@ public sealed class ClickerControllerTests
         Assert.Equal(Text(Samples(5)), resent.Data);
         var sent = host.Received.OfType<PatternDataMessage>().Select(d => (d.Id, d.Revision)).ToList();
         Assert.Equal(new[] { (IdA, 1), (IdB, 1), (IdA, 2) }, sent);
+    }
+
+    [Fact]
+    public async Task Samples_that_could_not_be_read_for_a_moment_are_sent_on_a_retry()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 3));
+        rig.Store.Put(IdA, Samples(7));
+        rig.Store.FailLoads(IdA, 2);   // the handshake's read ahead and its push both find the file held by another program
+
+        var host = await rig.StartReady();
+        rig.Controller.Stop();
+        await host.WaitFor<StopMessage>();
+        Assert.Empty(host.Received.OfType<PatternDataMessage>());
+
+        await rig.Time.AdvanceWhenArmed(Timing.PatternLoadRetry);   // the config is unchanged: only the samples follow
+        var data = await host.WaitFor<PatternDataMessage>();
+        Assert.Equal((IdA, 3), (data.Id, data.Revision));
+        Assert.Equal(Text(Samples(7)), data.Data);
+        Assert.Single(host.Received.OfType<ConfigMessage>());
+    }
+
+    [Fact]
+    public async Task A_read_error_that_does_not_pass_is_given_up_and_missing_samples_are_not_retried()
+    {
+        using var rig = new Rig(armed: false, patternsArmed: true);
+        rig.Settings.MousePatterns.Add(Pattern(IdA, 3));
+        rig.Settings.MousePatterns.Add(Pattern(IdB, 1, "Welle"));   // no samples at all: never tried again
+        rig.Store.Put(IdA, Samples(7));
+        rig.Store.FailLoads(IdA, int.MaxValue);
+
+        await rig.StartReady();
+        int missingReads = rig.Store.LoadsOf(IdB);         // the handshake's read ahead and its push
+        for (int i = 0; i < 20; i++) rig.Time.Advance(Timing.PatternLoadRetry);
+        int loads = rig.Store.LoadsOf(IdA);
+        rig.Time.Advance(TimeSpan.FromMinutes(5));
+
+        Assert.Equal(loads, rig.Store.LoadsOf(IdA));       // given up: nothing reads it any more
+        Assert.InRange(loads, 3, 20);                      // but it was tried again a few times
+        Assert.Equal(missingReads, rig.Store.LoadsOf(IdB));
     }
 
     [Fact]

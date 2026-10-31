@@ -15,8 +15,23 @@ public interface IMousePatternStore
     /// <summary>False when the id is invalid or the file is missing, unreadable or corrupt; never throws.</summary>
     bool TryLoad(string id, [NotNullWhen(true)] out PatternData? data);
 
+    /// <summary>Like <see cref="TryLoad"/>, but says why nothing came back, so a passing read error can be tried again; never throws. <paramref name="data"/> is set only for <see cref="PatternLoadStatus.Ok"/>.</summary>
+    PatternLoadStatus Load(string id, out PatternData? data);
+
     /// <summary>Removes the samples of a pattern; nothing happens for an invalid id or a missing file.</summary>
     void Delete(string id);
+}
+
+/// <summary>What <see cref="IMousePatternStore.Load"/> found.</summary>
+public enum PatternLoadStatus
+{
+    Ok,
+    /// <summary>An invalid id or no file: only a new recording helps.</summary>
+    Missing,
+    /// <summary>Too large or not samples: only a new recording helps.</summary>
+    Corrupt,
+    /// <summary>The file could not be read just now (locked by another program, access denied, drive away): a later try may work.</summary>
+    Unavailable,
 }
 
 /// <summary>
@@ -62,21 +77,33 @@ public sealed class MousePatternStore : IMousePatternStore
 
     public bool TryLoad(string id, [NotNullWhen(true)] out PatternData? data)
     {
+        if (Load(id, out var loaded) == PatternLoadStatus.Ok && loaded is not null)
+        {
+            data = loaded;
+            return true;
+        }
         data = null;
-        if (!MousePatternRules.IsValidId(id)) return false;
+        return false;
+    }
+
+    public PatternLoadStatus Load(string id, out PatternData? data)
+    {
+        data = null;
+        if (!MousePatternRules.IsValidId(id)) return PatternLoadStatus.Missing;
         var path = PathOf(id);
         try
         {
             var file = new FileInfo(path);
-            if (!file.Exists || file.Length > PatternCodec.MaxEncodedLength) return false;
-            if (PatternCodec.TryDecode(File.ReadAllText(path), out data)) return true;
+            if (!file.Exists) return PatternLoadStatus.Missing;
+            if (file.Length <= PatternCodec.MaxEncodedLength && PatternCodec.TryDecode(File.ReadAllText(path), out data)) return PatternLoadStatus.Ok;
+            data = null;
             Logger.Warn($"MousePatterns: the samples of {id} are unreadable - the pattern needs a new recording.");
-            return false;
+            return PatternLoadStatus.Corrupt;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Logger.Warn($"MousePatterns: could not read the samples of {id}: {ex.Message}");
-            return false;
+            return PatternLoadStatus.Unavailable;
         }
     }
 

@@ -72,6 +72,30 @@ public sealed class MousePatternStoreTests : IDisposable
         Assert.True(store.TryLoad(id, out _));
     }
 
+    [Fact]
+    public void Load_tells_a_passing_read_error_from_missing_or_corrupt_samples()
+    {
+        var store = new MousePatternStore(_dir);
+        string id = NewId();
+        Assert.Equal(PatternLoadStatus.Missing, store.Load(id, out var data));
+        Assert.Null(data);
+        Assert.Equal(PatternLoadStatus.Missing, store.Load("abc", out _));
+
+        store.Save(id, Data(2));
+        Assert.Equal(PatternLoadStatus.Ok, store.Load(id, out data));
+        Assert.Equal(new[] { 2, 1 }, data!.Raw.Dx);
+
+        using (new FileStream(FileOf(id), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Equal(PatternLoadStatus.Unavailable, store.Load(id, out data));   // another program holds it: try again later
+            Assert.Null(data);
+        }
+
+        File.WriteAllText(FileOf(id), "p1:garbage!!");
+        Assert.Equal(PatternLoadStatus.Corrupt, store.Load(id, out data));
+        Assert.Null(data);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

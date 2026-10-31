@@ -105,6 +105,9 @@ public sealed record PatternRecordedInfo(string Outcome, string? Name, double Se
 public sealed record ClickerControllerTiming(TimeSpan HandshakeTimeout, TimeSpan ConfigDebounce, TimeSpan ShutdownWait, TimeSpan LockConfirm)
 {
     public static readonly ClickerControllerTiming Default = new(TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+    /// <summary>How long after a passing read error a pattern's samples are read again (<see cref="PatternLoadStatus.Unavailable"/>).</summary>
+    public TimeSpan PatternLoadRetry { get; init; } = TimeSpan.FromSeconds(1);
 }
 
 /// <summary>
@@ -131,6 +134,9 @@ public sealed record ClickerControllerTiming(TimeSpan HandshakeTimeout, TimeSpan
 public sealed class ClickerController : IClickerLock, IDisposable
 {
     private const int MaxLockKills = 3;
+
+    /// <summary>Reads of one pattern's samples per helper and revision while they fail with a passing error (the first one included).</summary>
+    private const int MaxPatternLoadAttempts = 5;
 
     /// <summary>Samples ready to go to the helper (<paramref name="Text"/> is <see cref="PatternCodec"/> text) for one revision of a pattern.</summary>
     private sealed record PatternText(int Revision, string Text);
@@ -894,7 +900,12 @@ public sealed class ClickerController : IClickerLock, IDisposable
             ArmDebounceLocked();
             return;
         }
-        if (!force && encoded == _lastPushed) return;   // a new recording changes a revision, so it is never "unchanged"
+        if (!force && encoded == _lastPushed)
+        {
+            // A new recording changes a revision, so it is never "unchanged"; only samples a passing read error held back may follow.
+            if (s.PatternRetries.Count > 0) PushPatternDataLocked(s, snapshot!.Settings);
+            return;
+        }
         _lastPushed = encoded;
         Enqueue(s, snapshot!);
         PushPatternDataLocked(s, snapshot!.Settings);
@@ -902,35 +913,51 @@ public sealed class ClickerController : IClickerLock, IDisposable
 
     /// <summary>
     /// Right after the config that names them: the samples of every pattern whose revision this helper has not had yet (all of them
-    /// on a new helper). The helper plays a pattern only with samples of the revision its config names. A pattern without readable
-    /// samples is sent nothing (and not tried again until its revision changes); it simply cannot play.
+    /// on a new helper). The helper plays a pattern only with samples of the revision its config names. A pattern without samples
+    /// (missing or corrupt) is sent nothing and not tried again until its revision changes; it simply cannot play. A passing read
+    /// error is tried again after <see cref="ClickerControllerTiming.PatternLoadRetry"/>, up to <see cref="MaxPatternLoadAttempts"/> times.
     /// </summary>
     private void PushPatternDataLocked(Session s, ClickerSettings pushed)
     {
         var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool retry = false;
         foreach (var p in pushed.MousePatterns ?? new List<MousePattern>())
         {
             if (p is null || !MousePatternRules.IsValidId(p.Id) || !listed.Add(p.Id)) continue;
             if (s.SentPatterns.TryGetValue(p.Id, out int sent) && sent == p.Revision) continue;
+            var text = TakePatternTextLocked(p.Id, p.Revision, out bool passing);
+            int attempts = s.PatternRetries.TryGetValue(p.Id, out var failed) && failed.Revision == p.Revision ? failed.Attempts + 1 : 1;
+            if (text is null && passing && attempts < MaxPatternLoadAttempts)
+            {
+                s.PatternRetries[p.Id] = (p.Revision, attempts);
+                retry = true;
+                continue;
+            }
             s.SentPatterns[p.Id] = p.Revision;
-            if (TakePatternTextLocked(p.Id, p.Revision) is { } text) Enqueue(s, new PatternDataMessage(p.Id, p.Revision, text));
+            s.PatternRetries.Remove(p.Id);
+            if (text is not null) Enqueue(s, new PatternDataMessage(p.Id, p.Revision, text));
+            else if (passing) Logger.Warn($"MousePatterns: the samples of {p.Id} r{p.Revision} could not be read in {attempts} tries - the pattern cannot play until the helper starts again or it is recorded again.");
             else Logger.Info($"MousePatterns: no samples for {p.Id} r{p.Revision} - the pattern cannot play until it is recorded again.");
         }
         foreach (var gone in s.SentPatterns.Keys.Where(id => !listed.Contains(id)).ToList()) s.SentPatterns.Remove(gone);
+        foreach (var gone in s.PatternRetries.Keys.Where(id => !listed.Contains(id)).ToList()) s.PatternRetries.Remove(gone);
+        if (retry) ArmDebounceLocked(_timing.PatternLoadRetry);
     }
 
     /// <summary>
     /// The samples of one revision: the ones loaded ahead or taken from the recording (used once), otherwise read from the store here,
-    /// under the gate - only for a revision that changed without a recording of this clipper, which is rare.
+    /// under the gate - only for a revision that changed without a recording of this clipper, which is rare. <paramref name="passing"/>
+    /// = nothing came back because of a read error a later try may not hit.
     /// </summary>
-    private string? TakePatternTextLocked(string id, int revision)
+    private string? TakePatternTextLocked(string id, int revision, out bool passing)
     {
         if (_patternText.TryGetValue(id, out var ready) && ready.Revision == revision)
         {
             _patternText.Remove(id);
+            passing = false;
             return ready.Text;
         }
-        return LoadPatternText(id);
+        return LoadPatternText(id, out passing);
     }
 
     /// <summary>The samples of every listed pattern from the store into <see cref="_patternText"/>, outside the gate (the handshake's push takes them).</summary>
@@ -950,14 +977,33 @@ public sealed class ClickerController : IClickerLock, IDisposable
             {
                 if (_patternText.TryGetValue(id, out var ready) && ready.Revision == revision) continue;
             }
-            if (LoadPatternText(id) is not { } text) continue;
+            if (LoadPatternText(id, out _) is not { } text) continue;
             lock (_gate) _patternText[id] = new PatternText(revision, text);
         }
     }
 
-    private string? LoadPatternText(string id)
+    /// <summary>The samples of the patterns a passing read error held back, outside the gate (the retry's push takes them).</summary>
+    private void PreloadPatternRetries()
     {
-        if (!_patternStore.TryLoad(id, out var data)) return null;
+        List<(string Id, int Revision)> due;
+        lock (_gate)
+        {
+            if (_disposed || _session is not { Ready: true } s || s.PatternRetries.Count == 0) return;
+            due = s.PatternRetries.Select(r => (r.Key, r.Value.Revision)).ToList();
+        }
+        foreach (var (id, revision) in due)
+        {
+            if (LoadPatternText(id, out _) is not { } text) continue;
+            lock (_gate) _patternText[id] = new PatternText(revision, text);
+        }
+    }
+
+    /// <param name="passing">true = nothing came back because of a read error a later try may not hit (<see cref="PatternLoadStatus.Unavailable"/>).</param>
+    private string? LoadPatternText(string id, out bool passing)
+    {
+        var status = _patternStore.Load(id, out var data);
+        passing = status == PatternLoadStatus.Unavailable;
+        if (status != PatternLoadStatus.Ok || data is null) return null;
         try { return PatternCodec.Encode(data); }
         catch (ArgumentException ex)
         {
@@ -966,14 +1012,17 @@ public sealed class ClickerController : IClickerLock, IDisposable
         }
     }
 
-    private void ArmDebounceLocked()
+    private void ArmDebounceLocked() => ArmDebounceLocked(_timing.ConfigDebounce);
+
+    private void ArmDebounceLocked(TimeSpan due)
     {
-        try { _debounce.Change(_timing.ConfigDebounce, Timeout.InfiniteTimeSpan); }
+        try { _debounce.Change(due, Timeout.InfiniteTimeSpan); }
         catch (ObjectDisposedException) { }
     }
 
     private void PushConfigNow()
     {
+        PreloadPatternRetries();   // the files are read here, not under the gate the push below holds
         lock (_gate)
         {
             if (_disposed || _session is not { Ready: true } s) return;
@@ -1094,6 +1143,9 @@ public sealed class ClickerController : IClickerLock, IDisposable
 
         /// <summary>Pattern id -> the revision whose samples this helper got (or that had none to send). Under the controller's gate.</summary>
         public readonly Dictionary<string, int> SentPatterns = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Pattern id -> the revision a passing read error held back and the tries so far; read again on the next push. Under the controller's gate.</summary>
+        public readonly Dictionary<string, (int Revision, int Attempts)> PatternRetries = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>The helper's last word was "recording" and no result followed yet (written by the read loop only).</summary>
         public volatile bool RecordingSeen;
