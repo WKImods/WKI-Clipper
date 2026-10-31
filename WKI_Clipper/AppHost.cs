@@ -169,6 +169,8 @@ public sealed class AppHost : IDisposable
     public DiscordCompressService Discord { get; }
     /// <summary>The clip editor's cut ("Schneiden…"): stream copy or frame-accurate re-encode of a range of a gallery clip.</summary>
     public ClipCutService ClipCut { get; }
+    /// <summary>The gallery's "Löschen": a file into the Recycle Bin, never a permanent delete.</summary>
+    public GalleryDeleteService GalleryDelete { get; }
     /// <summary>The user's Spotify app via the Windows media session (started on first use).</summary>
     public SpotifyMediaService Spotify { get; } = new();
     /// <summary>Controller combos (hold View+Menu etc.): polls XInput in the background, raises the hotkey action names.</summary>
@@ -291,6 +293,7 @@ public sealed class AppHost : IDisposable
         {
             AvailableEncoders = () => AvailableCodecs.Select(c => c.FFmpegName)
         };
+        GalleryDelete = new GalleryDeleteService(() => Settings.Current);
 
         // Not started here: App starts it once the action handler is subscribed (Gamepad.ApplySettings).
         Gamepad = new GamepadService(Settings);

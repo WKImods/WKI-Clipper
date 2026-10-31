@@ -663,8 +663,8 @@ public sealed class ClipCutServiceTests : ClipCutFixture
         var outcome = await h.Service.RecycleOriginalAsync(source);
 
         Assert.Equal(RecycleOutcome.InUse, outcome);
-        Assert.Equal(1 + ClipCutService.RecycleRetryDelays.Length, calls);
-        Assert.Equal(ClipCutService.RecycleRetryDelays, waits);
+        Assert.Equal(1 + RecycleBin.RetryDelays.Length, calls);
+        Assert.Equal(RecycleBin.RetryDelays, waits);
         Assert.Empty(h.Finished);
         Assert.True(File.Exists(source));
     }
@@ -696,16 +696,6 @@ public sealed class ClipCutServiceTests : ClipCutFixture
         Assert.Equal(RecycleOutcome.NotSupported, await h.Service.RecycleOriginalAsync(Path.Combine(Clips, "gone.mp4")));
         Assert.Empty(waits);
         Assert.Empty(h.Recycled);
-    }
-
-    [Fact]
-    public void The_retry_is_short_and_backs_off()
-    {
-        var delays = ClipCutService.RecycleRetryDelays;
-
-        Assert.NotEmpty(delays);
-        Assert.Equal(delays.OrderBy(d => d), delays);
-        Assert.True(delays.Aggregate(TimeSpan.Zero, (sum, d) => sum + d) <= TimeSpan.FromSeconds(5));
     }
 
     // ---- 7: finishing ----

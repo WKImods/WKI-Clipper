@@ -204,35 +204,17 @@ public sealed class ClipCutService : IDisposable
         return outcome;
     }
 
-    /// <summary>
-    /// Waits between the tries of <see cref="RecycleOriginalAsync"/>. A preview (MediaElement) or a still-frame grab
-    /// (ffmpeg) lets go of the file a moment after it was told to, so the first try can find it in use.
-    /// </summary>
-    internal static readonly TimeSpan[] RecycleRetryDelays =
-    {
-        TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(400),
-        TimeSpan.FromMilliseconds(800), TimeSpan.FromMilliseconds(1500)
-    };
-
     /// <summary>Test seam: the wait between two tries.</summary>
     internal Func<TimeSpan, Task> Delay { get; init; } = Task.Delay;
 
     /// <summary>
-    /// <see cref="RecycleOriginal"/>, tried again with a short back-off while the file is still in use (at most about
-    /// 3 s in all, without blocking the caller). Any other outcome is final: asking "delete permanently?" a second
-    /// time, say, would be nagging. Continues on the caller's context — the shell wants the UI thread.
+    /// <see cref="RecycleOriginal"/>, tried again with a short back-off while the file is still in use (see
+    /// <see cref="RecycleBin.RetryWhileInUseAsync"/>): a preview (MediaElement) or a still-frame grab (ffmpeg) lets go of
+    /// it a moment after it was told to. Each try runs on the caller's thread, here the editor's UI thread (the shell
+    /// wants an STA thread); the waits do not block it.
     /// </summary>
-    public async Task<RecycleOutcome> RecycleOriginalAsync(string sourcePath)
-    {
-        var outcome = RecycleOriginal(sourcePath);
-        foreach (var wait in RecycleRetryDelays)
-        {
-            if (outcome != RecycleOutcome.InUse) break;
-            await Delay(wait);
-            outcome = RecycleOriginal(sourcePath);
-        }
-        return outcome;
-    }
+    public Task<RecycleOutcome> RecycleOriginalAsync(string sourcePath)
+        => RecycleBin.RetryWhileInUseAsync(() => Task.FromResult(RecycleOriginal(sourcePath)), Delay);
 
     // ================================================================ after the cut
 

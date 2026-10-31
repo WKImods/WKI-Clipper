@@ -31,6 +31,18 @@ public sealed class RecycleBinTests
     public void The_return_code_the_abort_flag_the_file_and_the_bin_decide_the_outcome(int rc, bool aborted, bool existsAfter, bool? binGrew, RecycleOutcome expected)
         => Assert.Equal(expected, RecycleBin.Interpret(rc, aborted, existsAfter, binGrew));
 
+    // ---- the retry while the file is in use (editor and gallery) ----
+
+    [Fact]
+    public void The_retry_is_short_and_backs_off()
+    {
+        var delays = RecycleBin.RetryDelays;
+
+        Assert.NotEmpty(delays);
+        Assert.Equal(delays.OrderBy(d => d), delays);
+        Assert.True(delays.Aggregate(TimeSpan.Zero, (sum, d) => sum + d) <= TimeSpan.FromSeconds(5));
+    }
+
     // ---- which drives have a Recycle Bin ----
 
     [Theory]

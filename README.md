@@ -83,7 +83,7 @@ switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 |---------|--------|--------------|
 | Capture | **Capture** | What gets clipped next, target mode, window picker, audio coupling |
 | | **Audio** | Devices, levels, gain, sync offset, separate mic track, sound cues |
-| | **Gallery** | Clips, recordings, GIFs and screenshots — search, favourites, notes, trim, Discord compress, game filter |
+| | **Gallery** | Clips, recordings, GIFs and screenshots — search, favourites, notes, trim, Discord compress, delete to the Recycle Bin, game filter |
 | | **Performance** | CPU, GPU, GPU temperature and fan, RAM, VRAM, FPS — plus the on-screen overlay |
 | | **Gaming Utilities** | Tab *Crosshair*: PNG crosshair overlay, optionally with its own look per game. Tab *AutoClicker*: a built-in auto clicker (rate, hotkeys, failsafes, zones, click points, presets, statistics) with a game blacklist and whitelist |
 | Stream | **Streaming** | Software stream deck for OBS |
@@ -210,6 +210,12 @@ sit in the `…` menu of each row (also on right-click).
   at an acceptable quality is refused — trim it first or pick a larger target. The two sizes
   (10 MB – 1 GB) and *Only compress while no game is in the foreground* (off by default —
   compressing costs FPS) are under Settings → About → Discord.
+- **Delete** moves the file — clip, recording, GIF, screenshot or compressed copy — to the
+  Windows Recycle Bin, never a permanent delete, so there is no extra question: restore it
+  from the bin and its note and star are back. A file still in use is tried again for a few
+  seconds; a toast says how it went. On a drive without a Recycle Bin (USB sticks, network
+  drives) and while the clip is being compressed for Discord the entry is greyed out. If
+  Windows itself asks whether to delete a file for good (one it cannot recycle), *No* keeps it.
 
 <img src="docs/screenshots/trim.png" height="420" alt="Trim… editor: preview, timeline with start and end marks, fast or exact cut">
 
@@ -585,6 +591,7 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
   +-- FFmpegJobRunner          one FFmpeg job at a time: progress, .part files, cancel
   +-- ClipCutService           trim: stream copy or re-encode
   +-- DiscordCompressService   re-encode to a size target (SizeTargetPlanner)
+  +-- GalleryDeleteService     delete to the Recycle Bin only (RecycleBin), retried while in use
   Board
   +-- WidgetHost               board, sidebar, widgets, pinning, crosshair and overlays
   +-- WidgetCatalog            sections, labels, icons, status line (pure, tested)

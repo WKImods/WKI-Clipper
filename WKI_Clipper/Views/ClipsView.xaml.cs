@@ -67,6 +67,9 @@ public partial class ClipsView : UserControl
         // A finished cut of the clip editor is a new file next to its source.
         host.ClipCut.Finished -= OnCutFinished;
         host.ClipCut.Finished += OnCutFinished;
+        // A row's "Löschen" took its file away.
+        host.GalleryDelete.Removed -= OnFileRemoved;
+        host.GalleryDelete.Removed += OnFileRemoved;
         Unloaded -= OnUnloaded;
         Unloaded += OnUnloaded;
 
@@ -79,11 +82,18 @@ public partial class ClipsView : UserControl
         {
             host.Discord.JobChanged -= OnCompressJobChanged;
             host.ClipCut.Finished -= OnCutFinished;
+            host.GalleryDelete.Removed -= OnFileRemoved;
         }
     }
 
     /// <summary>From a background thread: the editor saved a cut or moved an original to the Recycle Bin.</summary>
     private void OnCutFinished(string path)
+    {
+        Dispatcher.BeginInvoke(new Action(RequestReload));
+    }
+
+    /// <summary>A row's file went to the Recycle Bin (or was deleted for good): its row goes, a note being typed elsewhere stays.</summary>
+    private void OnFileRemoved(string path)
     {
         Dispatcher.BeginInvoke(new Action(RequestReload));
     }
@@ -538,9 +548,47 @@ public partial class ClipsView : UserControl
                              "Compress to this limit and copy the result to the clipboard (Ctrl+V in Discord).");
         }
         RefreshDiscordItems();
-        menu.Opened += (_, _) => RefreshDiscordItems();
+
+        // Delete: always into the Recycle Bin, which is the undo, so there is no question first. The note and star stay
+        // in the store, so a file restored from the bin gets them back.
+        menu.Items.Add(new Separator());
+        var delete = new MenuItem { Header = L.T("Löschen", "Delete") };
+        delete.SetResourceReference(MenuItem.ForegroundProperty, "DangerBrush");
+        ToolTipService.SetShowOnDisabled(delete, true);
+        delete.Click += (_, _) => DeleteToRecycleBin(it);
+        menu.Items.Add(delete);
+
+        // Read when the menu opens only: the file and drive checks would cost every row of every reload (more so on a share).
+        void RefreshDeleteItem()
+        {
+            var host = App.Host;
+            var state = GalleryDeleteRules.ItemState(
+                fileExists: File.Exists(it.FilePath),
+                recyclable: RecycleBin.IsSupportedPath(it.FilePath),
+                compressing: host?.Discord.Snapshot(it.FilePath) is { Active: true },
+                deleting: host?.GalleryDelete.IsDeleting(it.FilePath) == true);
+            delete.IsEnabled = state.Enabled && host is not null;
+            delete.ToolTip = state.ToolTip;
+        }
+
+        menu.Opened += (_, _) =>
+        {
+            RefreshDiscordItems();
+            RefreshDeleteItem();
+        };
 
         return menu;
+    }
+
+    /// <summary>
+    /// The gallery's window owns Windows' "delete permanently?" (if it asks): the board's widgets are topmost and would
+    /// cover a question without an owner. Toast and reload come from the service.
+    /// </summary>
+    private void DeleteToRecycleBin(MediaEntry it)
+    {
+        if (App.Host is not { } host) return;
+        var owner = Window.GetWindow(this) is { } window ? new System.Windows.Interop.WindowInteropHelper(window).Handle : IntPtr.Zero;
+        _ = host.GalleryDelete.DeleteAsync(it.FilePath, owner);
     }
 
     private void StartDiscordCompress(MediaEntry it, bool small)

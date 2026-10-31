@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 using WKI_Clipper.Native;
 
@@ -114,11 +115,11 @@ public static class RecycleBin
         return Shell32.SHQueryRecycleBinW(root, ref info) == 0 ? info.i64NumItems : null;
     }
 
-    private static ShellDeleteResult ShellRecycle(string full)
+    private static ShellDeleteResult ShellRecycle(string full, IntPtr owner)
     {
         var op = new Shell32.SHFILEOPSTRUCTW
         {
-            hwnd = IntPtr.Zero,
+            hwnd = owner,
             wFunc = Shell32.FO_DELETE,
             pFrom = full + "\0",
             pTo = null,
@@ -133,7 +134,12 @@ public static class RecycleBin
     /// Sends the file to the Recycle Bin without a progress or confirmation dialog (Windows may still show its
     /// "cannot be recycled — delete permanently?" question). Returns instead of throwing.
     /// </summary>
-    public static RecycleOutcome Send(string path) => Send(path, BinItemCount, ShellRecycle, ReadVolumeSettings);
+    public static RecycleOutcome Send(string path) => Send(path, IntPtr.Zero);
+
+    /// <param name="owner">The window Windows' question belongs to, so it shows above that window: the board's widgets are
+    /// topmost and would hide a question that has no owner. IntPtr.Zero = none.</param>
+    public static RecycleOutcome Send(string path, IntPtr owner)
+        => Send(path, BinItemCount, full => ShellRecycle(full, owner), ReadVolumeSettings);
 
     /// <summary>The steps of <see cref="Send(string)"/> with the shell and the registry replaceable (tests).</summary>
     internal static RecycleOutcome Send(string path, Func<string, long?> binItemCount,
@@ -175,6 +181,33 @@ public static class RecycleBin
             Logger.Warn("Recycle bin failed: " + ex.Message);
             return RecycleOutcome.Failed;
         }
+    }
+
+    /// <summary>
+    /// Waits between the tries of <see cref="RetryWhileInUseAsync"/>. A preview (MediaElement), a still-frame grab
+    /// (ffmpeg) or a player lets go of the file a moment after it was told to, so the first try can find it in use.
+    /// </summary>
+    internal static readonly TimeSpan[] RetryDelays =
+    {
+        TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(400),
+        TimeSpan.FromMilliseconds(800), TimeSpan.FromMilliseconds(1500)
+    };
+
+    /// <summary>
+    /// <paramref name="attempt"/>, tried again with a short back-off while the file is still in use (at most about 3 s
+    /// in all, without blocking the caller). Any other outcome is final: asking "delete permanently?" a second time,
+    /// say, would be nagging. Continues on the caller's context; where a try runs is up to <paramref name="attempt"/>.
+    /// </summary>
+    internal static async Task<RecycleOutcome> RetryWhileInUseAsync(Func<Task<RecycleOutcome>> attempt, Func<TimeSpan, Task> delay)
+    {
+        var outcome = await attempt();
+        foreach (var wait in RetryDelays)
+        {
+            if (outcome != RecycleOutcome.InUse) break;
+            await delay(wait);
+            outcome = await attempt();
+        }
+        return outcome;
     }
 
     /// <param name="binGrew">Whether the bin holds more items than before; null = could not be counted. Only a file that is
