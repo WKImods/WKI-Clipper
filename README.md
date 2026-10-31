@@ -396,6 +396,10 @@ needed.
 - **Measuring:** `tools/measure-clicks.ps1` opens a counting window and prints the real rate and the
   timing jitter (mean CPS, interval stddev, min/max) of whatever clicks into it, e.g.
   `powershell -ExecutionPolicy Bypass -File tools\measure-clicks.ps1 -Seconds 20 -TargetCps 100`.
+  `tools/measure-moves.ps1` does the same for mouse patterns (*Mausbewegung*): a measuring window
+  that draws and sums the raw mouse counts and the pointer path it receives, split into bursts
+  (duration, dx/dy, physical vs. injected), so a replay can be compared with its recording, e.g.
+  `powershell -ExecutionPolicy Bypass -File tools\measure-moves.ps1 -GapMs 1000`.
 ## Crosshair
 
 Import your own PNGs into a small library, pick one, place it, toggle it with `Ctrl+Alt+C`.
