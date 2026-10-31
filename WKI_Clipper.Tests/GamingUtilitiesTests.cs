@@ -236,6 +236,46 @@ public sealed class GamingUtilitiesTests
     }
 
     [Fact]
+    public void Cards_are_not_rebuilt_under_a_name_or_tempo_box_being_typed_in()
+    {
+        const string PatternC = "00112233445566778899aabbccddeeff";
+        var r = OnSta(() =>
+        {
+            var panel = new MousePatternsPanel { Store = new FakePatternStore() };
+            var settings = TwoPatterns();
+            var patterns = settings.AutoClicker.Clicker.MousePatterns;
+            panel.Render(settings, ReadyState, recordTarget: null);
+            var name = panel.CardsById[PatternA].NameBox;
+            name.Text = "Kreis schnell";                   // typed, not committed yet (that happens when the box is left)
+            panel.HasKeyboardFocus = e => ReferenceEquals(e, name);
+
+            patterns.Add(new MousePattern { Id = PatternC, Name = "Neu", Revision = 1 });   // a recording arrived meanwhile
+            panel.Render(settings, ReadyState, recordTarget: null);
+            var underName = (Same: ReferenceEquals(panel.CardsById[PatternA].NameBox, name), name.Text, panel.Cards.Children.Count);
+
+            var speed = panel.CardsById[PatternB].Speed;
+            panel.HasKeyboardFocus = e => ReferenceEquals(e, speed);
+            patterns[1].Revision = 2;
+            panel.Render(settings, ReadyState, recordTarget: null);
+            var underSpeed = (Same: ReferenceEquals(panel.CardsById[PatternB].Speed, speed), panel.Cards.Children.Count);
+
+            panel.HasKeyboardFocus = _ => false;           // the box was left: the cards follow
+            panel.Render(settings, ReadyState, recordTarget: null);
+            return (underName, underSpeed, Cards: panel.Cards.Children.Count, HasC: panel.CardsById.ContainsKey(PatternC),
+                    Rebuilt: !ReferenceEquals(panel.CardsById[PatternA].NameBox, name));
+        });
+
+        Assert.True(r.underName.Same);
+        Assert.Equal("Kreis schnell", r.underName.Text);
+        Assert.Equal(2, r.underName.Item3);
+        Assert.True(r.underSpeed.Same);
+        Assert.Equal(2, r.underSpeed.Item2);
+        Assert.Equal(3, r.Cards);
+        Assert.True(r.HasC);
+        Assert.True(r.Rebuilt);
+    }
+
+    [Fact]
     public void Without_patterns_the_tab_says_how_to_record_one()
     {
         var r = OnSta(() =>

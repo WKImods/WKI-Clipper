@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
 using WKI_Clipper.Services.AutoClicker;
@@ -18,7 +19,8 @@ namespace WKI_Clipper.Views.AutoClicker;
 /// "Mausbewegung" (mouse-patterns design 4.7): what patterns do and where they stand (<see cref="MousePatternUiRules.StatusLine"/>), the
 /// record hotkey with the "Neu aufnehmen" target line, and one two-line card per pattern (the widget is narrow) with its warnings
 /// (<see cref="MousePatternConflicts"/>) under it. The cards are rebuilt only when a shown value of a pattern changes; an edit in a card's
-/// text box keeps them (and the focus of the next box), like the click points. Status, target line and warnings follow every refresh.
+/// text box keeps them (and the focus of the next box), like the click points, and a rebuild waits while a card's name or tempo box is
+/// typed in or its hotkey box captures. Status, target line and warnings follow every refresh.
 /// The drawing comes from the pattern's samples file, read once per <see cref="MousePattern.Revision"/> - only the thinned points are kept.
 /// </summary>
 public sealed class MousePatternsPanel : ClickerPanel
@@ -36,7 +38,8 @@ public sealed class MousePatternsPanel : ClickerPanel
     private readonly Dictionary<string, PatternCard> _cards = new(StringComparer.OrdinalIgnoreCase);
     private IMousePatternStore? _store;
     private string? _shown;
-    private bool _keepRows;
+    private bool _keepRows, _rowsPending;
+    private string? _keepFrom;   // the cards' key right before an edit that keeps them
 
     internal TextBlock StatusText { get; }
     internal HotkeyCaptureBox RecordHotkey { get; }
@@ -55,6 +58,9 @@ public sealed class MousePatternsPanel : ClickerPanel
         get => _store ?? Host?.Clicker.PatternStore;
         set => _store = value;
     }
+
+    /// <summary>Whether a card's text box is being typed in (its edit is committed only when it is left); a test replaces it.</summary>
+    internal Func<UIElement, bool> HasKeyboardFocus { get; set; } = e => e.IsKeyboardFocused;
 
     public MousePatternsPanel()
     {
@@ -113,7 +119,7 @@ public sealed class MousePatternsPanel : ClickerPanel
     internal void Render(AppSettings settings, ClickerState state, string? recordTarget)
     {
         var c = settings.AutoClicker.Clicker;
-        var patterns = (c.MousePatterns ?? new List<MousePattern>()).Where(p => p is { Id: not null }).ToList();
+        var patterns = Listed(c);
         bool sided = HotkeyRecorder.RecordsSided(c);
 
         StatusText.Text = MousePatternUiRules.StatusLine(state, c);
@@ -132,9 +138,13 @@ public sealed class MousePatternsPanel : ClickerPanel
         foreach (var gone in _previews.Keys.Where(id => !previews.ContainsKey(id)).ToList()) _previews.Remove(gone);
 
         var key = RowsKey(patterns, sided);
-        if (_keepRows) _shown = key;   // an edit inside a card: keep the cards (and the focus of the next box)
-        // A card's hotkey box that is capturing would lose its capture: the cards follow at the next refresh.
-        if (key != _shown && !_cards.Values.Any(card => card.Hotkey.IsCapturing))
+        // An edit inside a card keeps the cards (and the focus of the next box) - unless they were already behind before it.
+        if (_keepRows && _keepFrom == _shown) _shown = key;
+        // A card's hotkey box that is capturing would lose its capture, a name or tempo box being typed in its text: the cards
+        // follow once it is left.
+        bool editing = _cards.Values.Any(card => card.Hotkey.IsCapturing || HasKeyboardFocus(card.NameBox) || HasKeyboardFocus(card.Speed));
+        _rowsPending = key != _shown && editing;
+        if (key != _shown && !editing)
         {
             _shown = key;
             Cards.Children.Clear();
@@ -167,6 +177,9 @@ public sealed class MousePatternsPanel : ClickerPanel
     }
 
     private static bool SameId(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static List<MousePattern> Listed(ClickerSettings c)
+        => (c.MousePatterns ?? new List<MousePattern>()).Where(p => p is { Id: not null }).ToList();
 
     private static string RowsKey(IEnumerable<MousePattern> patterns, bool sided)
         => sided + "#" + string.Join("|", patterns.Select(p => string.Join(";",
@@ -211,10 +224,14 @@ public sealed class MousePatternsPanel : ClickerPanel
         void ApplyName()
         {
             if (Find(id) is not { } current) return;
-            if (name.Text != current.Name) EditKeepingRows(id, x => x.Name = name.Text);
+            if (name.Text != current.Name) EditInCard(id, name, x => x.Name = name.Text);
             if (Find(id) is { } after) name.Text = after.Name;   // the cleaned name (an empty one gets "Muster n")
         }
-        name.LostKeyboardFocus += (_, _) => ApplyName();
+        name.LostKeyboardFocus += (_, _) =>
+        {
+            ApplyName();
+            FollowPendingRows();
+        };
         name.KeyDown += (_, e) => { if (e.Key == Key.Enter) { ApplyName(); e.Handled = true; } };
 
         var (drawing, line) = Drawing(preview);
@@ -263,10 +280,14 @@ public sealed class MousePatternsPanel : ClickerPanel
         void ApplySpeed()
         {
             if (Find(id) is not { } current) return;
-            if (ClickerNumber.TryParse(speed.Text, out var v) && v != current.Speed) EditKeepingRows(id, x => x.Speed = v);
+            if (ClickerNumber.TryParse(speed.Text, out var v) && v != current.Speed) EditInCard(id, speed, x => x.Speed = v);
             if (Find(id) is { } after) speed.Text = ClickerNumber.Format(after.Speed);   // the clamped value, also after a bad entry
         }
-        speed.LostKeyboardFocus += (_, _) => ApplySpeed();
+        speed.LostKeyboardFocus += (_, _) =>
+        {
+            ApplySpeed();
+            FollowPendingRows();
+        };
         speed.KeyDown += (_, e) => { if (e.Key == Key.Enter) { ApplySpeed(); e.Handled = true; } };
         var tempo = new StackPanel { Orientation = Orientation.Horizontal };
         tempo.Children.Add(Spaced(Label(L.T("Tempo", "Tempo")), 4));
@@ -389,11 +410,32 @@ public sealed class MousePatternsPanel : ClickerPanel
             return true;
         });
 
-    private void EditKeepingRows(string id, Action<MousePattern> edit)
+    /// <summary>
+    /// An edit from a card's text box keeps the cards - unless <paramref name="box"/> is no longer on screen (cards rebuilt meanwhile):
+    /// then the new cards must show the edit.
+    /// </summary>
+    private void EditInCard(string id, TextBox box, Action<MousePattern> edit)
     {
+        bool onScreen = _cards.TryGetValue(id, out var card) && (ReferenceEquals(card.NameBox, box) || ReferenceEquals(card.Speed, box));
+        if (!onScreen || Clicker is not { } c)
+        {
+            Edit(id, edit);
+            return;
+        }
+        _keepFrom = RowsKey(Listed(c), HotkeyRecorder.RecordsSided(c));
         _keepRows = true;
         try { Edit(id, edit); }
-        finally { _keepRows = false; }
+        finally
+        {
+            _keepRows = false;
+            _keepFrom = null;
+        }
+    }
+
+    /// <summary>A card's box was left while the cards waited for it: rebuild them once the focus has settled (it may be in another card's box).</summary>
+    private void FollowPendingRows()
+    {
+        if (_rowsPending) Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Refresh));
     }
 
     private static MousePattern Copy(MousePattern o) => new()
