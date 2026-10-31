@@ -372,6 +372,47 @@ public sealed class PatternCoordinatorTests
         Assert.False(r.Playing(A));
     }
 
+    [Fact]
+    public void A_toggled_mouse_hotkey_stops_over_the_clipper_too()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(ClickerVk.XButton1), p => { p.Mode = ActivationMode.Toggle; p.Repeat = true; });
+
+        r.Tap(ClickerVk.XButton1);
+        Assert.True(r.Playing(A));
+
+        r.OverClipper = true;             // the path ran over the clipper: the stop press must not be eaten
+        r.Press(ClickerVk.XButton1);
+        Assert.False(r.Playing(A));
+        r.Release(ClickerVk.XButton1);
+
+        r.Tap(ClickerVk.XButton1);        // a start over the clipper is still refused
+        Assert.False(r.Playing(A));
+    }
+
+    [Fact]
+    public void A_mouse_record_hotkey_stops_the_recording_over_the_clipper_too()
+    {
+        using var r = new Rig();
+        r.Settings.PatternRecordHotkey = Key(ClickerVk.XButton1);
+        r.Push();
+
+        r.Tap(ClickerVk.XButton1);
+        Assert.True(r.Recorder.IsRecording);
+        r.Recorder.OnRawMouse(1005, 3, 0);
+        r.Recorder.OnPointerMove(1005, 3, 0);
+        r.Clock.Now = 1100;
+
+        r.OverClipper = true;
+        r.Tap(ClickerVk.XButton1);
+        Assert.False(r.Recorder.IsRecording);
+        Assert.False(r.Patterns.Status.Recording);
+        Assert.Equal(nameof(PatternRecordingOutcome.Ok), Assert.Single(r.Recorded).Outcome);
+
+        r.Tap(ClickerVk.XButton1);        // a start over the clipper is still refused
+        Assert.False(r.Recorder.IsRecording);
+    }
+
     // ---- program binding and task switcher ----
 
     [Fact]

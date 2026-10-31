@@ -21,9 +21,9 @@ internal sealed record PatternStatus(bool Recording, string? Playing, string? Bl
 /// a hotkey; none while "Mausbewegung bereit" is off. A pattern that is no longer bound stops.</item>
 /// <item>Each bound pattern has its own <see cref="ActivationStateMachine"/> (Hold/Toggle, no master); its Start/Stop become
 /// <see cref="PatternPlayer"/> calls. A press does not count while locked, suppressed (a picker or hotkey field in the clipper),
-/// recording or while the record hotkey is held; a mouse hotkey's press over the clipper's windows and a program-bound pattern's
-/// start while its program is not in front do not count either. A release always gets through. A pattern without samples of its
-/// current revision never starts.</item>
+/// recording or while the record hotkey is held; a mouse hotkey's start press over the clipper's windows and a program-bound pattern's
+/// start while its program is not in front do not count either (a toggle's stop press does). A release always gets through. A pattern
+/// without samples of its current revision never starts.</item>
 /// <item>The record hotkey starts a recording (stopping every playback: no pattern moves the mouse into a recording) and stops it
 /// again; the result goes to the clipper as a <see cref="PatternRecordedMessage"/>, as does the cancel by lock, suppression or disarm.
 /// The recorder's 60 s limit stops it the same way.</item>
@@ -189,9 +189,11 @@ internal sealed class PatternCoordinator
     private bool PressCounts(Entry entry)
     {
         if (!_armed || _locked || _suppressed || _recording || _recordHeld) return false;
+        // The clipper's windows and the program binding guard the start only; a toggle's stop press always counts (a path that runs
+        // over the clipper must still be stoppable there).
+        if (entry.Machine.IsRunning) return true;
         if (entry.Options.Hotkey.HasMouseInput && OverClipper()) return false;
-        // The program binding guards the start only; a toggle's stop press always counts.
-        if (!entry.Machine.IsRunning && entry.Options is { OnlyInProgram: true, ProgramKey: { } program }
+        if (entry.Options is { OnlyInProgram: true, ProgramKey: { } program }
             && !string.Equals(program, AutoClickerBlacklist.Key(Foreground().Exe), StringComparison.Ordinal)) return false;
         return true;
     }
@@ -226,7 +228,7 @@ internal sealed class PatternCoordinator
     {
         _recordHeld = matched;
         if (!matched || !_armed || _locked || _suppressed) return false;
-        if (_recordHasMouse && OverClipper()) return false;
+        if (!_recording && _recordHasMouse && OverClipper()) return false;   // only the start: the stop press ends it anywhere
         if (_recording) StopRecording();
         else StartRecording();
         return UpdateStatus();
