@@ -141,6 +141,14 @@ public static class RecycleBin
     public static RecycleOutcome Send(string path, IntPtr owner)
         => Send(path, BinItemCount, full => ShellRecycle(full, owner), ReadVolumeSettings);
 
+    /// <summary>
+    /// One count-shell-count at a time, app-wide. The gallery runs each try on its own thread and the editor on its UI
+    /// thread; another file landing in the same bin between the two counts would make a permanent delete look recycled.
+    /// A try waits here while another one's "delete permanently?" is open. The waits of <see cref="RetryWhileInUseAsync"/>
+    /// stay outside, so a file in use does not hold up the others.
+    /// </summary>
+    private static readonly object ShellGate = new();
+
     /// <summary>The steps of <see cref="Send(string)"/> with the shell and the registry replaceable (tests).</summary>
     internal static RecycleOutcome Send(string path, Func<string, long?> binItemCount,
         Func<string, ShellDeleteResult> shellDelete, Func<string, VolumeSettings> volumeSettings)
@@ -158,23 +166,26 @@ public static class RecycleBin
                 Logger.Info($"Recycle bin: '{full}' not moved - the bin of {root} is off or too small for it");
                 return RecycleOutcome.NotSupported;
             }
-            if (binItemCount(root) is not { } before)
+            lock (ShellGate)
             {
-                Logger.Info($"Recycle bin: '{full}' not moved - {root} has no readable Recycle Bin");
-                return RecycleOutcome.NotSupported;
+                if (binItemCount(root) is not { } before)
+                {
+                    Logger.Info($"Recycle bin: '{full}' not moved - {root} has no readable Recycle Bin");
+                    return RecycleOutcome.NotSupported;
+                }
+
+                var shell = shellDelete(full);
+                bool gone = !File.Exists(full);
+
+                // Recycled or deleted for good both leave rc 0 and no file: only the bin tells them apart.
+                bool? binGrew = null;
+                if (shell.ReturnCode == 0 && !shell.Aborted && gone)
+                    binGrew = binItemCount(root) is { } after ? after > before : null;
+
+                var outcome = Interpret(shell.ReturnCode, shell.Aborted, !gone, binGrew);
+                Logger.Info($"Recycle bin: '{full}' -> {outcome} (rc={shell.ReturnCode})");
+                return outcome;
             }
-
-            var shell = shellDelete(full);
-            bool gone = !File.Exists(full);
-
-            // Recycled or deleted for good both leave rc 0 and no file: only the bin tells them apart.
-            bool? binGrew = null;
-            if (shell.ReturnCode == 0 && !shell.Aborted && gone)
-                binGrew = binItemCount(root) is { } after ? after > before : null;
-
-            var outcome = Interpret(shell.ReturnCode, shell.Aborted, !gone, binGrew);
-            Logger.Info($"Recycle bin: '{full}' -> {outcome} (rc={shell.ReturnCode})");
-            return outcome;
         }
         catch (Exception ex)
         {

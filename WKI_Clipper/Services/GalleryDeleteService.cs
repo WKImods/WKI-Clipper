@@ -11,7 +11,8 @@ namespace WKI_Clipper.Services;
 /// <summary>
 /// The gallery's "Löschen": one file into the Recycle Bin (<see cref="RecycleBin.Send(string)"/>, never File.Delete),
 /// tried again for a moment while it is in use, then a toast with the outcome. The bin is the undo, so there is no
-/// question first. One delete per file at a time. Notes and stars are not touched: a file restored from the bin finds
+/// question first. One delete per file at a time; deletes of different files overlap, but their shell tries take turns
+/// (see RecycleBin.ShellGate). Notes and stars are not touched: a file restored from the bin finds
 /// them under its old path again.
 /// </summary>
 public sealed class GalleryDeleteService

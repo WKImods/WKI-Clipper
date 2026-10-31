@@ -211,7 +211,8 @@ public sealed class ClipCutService : IDisposable
     /// <see cref="RecycleOriginal"/>, tried again with a short back-off while the file is still in use (see
     /// <see cref="RecycleBin.RetryWhileInUseAsync"/>): a preview (MediaElement) or a still-frame grab (ffmpeg) lets go of
     /// it a moment after it was told to. Each try runs on the caller's thread, here the editor's UI thread (the shell
-    /// wants an STA thread); the waits do not block it.
+    /// wants an STA thread); the waits do not block it. A try does wait while a gallery delete's try is running (see
+    /// RecycleBin.ShellGate).
     /// </summary>
     public Task<RecycleOutcome> RecycleOriginalAsync(string sourcePath)
         => RecycleBin.RetryWhileInUseAsync(() => Task.FromResult(RecycleOriginal(sourcePath)), Delay);

@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using WKI_Clipper.Services;
 using Xunit;
 
@@ -227,6 +229,78 @@ public sealed class RecycleBinTests
 
         Assert.Equal(RecycleOutcome.Failed, outcome);
         Assert.True(File.Exists(file.Path));
+    }
+
+    // ---- Send: two deletes at once (the gallery's own threads, the editor's UI thread) ----
+
+    private static readonly Func<string, RecycleBin.VolumeSettings> NoLimits = _ => new RecycleBin.VolumeSettings(null, false);
+
+    [Fact]
+    public void Another_file_recycled_meanwhile_does_not_make_a_permanent_delete_look_recycled()
+    {
+        // A waits in Windows' "delete permanently?" and the user says yes; B, on the same drive, goes to the bin meanwhile.
+        // The count around A's shell call must not take B's item for A's.
+        using var a = new TempFile();
+        using var b = new TempFile();
+        long items = 10;
+        long? Count(string _) => Interlocked.Read(ref items);
+        using var aAsks = new ManualResetEventSlim();
+        using var userSaysYes = new ManualResetEventSlim();
+        using var bDone = new ManualResetEventSlim();
+        RecycleOutcome aOutcome = RecycleOutcome.Failed, bOutcome = RecycleOutcome.Failed;
+
+        var aThread = new Thread(() => aOutcome = RecycleBin.Send(a.Path, Count, full =>
+        {
+            aAsks.Set();
+            userSaysYes.Wait(TimeSpan.FromSeconds(10));
+            File.Delete(full);                                      // gone for good, the bin does not grow
+            return new RecycleBin.ShellDeleteResult(0, false);
+        }, NoLimits));
+        var bThread = new Thread(() =>
+        {
+            bOutcome = RecycleBin.Send(b.Path, Count, full =>
+            {
+                File.Delete(full);
+                Interlocked.Increment(ref items);                   // into the bin
+                return new RecycleBin.ShellDeleteResult(0, false);
+            }, NoLimits);
+            bDone.Set();
+        });
+
+        aThread.Start();
+        Assert.True(aAsks.Wait(TimeSpan.FromSeconds(10)));
+        bThread.Start();
+        bDone.Wait(TimeSpan.FromMilliseconds(300));                 // B's whole try fits in here unless it has to wait for A
+        userSaysYes.Set();
+        Assert.True(aThread.Join(TimeSpan.FromSeconds(10)));
+        Assert.True(bThread.Join(TimeSpan.FromSeconds(10)));
+
+        Assert.Equal(RecycleOutcome.DeletedPermanently, aOutcome);
+        Assert.Equal(RecycleOutcome.Recycled, bOutcome);
+        Assert.Equal(11, Interlocked.Read(ref items));
+    }
+
+    [Fact]
+    public async Task A_file_in_use_does_not_hold_up_another_delete_while_it_waits_for_its_next_try()
+    {
+        using var a = new TempFile();
+        using var b = new TempFile();
+        var shell = new FakeShell();
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var first = RecycleBin.RetryWhileInUseAsync(
+            () => Task.Run(() => RecycleBin.Send(a.Path, shell.Count, _ => new RecycleBin.ShellDeleteResult(32, false), NoLimits)),
+            _ => { waiting.TrySetResult(); return release.Task; });
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var other = await Task.Run(() => Send(b, shell)).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(RecycleOutcome.Recycled, other);
+        Assert.False(File.Exists(b.Path));
+        release.SetResult();
+        Assert.Equal(RecycleOutcome.InUse, await first.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(File.Exists(a.Path));
     }
 
     // ---- which paths can be recycled ----
