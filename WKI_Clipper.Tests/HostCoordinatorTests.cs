@@ -631,6 +631,51 @@ public sealed class HostCoordinatorTests
         Assert.Equal(new[] { StopReason.Manual }, r.Engine.Stops.ToArray());
     }
 
+    [Fact]
+    public void A_hotkey_press_that_arrives_after_disarming_does_not_start()
+    {
+        var r = new Rig(s => s.MousePatternsArmed = true);
+        r.Settings.Armed = false;
+        r.Push();
+
+        // An edge the hotkey worker computed against the old hotkey, delivered once the config released the gate.
+        r.Tracker.HotkeyChanged!(true);
+        Assert.Empty(r.Engine.Starts);
+        r.Tracker.HotkeyChanged!(false);
+
+        r.Settings.Armed = true;
+        r.Push();
+        r.HotkeyDown();
+        Assert.Single(r.Engine.Starts);   // the refused press left the machine idle: this press starts, it does not stop
+    }
+
+    [Fact]
+    public void Arming_the_clicker_again_in_a_running_helper_is_no_start_zone_entry()
+    {
+        var r = new Rig(s =>
+        {
+            s.MousePatternsArmed = true;
+            s.ZonesEnabled = true;
+            s.Zones = new() { StartZone() };
+        });
+        r.Coordinator.PollStartZone();                     // baseline outside
+        r.Settings.Armed = false;                          // the helper stays for the patterns
+        r.Push();
+        r.Cursor = new PixelPoint(150, 150);               // the cursor came into the zone while the clicker was off
+        r.Coordinator.PollStartZone();
+
+        r.Settings.Armed = true;
+        r.Push();
+        r.Coordinator.PollStartZone();                     // only a baseline, like a fresh helper
+        Assert.Empty(r.Engine.Starts);
+
+        r.Cursor = new PixelPoint(0, 0);
+        r.Coordinator.PollStartZone();
+        r.Cursor = new PixelPoint(150, 150);
+        r.Coordinator.PollStartZone();                     // a real entry still starts
+        Assert.Single(r.Engine.Starts);
+    }
+
     private const string PatternId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// <summary>A coordinator with real mouse patterns behind it; every message is logged with what played and recorded at that moment.</summary>

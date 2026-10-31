@@ -114,6 +114,14 @@ public sealed class ZoneTracker
         return StartZoneAction.None;
     }
 
+    /// <summary>The next <see cref="PollStart"/> is only a baseline again, as after creation (the host's clicker was armed again in a helper that kept running).</summary>
+    public void ResetStartBaseline()
+    {
+        _startBaselined = false;
+        _insideStart = false;
+        _startedByZone = false;
+    }
+
     /// <summary>The start the tracker asked for was not executed.</summary>
     public void OnStartRefused() => _startedByZone = false;
 

@@ -89,6 +89,8 @@ internal sealed class HostCoordinator
         bool armed = settings.Armed;
         lock (_gate)
         {
+            // The start zones polled nothing while the clicker was off: arming it again is no entry (as for a fresh helper).
+            if (armed && !_armed) _zones.ResetStartBaseline();
             _armed = armed;
             _mode = settings.ActivationMode;
             _hotkeyHasMouse = settings.Hotkey?.HasMouseInput == true;
@@ -219,6 +221,14 @@ internal sealed class HostCoordinator
         switch (output.Command)
         {
             case ActivationCommand.Start:
+                if (!_armed)
+                {
+                    // A hotkey edge computed before a disarming config reached the tracker; the tracker drops the hotkey right after.
+                    _machine.OnStoppedByEngine();
+                    if (output.Reason == ActivationReason.StartZone) _zones.OnStartRefused();
+                    HostLog.Info("Start ignored: the clicker is not armed.");
+                    break;
+                }
                 var status = _engine.Start(new EngineStart(WaitForHotkeyRelease: output.Reason == ActivationReason.Hotkey && _mode == ActivationMode.Toggle));
                 if (status == EngineStartStatus.Started) _runEndedQueued.Reset();
                 else
