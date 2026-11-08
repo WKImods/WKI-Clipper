@@ -124,8 +124,8 @@ Pure rules + thin Windows adapters, xUnit tests with fake topologies.
 - `FFmpegCommandBuilder`: `ddagrab=output_idx=<real DXGI index>`; AMF index only when certain; bitrate (R7) and
   screenshots from the plan.
 - `ReplayBufferService` / `SegmentModel`: session-reset decision from the last STARTED source (kept across
-  `StopCoreAsync`), `SourceKey` for monitors from the display identity + output + size (0.19 segments
-  intentionally do not match), retarget compares `SameSource`, labels from `MonitorLabels`, auto restart per
+  `StopCoreAsync`), `SourceKey` for monitors from the display identity + size (the output index is left out:
+  a new primary renumbers outputs without changing what is captured; 0.19 segments intentionally do not match), retarget compares `SameSource`, labels from `MonitorLabels`, auto restart per
   `DisplayRestartPolicy`.
 - `CaptureProfile`: `MonitorDevicePath`, `MonitorFriendlyName`, `MonitorEdidMfg`, `MonitorEdidProduct`; the
   "stable across replugging" comments are corrected.
