@@ -195,7 +195,7 @@ public sealed class FinishWatchTests
         using var service = new FFmpegService(ffmpeg);
         var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.Exited += (_, code) => exited.TrySetResult(code);
-        service.Start("-hide_banner -nostats -f lavfi -i testsrc2=size=64x64:rate=10 -f lavfi -i anullsrc=r=48000:cl=stereo " +
+        service.Start("-hide_banner -nostats -re -f lavfi -i testsrc2=size=64x64:rate=10 -re -f lavfi -i anullsrc=r=48000:cl=stereo " +
                       "-map 0:v -map 1:a -c:v rawvideo -c:a pcm_s16le -f null -");
         await Task.Delay(TimeSpan.FromSeconds(1));
 
@@ -268,8 +268,9 @@ public sealed class FFmpegQuitTests
         using var service = new FFmpegService(ffmpeg);
         var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.Exited += (_, code) => exited.TrySetResult(code);
-        service.Start("-hide_banner -nostats -f lavfi -i testsrc2=size=64x64:rate=10:duration=1 " +
-                      "-f lavfi -i anullsrc=r=48000:cl=stereo -map 0:v -map 1:a -c:v rawvideo -c:a pcm_s16le -f null -");
+        // -re: real time like a capture, and no CPU burst that would starve the timing tests running alongside.
+        service.Start("-hide_banner -nostats -re -f lavfi -i testsrc2=size=64x64:rate=10:duration=1 " +
+                      "-re -f lavfi -i anullsrc=r=48000:cl=stereo -map 0:v -map 1:a -c:v rawvideo -c:a pcm_s16le -f null -");
 
         await Task.Delay(TimeSpan.FromSeconds(3));
         Assert.True(service.IsRunning, "ffmpeg should still run on its audio input after the video input ended");
