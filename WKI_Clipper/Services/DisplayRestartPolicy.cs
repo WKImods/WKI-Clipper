@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WKI_Clipper.Services;
 
@@ -22,8 +24,11 @@ public static class DisplayRestartPolicy
 
     public const int MaxRestarts = 3;
 
-    /// <summary>How long the display gets to settle after a mode switch before the capture starts again.</summary>
+    /// <summary>How long the display gets to settle after a mode switch - after its LAST display event - before the capture starts again.</summary>
     public static readonly TimeSpan RestartDelay = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>The longest an automatic restart waits on top of its delay for the display to calm down; a display that keeps changing gets its restart anyway.</summary>
+    public static readonly TimeSpan MaxSettleWait = TimeSpan.FromSeconds(10);
 
     /// <summary>How many of the last stderr lines of an ended ffmpeg are searched for the markers.</summary>
     public const int StderrLines = 20;
@@ -44,6 +49,32 @@ public static class DisplayRestartPolicy
     public static bool HasModeChangeMarker(string? stderr)
         => !string.IsNullOrEmpty(stderr)
            && ModeChangeMarkers.Any(m => stderr.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// How much longer a restart waits so that it comes <paramref name="restartDelay"/> after the LAST display event (R8): a
+    /// flip during the wait pushes it back, so a burst of flips costs one restart, not one per flip. Null when the display
+    /// has been quiet that long (or no event is known).
+    /// </summary>
+    public static TimeSpan? SettleWait(DateTime? lastDisplayChangeUtc, DateTime nowUtc, TimeSpan restartDelay)
+        => lastDisplayChangeUtc is DateTime last && last + restartDelay > nowUtc ? last + restartDelay - nowUtc : null;
+
+    /// <summary>
+    /// Waits <paramref name="restartDelay"/>, then for as long as <see cref="SettleWait"/> says - at most
+    /// <paramref name="maxWait"/> more.
+    /// </summary>
+    internal static async Task WaitForQuietDisplayAsync(Func<DateTime?>? lastDisplayChangeUtc, TimeSpan restartDelay,
+                                                        TimeSpan maxWait, CancellationToken token)
+    {
+        await Task.Delay(restartDelay, token).ConfigureAwait(false);
+        var until = DateTime.UtcNow + maxWait;
+        while (true)
+        {
+            var now = DateTime.UtcNow;
+            if (now >= until || SettleWait(lastDisplayChangeUtc?.Invoke(), now, restartDelay) is not TimeSpan wait) return;
+            var rest = until - now;
+            await Task.Delay(wait < rest ? wait : rest, token).ConfigureAwait(false);
+        }
+    }
 }
 
 /// <summary>What the buffer did about an ffmpeg exit it had not asked for.</summary>

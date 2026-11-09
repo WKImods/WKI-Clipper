@@ -358,8 +358,13 @@ public sealed class AppHost : IDisposable
         {
             // Once per start: what the capture sees (decision 8) - this also fills the cache before the views ask.
             Logger.Info("App start - " + DisplayTopologyCache.Shared.Get().Dump());
+            // vsrc_amf does not end on a mode switch (ddagrab does, and restarts by itself): it needs the retarget for the new size.
             DisplayWatcher = new DisplayTopologyWatcher(DisplayTopologyCache.Shared, TimeProvider.System,
-                () => ReplayBuffer.CurrentPlan?.Source, ReresolveBufferSource, ReplayBuffer.RequestRetarget);
+                () => ReplayBuffer.CurrentPlan?.Source, ReresolveBufferSource, ReplayBuffer.RequestRetarget,
+                modeChangeNeedsRetarget: () => ReplayBuffer.RunningCapturePath == "amf");
+            // A buffer that is on but has no monitor to record (or died on display changes beyond its restart bound) starts
+            // again once the display settled.
+            DisplayWatcher.Settled += ReplayBuffer.RequestRevive;
         }
         catch (Exception ex) { Logger.Warn("Display watcher could not start: " + ex.Message); }
     }
@@ -458,8 +463,9 @@ public sealed class AppHost : IDisposable
     {
         ManualRecording.SuspendCompetingCapture = async () =>
         {
-            // A buffer coming back from a display mode switch is on, too: its pending restart must not start next to the recording.
-            _bufferPausedForRecording = ReplayBuffer.IsRunning || ReplayBuffer.AutoRestartPending;
+            // A buffer coming back from a display mode switch, or waiting for its monitor, is on, too: its restart must not start
+            // next to the recording.
+            _bufferPausedForRecording = ReplayBuffer.IsRunning || ReplayBuffer.AutoRestartPending || ReplayBuffer.WaitingForDisplay;
             if (!_bufferPausedForRecording) return;
             Logger.Info("Pausing the replay buffer for a manual recording.");
             await ReplayBuffer.SuspendAsync().ConfigureAwait(false);

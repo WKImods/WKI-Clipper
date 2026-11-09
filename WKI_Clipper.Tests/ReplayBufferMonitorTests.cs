@@ -183,10 +183,9 @@ public sealed class ReplayBufferMonitorTests
     [Fact]
     public async Task Mode_change_exit_restarts_warm_once_without_error_toast()
     {
-        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50));
-        await env.Buffer.ToggleAsync();   // switched on; the monitor-less test topology keeps ffmpeg from really starting
-        Assert.Single(env.Errors);
-        env.Errors.Clear();
+        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+        Assert.Single(env.Starts);
 
         var action = env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0);
 
@@ -195,10 +194,192 @@ public sealed class ReplayBufferMonitorTests
         Assert.True(env.Buffer.AutoRestartPending);
 
         await WaitUntil(() => !env.Buffer.AutoRestartPending);
-        // The restart really started the buffer once; on the test topology that can only end in "no monitor".
+        Assert.Equal(2, env.Starts.Count);   // started again once, warm
+        Assert.Empty(env.Errors);
+    }
+
+    [Fact]
+    public async Task Restart_that_finds_no_monitor_says_why_and_waits_for_one()
+    {
+        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+        Assert.NotNull(env.Buffer.CurrentPlan);
+
+        // The only monitor is switched off: ddagrab ends, and when the restart comes DXGI reports no output yet.
+        env.Topo = DisplayTopology.Empty("test: monitor off");
+        Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+        await WaitUntil(() => !env.Buffer.AutoRestartPending);
+
         var error = Assert.Single(env.Errors);
         Assert.DoesNotContain("ffmpeg code", error);
         Assert.Contains("Windows", error);
+        Assert.Contains("von selbst", error);         // it comes back by itself
+        Assert.Null(env.Buffer.CurrentPlan);           // no label of a dead capture
+        Assert.True(env.Buffer.WaitingForDisplay);     // still on: a manual recording pauses it
+        Assert.Single(env.Starts);
+
+        // A display event that still brings no monitor: no second toast.
+        await env.Buffer.ReviveAsync();
+        Assert.Single(env.Errors);
+        Assert.True(env.Buffer.WaitingForDisplay);
+
+        // The monitor is back: the display settled, the buffer starts again - warm.
+        env.Topo = TestDisplays.Topology(TestDisplays.Lg());
+        env.Buffer.RequestRevive();
+        await WaitUntil(() => env.Starts.Count == 2);
+        Assert.False(env.Buffer.WaitingForDisplay);
+        Assert.NotNull(env.Buffer.CurrentPlan);
+
+        env.Buffer.RequestRevive();   // nothing to bring back any more
+        await Task.Delay(100);
+        Assert.Equal(2, env.Starts.Count);
+    }
+
+    [Fact]
+    public async Task Buffer_switched_on_without_a_monitor_starts_once_one_is_there()
+    {
+        using var env = new BufferEnv();
+        await env.Buffer.ToggleAsync();
+        Assert.Single(env.Errors);
+        Assert.True(env.Buffer.WaitingForDisplay);
+
+        env.Topo = TestDisplays.Topology(TestDisplays.Lg());
+        await env.Buffer.ReviveAsync();
+
+        var plan = Assert.Single(env.Starts);
+        Assert.Equal("LG ULTRAGEAR+", plan.Source.Resolution.Display!.FriendlyName);
+        Assert.False(env.Buffer.WaitingForDisplay);
+    }
+
+    [Fact]
+    public async Task Ctrl_F10_while_waiting_for_a_monitor_says_again_why_nothing_starts()
+    {
+        using var env = new BufferEnv();
+        await env.Buffer.ToggleAsync();
+        Assert.True(env.Buffer.WaitingForDisplay);
+
+        await env.Buffer.ToggleAsync();   // shown as "off": the press is a start, and it gets an answer
+
+        Assert.Equal(2, env.Errors.Count);
+        Assert.True(env.Buffer.WaitingForDisplay);
+    }
+
+    [Fact]
+    public async Task Switched_off_or_paused_buffer_is_not_brought_back()
+    {
+        using var env = new BufferEnv();
+        await env.Buffer.ToggleAsync();
+        Assert.True(env.Buffer.WaitingForDisplay);
+        await env.Buffer.StopAsync();
+        Assert.False(env.Buffer.WaitingForDisplay);
+
+        env.Topo = TestDisplays.Topology(TestDisplays.Lg());
+        await env.Buffer.ReviveAsync();
+        Assert.Empty(env.Starts);
+
+        // Paused for a manual recording while it waited: the recording's end brings it back, not a display change.
+        using var paused = new BufferEnv();
+        await paused.Buffer.ToggleAsync();
+        await paused.Buffer.SuspendAsync();
+        paused.Topo = TestDisplays.Topology(TestDisplays.Lg());
+        await paused.Buffer.ReviveAsync();
+        Assert.Empty(paused.Starts);
+        paused.Buffer.Resume();
+        await WaitUntil(() => paused.Starts.Count == 1);
+    }
+
+    [Fact]
+    public async Task Display_caused_exit_beyond_the_bound_waits_for_the_display()
+    {
+        using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+
+        for (int i = 0; i < DisplayRestartPolicy.MaxRestarts; i++)
+            Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+        Assert.Equal(UnexpectedExitAction.Report, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+
+        Assert.Contains("ffmpeg code 1", Assert.Single(env.Errors));
+        Assert.Null(env.Buffer.CurrentPlan);
+        Assert.True(env.Buffer.WaitingForDisplay);
+
+        await env.Buffer.ReviveAsync();   // the next settled display change
+        Assert.Equal(2, env.Starts.Count);
+    }
+
+    [Fact]
+    public async Task Crash_without_a_display_cause_is_not_revived()
+    {
+        using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+
+        Assert.Equal(UnexpectedExitAction.Report, env.Buffer.OnUnexpectedExit(255, GenericStderr, generation: 0));
+
+        Assert.Null(env.Buffer.CurrentPlan);
+        Assert.False(env.Buffer.WaitingForDisplay);
+        await env.Buffer.ReviveAsync();
+        Assert.Single(env.Starts);
+    }
+
+    [Fact]
+    public async Task Automatic_restart_waits_until_the_display_is_quiet()
+    {
+        // R8: a game flips the mode several times while it starts - the restart comes once, after the last flip.
+        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+        bool flipping = true;
+        env.Buffer.LastDisplayChangeUtc = () => flipping ? DateTime.UtcNow : DateTime.UtcNow.AddMinutes(-1);
+
+        Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+        await Task.Delay(500);   // ten times the delay, but the display never calmed down
+        Assert.Single(env.Starts);
+        Assert.True(env.Buffer.AutoRestartPending);
+
+        flipping = false;
+        await WaitUntil(() => !env.Buffer.AutoRestartPending);
+        Assert.Equal(2, env.Starts.Count);
+    }
+
+    [Fact]
+    public async Task Display_that_never_calms_down_still_gets_its_restart()
+    {
+        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
+        env.Buffer.AutoRestartMaxWait = TimeSpan.FromMilliseconds(300);
+        await env.Buffer.ToggleAsync();
+        env.Buffer.LastDisplayChangeUtc = () => DateTime.UtcNow;
+
+        Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+
+        await WaitUntil(() => env.Starts.Count == 2);
+        Assert.False(env.Buffer.AutoRestartPending);
+    }
+
+    [Fact]
+    public void Settle_wait_runs_from_the_last_display_event()
+    {
+        var now = new DateTime(2026, 11, 9, 20, 0, 0, DateTimeKind.Utc);
+        var delay = TimeSpan.FromMilliseconds(1500);
+
+        Assert.Null(DisplayRestartPolicy.SettleWait(null, now, delay));
+        Assert.Null(DisplayRestartPolicy.SettleWait(now.AddSeconds(-2), now, delay));
+        Assert.Null(DisplayRestartPolicy.SettleWait(now.AddMilliseconds(-1500), now, delay));
+        Assert.Equal(TimeSpan.FromMilliseconds(1100), DisplayRestartPolicy.SettleWait(now.AddMilliseconds(-400), now, delay));
+        Assert.Equal(delay, DisplayRestartPolicy.SettleWait(now, now, delay));
+    }
+
+    [Fact]
+    public void Buffer_counts_as_coming_back_until_an_unexpected_exit_is_decided()
+    {
+        using var env = new BufferEnv();
+        bool pendingWhileReleasing = false;
+
+        // Between the process end and the decision the run is let go and its last stderr lines are awaited (up to 500 ms):
+        // a Ctrl+F9 then must pause the buffer, or the restart would start next to the recording.
+        var action = env.Buffer.OnRunEndedUnexpectedly(255, generation: 0,
+            release: () => pendingWhileReleasing = env.Buffer.AutoRestartPending, recentStderr: () => GenericStderr);
+
+        Assert.True(pendingWhileReleasing);
+        Assert.Equal(UnexpectedExitAction.Report, action);
+        Assert.False(env.Buffer.AutoRestartPending);
     }
 
     [Fact]
@@ -311,8 +492,9 @@ public sealed class ReplayBufferMonitorTests
     }
 
     /// <summary>
-    /// A buffer on temp folders and a test registry key, with a display topology without any monitor: whatever tries to
-    /// start the capture stops at "no monitor" instead of running ffmpeg.
+    /// A buffer on temp folders and a test registry key, on a fake display topology (<see cref="Topo"/>, changeable; by
+    /// default without any monitor, so a start stops at "no monitor"). A start that finds a monitor never runs ffmpeg: its
+    /// plan is recorded in <see cref="Starts"/>.
     /// </summary>
     private sealed class BufferEnv : IDisposable
     {
@@ -320,11 +502,14 @@ public sealed class ReplayBufferMonitorTests
         private readonly string _rootPath = @"Software\WKI_Clipper_Tests_BufMon_" + Guid.NewGuid().ToString("N");
         private readonly RegistryKey _root;
 
+        public volatile DisplayTopology Topo;
         public ReplayBufferService Buffer { get; }
         public ConcurrentQueue<string> Errors { get; } = new();
+        public ConcurrentQueue<CaptureTargetResolver.CapturePlan> Starts { get; } = new();
 
-        public BufferEnv(TimeSpan? autoRestartDelay = null)
+        public BufferEnv(TimeSpan? autoRestartDelay = null, DisplayTopology? topology = null)
         {
+            Topo = topology ?? DisplayTopology.Empty("test: no displays");
             Directory.CreateDirectory(_dir);
             _root = Registry.CurrentUser.CreateSubKey(_rootPath);
             var settings = new SettingsService(_dir);
@@ -339,9 +524,11 @@ public sealed class ReplayBufferMonitorTests
 
             Buffer = new ReplayBufferService(settings, new BufferFolderRecord(_root))
             {
-                Topology = TestSources.Cache(DisplayTopology.Empty("test: no displays")),
+                // The key follows the topology, so a changed topology is read again.
+                Topology = new DisplayTopologyCache(() => Topo, () => Topo.Fingerprint),
                 // Long by default: a scheduled restart must not run in the middle of a test that does not wait for it.
-                AutoRestartDelay = autoRestartDelay ?? TimeSpan.FromMinutes(10)
+                AutoRestartDelay = autoRestartDelay ?? TimeSpan.FromMinutes(10),
+                StartRunOverride = plan => Starts.Enqueue(plan)
             };
             Buffer.BufferError += (_, m) => Errors.Enqueue(m);
         }

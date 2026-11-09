@@ -67,6 +67,52 @@ public sealed class DisplayTopologyWatcherTests
     }
 
     [Fact]
+    public void Mode_change_of_an_amf_capture_retargets()
+    {
+        // vsrc_amf does not end on a mode switch (it keeps waiting for frames): nothing else would move it to the new size.
+        using var env = new WatcherEnv(TestDisplays.Topology(TestDisplays.Lg(w: 3840, h: 2160), TestDisplays.Dell()),
+                                       modeChangeNeedsRetarget: true);
+        var at4k = env.Current!;
+        env.Topology = TestDisplays.Topology(TestDisplays.Lg(w: 1920, h: 1080), TestDisplays.Dell());
+
+        env.Events.Fire();
+        env.Time.Advance(DisplayTopologyWatcher.Debounce);
+
+        Assert.Equal(1, env.Retargets);
+        Assert.True(DisplayTopologyWatcher.NeedsRetarget(at4k, env.Resolve()!, sizeCounts: true));
+
+        // Another monitor changing its mode still does not concern it.
+        env.Current = env.Resolve();
+        env.Topology = TestDisplays.Topology(TestDisplays.Lg(w: 1920, h: 1080), TestDisplays.Dell(w: 1920, h: 1080));
+        env.Events.Fire();
+        env.Time.Advance(DisplayTopologyWatcher.Debounce);
+        Assert.Equal(1, env.Retargets);
+    }
+
+    [Fact]
+    public void Every_settled_burst_is_announced_also_without_a_change()
+    {
+        using var env = new WatcherEnv(TestDisplays.Topology(TestDisplays.Lg(), TestDisplays.Dell()));
+        env.Current = null;   // e.g. a buffer that waits for its monitor
+
+        for (int i = 0; i < 3; i++)
+        {
+            env.Events.Fire();
+            env.Time.Advance(TimeSpan.FromMilliseconds(500));
+        }
+        Assert.Equal(0, env.Settles);
+        env.Time.Advance(DisplayTopologyWatcher.Debounce);
+        Assert.Equal(1, env.Settles);
+        Assert.Equal(0, env.Changes);   // same fingerprint, but the display did settle
+
+        env.Topology = TestDisplays.Topology(TestDisplays.Lg());
+        env.Events.Fire("resume");
+        env.Time.Advance(DisplayTopologyWatcher.Debounce);
+        Assert.Equal(2, env.Settles);
+        Assert.Equal(1, env.Changes);
+    }
+
+    [Fact]
     public void Monitor_gone_or_back_retargets()
     {
         var dell = TestDisplays.Dell();
@@ -210,17 +256,19 @@ public sealed class DisplayTopologyWatcherTests
         public DisplayTopology Topology;
         public MonitorRef? Saved;
         public CaptureSource? Current;
-        public int Reads, Retargets, Changes;
+        public int Reads, Retargets, Changes, Settles;
         public DisplayTopologyCache Cache { get; }
         public DisplayTopologyWatcher Watcher { get; }
 
-        public WatcherEnv(DisplayTopology topology, MonitorRef? saved = null)
+        public WatcherEnv(DisplayTopology topology, MonitorRef? saved = null, bool modeChangeNeedsRetarget = false)
         {
             Topology = topology;
             Saved = saved;
             Cache = new DisplayTopologyCache(() => { Reads++; return Topology; }, () => "fixed");
-            Watcher = new DisplayTopologyWatcher(Cache, Time, () => Current, Resolve, () => Retargets++, Events);
+            Watcher = new DisplayTopologyWatcher(Cache, Time, () => Current, Resolve, () => Retargets++, Events,
+                                                 () => modeChangeNeedsRetarget);
             Watcher.TopologyChanged += () => Changes++;
+            Watcher.Settled += () => Settles++;
             Current = Resolve();
         }
 

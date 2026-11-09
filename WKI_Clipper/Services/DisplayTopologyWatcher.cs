@@ -10,7 +10,8 @@ namespace WKI_Clipper.Services;
 /// <see cref="LastChangeUtc"/> and invalidates the topology cache; <see cref="Debounce"/> after the last event of a burst
 /// the topology is read once. A changed topology is logged with its dump and announced (<see cref="TopologyChanged"/>, the
 /// monitor lists rebuild); the buffer is retargeted only when the capture would now record another picture
-/// (<see cref="NeedsRetarget"/>). A game flipping the mode several times while it starts causes one read (R8).
+/// (<see cref="NeedsRetarget"/>). Every settled burst is announced (<see cref="Settled"/>), changed or not: a buffer that
+/// waits for its monitor starts again then. A game flipping the mode several times while it starts causes one read (R8).
 /// </summary>
 public sealed class DisplayTopologyWatcher : IDisposable
 {
@@ -22,6 +23,7 @@ public sealed class DisplayTopologyWatcher : IDisposable
     private readonly Func<CaptureSource?> _currentSource;
     private readonly Func<CaptureSource?> _resolveSource;
     private readonly Action _requestRetarget;
+    private readonly Func<bool>? _modeChangeNeedsRetarget;
     private readonly IDisplayEvents _events;
     private readonly ITimer _timer;
     private readonly object _settleGate = new();
@@ -34,14 +36,20 @@ public sealed class DisplayTopologyWatcher : IDisposable
     /// <param name="currentSource">What the buffer records right now; null when nothing runs.</param>
     /// <param name="resolveSource">What the buffer's target resolves to on the topology now; null when nothing can be recorded.</param>
     /// <param name="requestRetarget">Moves the buffer to the re-resolved source (debounced by the buffer itself).</param>
+    /// <param name="modeChangeNeedsRetarget">
+    /// True while the running capture does not end by itself on a mode switch of its monitor (vsrc_amf keeps waiting for
+    /// frames): a new size of the same monitor then needs a retarget too. Null = never (ddagrab ends on it).
+    /// </param>
     public DisplayTopologyWatcher(DisplayTopologyCache cache, TimeProvider time, Func<CaptureSource?> currentSource,
-                                  Func<CaptureSource?> resolveSource, Action requestRetarget)
-        : this(cache, time, currentSource, resolveSource, requestRetarget, new SystemDisplayEvents())
+                                  Func<CaptureSource?> resolveSource, Action requestRetarget,
+                                  Func<bool>? modeChangeNeedsRetarget = null)
+        : this(cache, time, currentSource, resolveSource, requestRetarget, new SystemDisplayEvents(), modeChangeNeedsRetarget)
     {
     }
 
     internal DisplayTopologyWatcher(DisplayTopologyCache cache, TimeProvider time, Func<CaptureSource?> currentSource,
-                                    Func<CaptureSource?> resolveSource, Action requestRetarget, IDisplayEvents events)
+                                    Func<CaptureSource?> resolveSource, Action requestRetarget, IDisplayEvents events,
+                                    Func<bool>? modeChangeNeedsRetarget = null)
     {
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _time = time ?? throw new ArgumentNullException(nameof(time));
@@ -49,6 +57,7 @@ public sealed class DisplayTopologyWatcher : IDisposable
         _resolveSource = resolveSource ?? throw new ArgumentNullException(nameof(resolveSource));
         _requestRetarget = requestRetarget ?? throw new ArgumentNullException(nameof(requestRetarget));
         _events = events ?? throw new ArgumentNullException(nameof(events));
+        _modeChangeNeedsRetarget = modeChangeNeedsRetarget;
         // What the first change is compared with.
         _known = cache.Get();
         _timer = time.CreateTimer(_ => OnSettled(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -71,26 +80,21 @@ public sealed class DisplayTopologyWatcher : IDisposable
     /// <summary>The topology changed (fingerprint), raised on a pool thread once the display settled; UI consumers marshal themselves.</summary>
     public event Action? TopologyChanged;
 
+    /// <summary>The display settled after a burst of events (raised on a pool thread after every debounced read, changed or not).</summary>
+    public event Action? Settled;
+
     /// <summary>
     /// The capture would record another picture on the topology now: another monitor, or the same one through another
     /// adapter output (a new primary renumbers the outputs - ddagrab's old index would show another monitor). Not a mode
     /// change of the same monitor on the same output: ddagrab ends on it by itself and the buffer's automatic restart picks
-    /// up the new size, one restart per switch (R2). Not a monitor whose device path Windows lost or reports again either
-    /// (a sleeping DisplayPort monitor keeps its HMONITOR, GDI name and output; only its display key falls back to the GDI
-    /// name meanwhile).
+    /// up the new size, one restart per switch (R2) - unless <paramref name="sizeCounts"/>: a capture that does not end on
+    /// a mode switch (vsrc_amf) needs the retarget for the new size. Not a monitor whose device path Windows lost or reports
+    /// again either (<see cref="CaptureSourceRules.SameMonitorOrPathless"/>).
     /// </summary>
-    internal static bool NeedsRetarget(CaptureSource current, CaptureSource next)
-    {
-        bool sameMonitor = CaptureSourceRules.SameMonitor(current, next) || SameMonitorWithoutPath(current, next);
-        return !(sameMonitor && current.AdapterLuid == next.AdapterLuid && current.OutputIndex == next.OutputIndex);
-    }
-
-    private static bool SameMonitorWithoutPath(CaptureSource a, CaptureSource b)
-        => (IsGdiKey(a.DisplayKey) || IsGdiKey(b.DisplayKey))
-           && a.HMonitor == b.HMonitor
-           && string.Equals(a.GdiName, b.GdiName, StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsGdiKey(string displayKey) => displayKey.StartsWith("gdi:", StringComparison.Ordinal);
+    internal static bool NeedsRetarget(CaptureSource current, CaptureSource next, bool sizeCounts = false)
+        => !(CaptureSourceRules.SameMonitorOrPathless(current, next)
+             && current.AdapterLuid == next.AdapterLuid && current.OutputIndex == next.OutputIndex
+             && (!sizeCounts || current.Width == next.Width && current.Height == next.Height));
 
     private void OnDisplayEvent(string what)
     {
@@ -118,7 +122,8 @@ public sealed class DisplayTopologyWatcher : IDisposable
 
                 var current = _currentSource();
                 var next = current is null ? null : _resolveSource();
-                retarget = current is not null && next is not null && NeedsRetarget(current, next);
+                retarget = current is not null && next is not null
+                           && NeedsRetarget(current, next, sizeCounts: _modeChangeNeedsRetarget?.Invoke() ?? false);
                 string target = current is null ? "no capture running"
                     : next is null ? "unchanged (no monitor to move to)"
                     : retarget ? "changed -> restart" : "unchanged";
@@ -144,6 +149,8 @@ public sealed class DisplayTopologyWatcher : IDisposable
             try { _requestRetarget(); }
             catch (Exception ex) { Logger.Warn("Display watcher retarget failed: " + ex.Message); }
         }
+        try { Settled?.Invoke(); }
+        catch (Exception ex) { Logger.Warn("Display watcher Settled handler threw: " + ex.Message); }
     }
 
     /// <summary>"LG ULTRAGEAR+ 3440x1440@(0,0)*, DELL S2721DGF 2560x1440@(3440,0)" (left to right, * = primary).</summary>

@@ -43,6 +43,18 @@ public static class CaptureSourceRules
     public static bool SameMonitor(CaptureSource a, CaptureSource b)
         => string.Equals(a.DisplayKey, b.DisplayKey, StringComparison.Ordinal);
 
+    /// <summary>
+    /// <see cref="SameMonitor"/>, also while Windows reports no device path for one of them: a sleeping DisplayPort monitor
+    /// keeps its HMONITOR, GDI name and output, only its display key falls back to the GDI name meanwhile.
+    /// </summary>
+    public static bool SameMonitorOrPathless(CaptureSource a, CaptureSource b)
+        => SameMonitor(a, b)
+           || (IsGdiKey(a.DisplayKey) || IsGdiKey(b.DisplayKey))
+              && a.HMonitor == b.HMonitor
+              && string.Equals(a.GdiName, b.GdiName, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsGdiKey(string displayKey) => displayKey.StartsWith("gdi:", StringComparison.Ordinal);
+
     /// <summary>The same monitor recorded through the same adapter output at the same size: ffmpeg would get the same arguments.</summary>
     public static bool SameSource(CaptureSource a, CaptureSource b)
         => SameMonitor(a, b) && a.AdapterLuid == b.AdapterLuid && a.OutputIndex == b.OutputIndex
