@@ -8,7 +8,12 @@ using Xunit;
 
 namespace WKI_Clipper.Tests;
 
+/// <summary>Tests that move the global clicker host log. Never in parallel with anything else: other tests' host lines would follow the move.</summary>
+[CollectionDefinition("ClickerHostLog", DisableParallelization = true)]
+public sealed class ClickerHostLogCollection { }
+
 /// <summary>Host mode detection, the host log, the high-resolution waiter and the read-only Windows queries. No input is injected and no hook is installed.</summary>
+[Collection("ClickerHostLog")]
 public sealed class HostMainTests
 {
     private const string Pipe = "WKI_Clipper.Clicker.4242.0123456789abcdef";

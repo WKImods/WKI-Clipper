@@ -224,7 +224,7 @@ public sealed class ManualRecordingService : IDisposable
                     long bytes = SafeLength(path);
                     Logger.Warn($"ManualRecording: the video input ended while ffmpeg keeps running - ending this part " +
                                 $"({bytes / (1024 * 1024)} MiB)");
-                    _ = ownFfmpeg.FinishAsync(FinishWatch.Cap(bytes), asStop: false);
+                    _ = ownFfmpeg.FinishAsync(bytes, asStop: false);
                 }
             }
             FFmpegLog?.Invoke(this, line);
@@ -474,7 +474,7 @@ public sealed class ManualRecordingService : IDisposable
         var ffmpeg = _ffmpeg;
         if (ffmpeg is null || !ffmpeg.IsRunning) return;
         // Not a fixed 10 s: the faststart trailer of a long part rewrites gigabytes - killed in the middle it has no index.
-        await ffmpeg.FinishAsync(FinishWatch.Cap(SafeLength(CurrentOutputPath)), asStop: true);
+        await ffmpeg.FinishAsync(SafeLength(CurrentOutputPath), asStop: true);
     }
 
     private static long SafeLength(string? path)

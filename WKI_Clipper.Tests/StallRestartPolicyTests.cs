@@ -133,18 +133,26 @@ public sealed class VideoInputLostTests
 
 /// <summary>
 /// Ending a Ctrl+F9 part: its "+faststart" trailer rewrites the whole file (minutes after a long recording on a slow drive)
-/// without a progress line. The kill comes only when ffmpeg stops reading, or at a cap sized to the file.
+/// without a progress line. The kill comes only when ffmpeg stops reading, or once it is out of time and read budget.
 /// </summary>
 public sealed class FinishWatchTests
 {
     private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(5);
+    private const ulong NoBudget = 0;
 
     [Theory]
     [InlineData(0L, 100)]                             // a minute + twice the 20 s floor
     [InlineData(4L * 1024 * 1024 * 1024, 469)]        // a minute + 2 x 4 GiB at 20 MiB/s
-    [InlineData(11L * 1024 * 1024 * 1024, 1186)]      // an hour of recording: about 20 minutes at the very most
+    [InlineData(11L * 1024 * 1024 * 1024, 1186)]      // an hour of recording: about 20 minutes before the budget counts
     public void The_cap_is_sized_to_the_part(long bytes, int seconds)
         => Assert.Equal(seconds, (int)FinishWatch.Cap(bytes).TotalSeconds);
+
+    [Fact]
+    public void The_read_budget_is_twice_the_part_plus_64_MiB()
+    {
+        Assert.Equal(64UL * 1024 * 1024, FinishWatch.ReadBudget(0));
+        Assert.Equal(8UL * 1024 * 1024 * 1024 + 64UL * 1024 * 1024, FinishWatch.ReadBudget(4L * 1024 * 1024 * 1024));
+    }
 
     [Fact]
     public async Task An_ffmpeg_that_keeps_reading_is_not_killed_after_the_quiet_time()
@@ -153,7 +161,7 @@ public sealed class FinishWatchTests
         int polls = 0;
         // Exits after ~60 polls (~300 ms), far beyond the 50 ms quiet time - it read all along.
         bool exited = await FinishWatch.WaitAsync(() => ++polls > 60, () => read += 4096,
-                                                  TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(10), Poll);
+                                                  TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(10), NoBudget, Poll);
         Assert.True(exited);
     }
 
@@ -162,7 +170,7 @@ public sealed class FinishWatchTests
     {
         var sw = Stopwatch.StartNew();
         bool exited = await FinishWatch.WaitAsync(() => false, () => 1234UL, TimeSpan.FromMilliseconds(100),
-                                                  TimeSpan.FromSeconds(10), Poll);
+                                                  TimeSpan.FromSeconds(10), ulong.MaxValue, Poll);
         Assert.False(exited);
         Assert.InRange(sw.Elapsed, TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
     }
@@ -172,18 +180,71 @@ public sealed class FinishWatchTests
     {
         var sw = Stopwatch.StartNew();
         bool exited = await FinishWatch.WaitAsync(() => false, () => null, TimeSpan.FromMilliseconds(10),
-                                                  TimeSpan.FromMilliseconds(300), Poll);
+                                                  TimeSpan.FromMilliseconds(300), ulong.MaxValue, Poll);
         Assert.False(exited);
         Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(300), $"gave up after {sw.Elapsed}");
     }
 
+    /// <summary>A slow drive (SD card, NAS over Wi-Fi): past the cap, but still reading within its budget - it finishes.</summary>
     [Fact]
-    public async Task A_reading_ffmpeg_still_ends_at_the_cap()
+    public async Task A_rewrite_that_is_still_reading_within_its_budget_goes_on_past_the_cap()
     {
-        ulong read = 0;
-        bool exited = await FinishWatch.WaitAsync(() => false, () => read += 1, TimeSpan.FromMilliseconds(50),
-                                                  TimeSpan.FromMilliseconds(200), Poll);
+        var (clock, reads) = OneSecondPerPoll(readPerPoll: 1000);
+        int polls = 0;
+        bool exited = await FinishWatch.WaitAsync(() => ++polls > 12, reads, TimeSpan.FromSeconds(30),
+                                                  cap: TimeSpan.FromSeconds(5), readBudget: 1_000_000, Poll, clock);
+        Assert.True(exited);    // 12 s: past the 5 s cap, below 4 x cap, far below the budget
+    }
+
+    [Fact]
+    public async Task Reading_more_than_the_budget_past_the_cap_ends_the_wait()
+    {
+        var (clock, reads) = OneSecondPerPoll(readPerPoll: 1000);
+        int polls = 0;
+        bool exited = await FinishWatch.WaitAsync(() => ++polls > 100, reads, TimeSpan.FromSeconds(30),
+                                                  cap: TimeSpan.FromSeconds(5), readBudget: 3000, Poll, clock);
         Assert.False(exited);
+        Assert.InRange(polls, 5, 8);
+    }
+
+    [Fact]
+    public async Task Four_times_the_cap_ends_the_wait_however_busy_it_looks()
+    {
+        var (clock, reads) = OneSecondPerPoll(readPerPoll: 1000);
+        int polls = 0;
+        bool exited = await FinishWatch.WaitAsync(() => ++polls > 100, reads, TimeSpan.FromSeconds(30),
+                                                  cap: TimeSpan.FromSeconds(5), readBudget: ulong.MaxValue, Poll, clock);
+        Assert.False(exited);
+        Assert.InRange(polls, 19, 23);    // 4 x 5 s
+    }
+
+    /// <summary>The PC sleeps in the middle of a long rewrite: the awake clock stands still, so that is no hang.</summary>
+    [Fact]
+    public async Task Time_asleep_does_not_count()
+    {
+        var asleep = TimeSpan.FromHours(1);    // the awake clock does not move while the PC sleeps
+        int polls = 0;
+        bool exited = await FinishWatch.WaitAsync(() => ++polls > 40, () => 1234UL, TimeSpan.FromMilliseconds(10),
+                                                  TimeSpan.FromMilliseconds(10), NoBudget, Poll, () => asleep);
+        Assert.True(exited);    // real time went past the 10 ms quiet time and cap - awake time did not
+    }
+
+    [Fact]
+    public void The_awake_clock_runs_forward()
+    {
+        var a = FinishWatch.AwakeTime();
+        Thread.Sleep(20);
+        var b = FinishWatch.AwakeTime();
+        Assert.True(a > TimeSpan.Zero);
+        Assert.True(b - a >= TimeSpan.FromMilliseconds(10), $"{a} -> {b}");
+    }
+
+    /// <summary>A clock that moves one second per poll, and a read counter that grows by <paramref name="readPerPoll"/> per poll.</summary>
+    private static (Func<TimeSpan> Clock, Func<ulong?> Reads) OneSecondPerPoll(ulong readPerPoll)
+    {
+        var now = TimeSpan.Zero;
+        ulong read = 0;
+        return (() => now, () => { now += TimeSpan.FromSeconds(1); return read += readPerPoll; });
     }
 
     /// <summary>The real thing: "q" ends a recording-shaped ffmpeg cleanly, as a stop, without a kill.</summary>
@@ -199,7 +260,7 @@ public sealed class FinishWatchTests
                       "-map 0:v -map 1:a -c:v rawvideo -c:a pcm_s16le -f null -");
         await Task.Delay(TimeSpan.FromSeconds(1));
 
-        await service.FinishAsync(FinishWatch.Cap(0), asStop: true);
+        await service.FinishAsync(0, asStop: true);
 
         Assert.Same(exited.Task, await Task.WhenAny(exited.Task, Task.Delay(TimeSpan.FromSeconds(5))));
         Assert.Equal(0, await exited.Task);
@@ -207,7 +268,6 @@ public sealed class FinishWatchTests
         Assert.False(service.Killed);
     }
 }
-
 public sealed class InputDesktopWaitTests
 {
     [Theory]

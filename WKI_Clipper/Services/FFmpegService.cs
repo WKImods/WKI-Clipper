@@ -279,13 +279,13 @@ public sealed class FFmpegService : IDisposable
     }
 
     /// <summary>
-    /// Ends a recording part: "q", then waits as long as ffmpeg is still busy finishing its file - a "+faststart" trailer
-    /// rewrites all of it, minutes after a long recording - and kills it only when it stops reading or at
-    /// <paramref name="cap"/> (<see cref="FinishWatch"/>). <paramref name="asStop"/> marks it as asked for, like
-    /// <see cref="StopAsync"/>; without it the end counts as ffmpeg's own (<see cref="QuitAsync"/>) and a stop asked for
-    /// meanwhile owns the kill.
+    /// Ends a recording part of <paramref name="partBytes"/>: "q", then waits as long as ffmpeg is still busy finishing its
+    /// file - a "+faststart" trailer rewrites all of it, minutes after a long recording - and kills it only when it stops
+    /// reading or runs out of time and read budget (<see cref="FinishWatch"/>). <paramref name="asStop"/> marks it as asked
+    /// for, like <see cref="StopAsync"/>; without it the end counts as ffmpeg's own (<see cref="QuitAsync"/>) and a stop
+    /// asked for meanwhile owns the kill.
     /// </summary>
-    public async Task FinishAsync(TimeSpan cap, bool asStop)
+    public async Task FinishAsync(long partBytes, bool asStop)
     {
         var p = _process;
         if (p is null) return;
@@ -300,7 +300,8 @@ public sealed class FFmpegService : IDisposable
             }
             catch { /* stdin may already be closed */ }
 
-            bool exited = await FinishWatch.WaitAsync(() => HasExited(p), () => ReadCounter(p), FinishWatch.Quiet, cap,
+            bool exited = await FinishWatch.WaitAsync(() => HasExited(p), () => ReadCounter(p), FinishWatch.Quiet,
+                                                      FinishWatch.Cap(partBytes), FinishWatch.ReadBudget(partBytes),
                                                       FinishWatch.Poll).ConfigureAwait(false);
             if (!exited && (asStop || !StopRequested)) Kill(p);
         }
