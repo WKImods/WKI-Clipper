@@ -102,15 +102,33 @@ public sealed class SegmentIdentityTests
     public void Source_keys_name_the_window_or_the_monitor_identity_and_the_size()
     {
         const string lg = @"\\?\display#gsm780b#7&2e952966&2&uid256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
-        Assert.Equal("wgc:65872:2560x1440", SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, lg));
-        Assert.Equal($"mon:{lg}:3440x1440", SegmentIdentity.SourceKey(false, IntPtr.Zero, 3440, 1440, lg));
-        Assert.Equal(@"mon:gdi:\\.\DISPLAY2:1920x1080", SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, @"gdi:\\.\DISPLAY2"));
+        Assert.Equal("wgc:65872:2560x1440", SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, lg, ResolutionPreset.Native));
+        Assert.Equal($"mon:{lg}:3440x1440", SegmentIdentity.SourceKey(false, IntPtr.Zero, 3440, 1440, lg, ResolutionPreset.Native));
+        Assert.Equal(@"mon:gdi:\\.\DISPLAY2:1920x1080",
+                     SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, @"gdi:\\.\DISPLAY2", ResolutionPreset.Native));
+    }
+
+    [Theory]
+    [InlineData(ResolutionPreset.FullHD)]
+    [InlineData(ResolutionPreset.WQHD)]
+    [InlineData(ResolutionPreset.UHD)]
+    public void A_preset_keys_a_monitor_by_its_identity_alone(ResolutionPreset preset)
+    {
+        // R4: the output is the preset's size for every source size - a mode switch of the same monitor is the same footage.
+        const string lg = @"\\?\display#gsm780b#7&2e952966&2&uid256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        Assert.Equal($"mon:{lg}", SegmentIdentity.SourceKey(false, IntPtr.Zero, 3840, 2160, lg, preset));
+        Assert.Equal(SegmentIdentity.SourceKey(false, IntPtr.Zero, 3840, 2160, lg, preset),
+                     SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, lg, preset));
+        Assert.NotEqual(SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, lg, preset),
+                        SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, @"gdi:\\.\DISPLAY2", preset));
+        // A window keeps its size in the key (its raw frames have that size).
+        Assert.Equal("wgc:65872:2560x1440", SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, lg, preset));
     }
 
     [Fact]
     public void A_window_source_knows_its_handle()
     {
-        var id = new SegmentIdentity(SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, "gdi:x"), "x");
+        var id = new SegmentIdentity(SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, "gdi:x", ResolutionPreset.Native), "x");
         Assert.True(id.IsWgc);
         Assert.Equal(new IntPtr(65872), id.WgcHwnd);
     }

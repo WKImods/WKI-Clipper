@@ -557,9 +557,11 @@ public sealed class ReplayBufferService : IDisposable
             settings.Capture.Mode == CaptureMode.Monitor ? MonitorRef.FromProfile(settings.Capture) : null,
             plan.Source, topology, capturePath));
         // A monitor is keyed by its identity, not its DXGI output: a new primary renumbers the outputs, the footage stays the same.
+        // Its size only counts for Native: a preset encodes every mode of the monitor at the same size (R4).
         string source = _wgc != null && videoArgs != null
-            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.Source.DisplayKey)
-            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.Source.Width, plan.Source.Height, plan.Source.DisplayKey);
+            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.Source.DisplayKey, settings.Video.Resolution)
+            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.Source.Width, plan.Source.Height, plan.Source.DisplayKey,
+                                        settings.Video.Resolution);
         string stream = SegmentIdentity.StreamKey(settings.Video.Codec, settings.Video.Framerate,
             settings.Video.Resolution, audioArgs?.Count ?? 0, capturePath, keyframes);
         var identity = new SegmentIdentity(source, stream);

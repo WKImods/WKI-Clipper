@@ -32,8 +32,8 @@ public sealed class ReplayBufferMonitorTests
     private static CaptureSource SourceOf(DisplayInfo d, DisplayTopology topo)
         => CaptureSourceRules.ForDisplay(d, topo, MonitorTargetRules.Resolve(MonitorRef.Of(d), topo))!;
 
-    private static string KeyOf(CaptureSource s)
-        => SegmentIdentity.SourceKey(false, IntPtr.Zero, s.Width, s.Height, s.DisplayKey);
+    private static string KeyOf(CaptureSource s, ResolutionPreset preset = ResolutionPreset.Native)
+        => SegmentIdentity.SourceKey(false, IntPtr.Zero, s.Width, s.Height, s.DisplayKey, preset);
 
     private static CaptureTargetResolver.CapturePlan PlanOf(CaptureSource s, string? warning = null, bool wgc = false,
         nint hwnd = 0)
@@ -67,6 +67,22 @@ public sealed class ReplayBufferMonitorTests
 
         Assert.Equal(a.OutputIndex, b.OutputIndex);
         Assert.NotEqual(KeyOf(a), KeyOf(b));
+    }
+
+    [Fact]
+    public void Preset_mode_change_of_the_same_monitor_keeps_the_source_key()
+    {
+        // R4: 4K monitor, an exclusive-fullscreen game switches it to 1080p, the clipper records 1440p. Every generation is
+        // encoded at 2560x1440, so the footage before and after the switch is one history and one clip.
+        var uhd = TestDisplays.Lg(w: 3840, h: 2160);
+        var fullHd = TestDisplays.Lg(w: 1920, h: 1080);
+        var at4k = SourceOf(uhd, TestDisplays.Topology(uhd, TestDisplays.Dell()));
+        var at1080 = SourceOf(fullHd, TestDisplays.Topology(fullHd, TestDisplays.Dell()));
+        var dell = SourceOf(TestDisplays.Dell(), TestDisplays.Topology(fullHd, TestDisplays.Dell()));
+
+        Assert.Equal(KeyOf(at4k, ResolutionPreset.WQHD), KeyOf(at1080, ResolutionPreset.WQHD));
+        Assert.NotEqual(KeyOf(at1080, ResolutionPreset.WQHD), KeyOf(dell, ResolutionPreset.WQHD));   // another monitor never joins
+        Assert.NotEqual(KeyOf(at4k), KeyOf(at1080));                                                // Native: the size follows the source (R5)
     }
 
     [Fact]

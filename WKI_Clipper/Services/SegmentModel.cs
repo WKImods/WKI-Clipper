@@ -15,13 +15,18 @@ namespace WKI_Clipper.Services;
 public sealed record SegmentIdentity(string Source, string Stream)
 {
     /// <summary>
-    /// A window: <c>wgc:{hwnd}:{W}x{H}</c>. A monitor: <c>mon:{displayKey}:{W}x{H}</c> with the monitor's identity
-    /// (<see cref="CaptureSource.DisplayKey"/>), deliberately without the DXGI output index - a new primary renumbers the
-    /// outputs without changing what is captured, while another monitor at the same output and size is other footage.
-    /// The keys live only in memory (a cold start forgets them), so the index-based keys of 0.19 never meet these.
+    /// A window: <c>wgc:{hwnd}:{W}x{H}</c>. A monitor: <c>mon:{displayKey}</c> with the monitor's identity
+    /// (<see cref="CaptureSource.DisplayKey"/>), plus <c>:{W}x{H}</c> only for <see cref="ResolutionPreset.Native"/>, where
+    /// the output follows the source (R5). With a preset every source size is encoded at the preset's size (R4), so a mode
+    /// switch of the same monitor stays one history (the stream key carries the preset). Deliberately without the DXGI
+    /// output index - a new primary renumbers the outputs without changing what is captured, while another monitor at the
+    /// same output and size is other footage. The keys live only in memory (a cold start forgets them), so the index-based
+    /// keys of 0.19 never meet these.
     /// </summary>
-    public static string SourceKey(bool wgc, IntPtr hwnd, int width, int height, string displayKey)
-        => wgc ? $"wgc:{hwnd}:{width}x{height}" : $"mon:{displayKey}:{width}x{height}";
+    public static string SourceKey(bool wgc, IntPtr hwnd, int width, int height, string displayKey, ResolutionPreset resolution)
+        => wgc ? $"wgc:{hwnd}:{width}x{height}"
+           : resolution == ResolutionPreset.Native ? $"mon:{displayKey}:{width}x{height}"
+           : $"mon:{displayKey}";
 
     /// <param name="capturePath">"wgc", "amf" or "dda": the capture paths produce different encoder input.</param>
     /// <param name="audioTracks">0 when audio init failed - that generation is video-only and cannot join the others.</param>
