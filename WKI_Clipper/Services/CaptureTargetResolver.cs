@@ -137,6 +137,20 @@ public static class CaptureTargetResolver
     }
 
     /// <summary>
+    /// <paramref name="previous"/> on the current display topology: the same window, audio route and target process (a
+    /// running capture stays on what it pinned), the monitor resolved again - its new mode, a renumbered output, the
+    /// fallback while the chosen monitor is gone, or the chosen monitor again. For the next part of a recording a mode
+    /// switch interrupted, and for the display watcher's "did the buffer's source change?".
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No monitor the capture can reach (the message says why).</exception>
+    public static CapturePlan Reresolve(CapturePlan previous, CaptureProfile profile, DisplayTopologyCache? topology = null)
+    {
+        var topo = (topology ?? DisplayTopologyCache.Shared).Get();
+        var video = ResolveVideo(profile, previous.TargetProcess, previous.Hwnd, MonitorOf(previous.Hwnd), previous.UseWgc, topo);
+        return previous with { Source = video.Source, VideoLabel = video.Label, Warning = video.Warning };
+    }
+
+    /// <summary>
     /// The video half of a plan - source, label, warning - with the window's monitor passed in as a handle
     /// (<paramref name="windowMonitor"/>, 0 = no window). Raises <see cref="MonitorRefUpgrade"/> when the saved monitor
     /// asks for it.

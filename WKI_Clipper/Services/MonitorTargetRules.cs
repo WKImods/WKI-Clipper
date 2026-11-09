@@ -87,6 +87,13 @@ public static class MonitorTargetRules
         return new MonitorResolution(MonitorResolutionStatus.FollowsTarget, display, reason, UpgradeSavedRef: false);
     }
 
+    /// <summary>
+    /// The connected monitor <paramref name="saved"/> identifies, found the way <see cref="Resolve"/> finds it - also when
+    /// the capture cannot reach it (another GPU); null when it is not connected. Matched while Windows reports no device
+    /// path, it carries the saved path.
+    /// </summary>
+    internal static DisplayInfo? Locate(MonitorRef saved, DisplayTopology topo) => Find(saved, topo).Found;
+
     private static (DisplayInfo? Found, MonitorResolutionStatus Status, string Reason) Find(MonitorRef saved, DisplayTopology topo)
     {
         if (saved.DevicePath is string path)

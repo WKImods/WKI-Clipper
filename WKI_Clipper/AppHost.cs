@@ -227,6 +227,13 @@ public sealed class AppHost : IDisposable
     public ForegroundTracker? Foreground { get; private set; }
 
     /// <summary>
+    /// Follows display changes (created in <see cref="Initialize"/>): retargets the buffer when its monitor really changed,
+    /// tells the monitor lists to rebuild (<see cref="DisplayTopologyWatcher.TopologyChanged"/>), and dates the last change
+    /// for the automatic restart after a mode switch.
+    /// </summary>
+    public DisplayTopologyWatcher? DisplayWatcher { get; private set; }
+
+    /// <summary>
     /// Codecs the local ffmpeg.exe actually supports. Populated in Initialize.
     /// Keys: ffmpeg codec name, Values: German display label.
     /// </summary>
@@ -331,7 +338,38 @@ public sealed class AppHost : IDisposable
         WireGameFolders();
         WireClipNotes();
         WireMonitorIdentityUpgrade();
+        WireDisplayChanges();
         ResolveDefaultAudioDevices();
+    }
+
+    /// <summary>
+    /// An ffmpeg exit soon after a display change is a mode switch (R2): the buffer restarts by itself and a Ctrl+F9
+    /// recording continues in its next part. The watcher that dates the changes starts in <see cref="Initialize"/>.
+    /// </summary>
+    private void WireDisplayChanges()
+    {
+        ReplayBuffer.LastDisplayChangeUtc = () => DisplayWatcher?.LastChangeUtc;
+        ManualRecording.LastDisplayChangeUtc = () => DisplayWatcher?.LastChangeUtc;
+    }
+
+    private void StartDisplayWatcher()
+    {
+        try
+        {
+            // Once per start: what the capture sees (decision 8) - this also fills the cache before the views ask.
+            Logger.Info("App start - " + DisplayTopologyCache.Shared.Get().Dump());
+            DisplayWatcher = new DisplayTopologyWatcher(DisplayTopologyCache.Shared, TimeProvider.System,
+                () => ReplayBuffer.CurrentPlan?.Source, ReresolveBufferSource, ReplayBuffer.RequestRetarget);
+        }
+        catch (Exception ex) { Logger.Warn("Display watcher could not start: " + ex.Message); }
+    }
+
+    /// <summary>What the buffer's pinned target records on the topology now; null when nothing runs or no monitor is left.</summary>
+    private Services.CaptureSource? ReresolveBufferSource()
+    {
+        if (ReplayBuffer.CurrentPlan is not { } plan) return null;
+        try { return CaptureTargetResolver.Reresolve(plan, Settings.Current.Capture).Source; }
+        catch (InvalidOperationException) { return null; }
     }
 
     /// <summary>
@@ -428,14 +466,19 @@ public sealed class AppHost : IDisposable
         };
 
         // Resume on the EVENT, not in the toggle: this also covers a recording that ends
-        // by itself (ffmpeg error, disk full), where nobody presses stop.
-        ManualRecording.RecordingStopped += (_, _) =>
-        {
-            if (!_bufferPausedForRecording) return;
-            _bufferPausedForRecording = false;
-            Logger.Info("Resuming the replay buffer after the recording.");
-            ReplayBuffer.Resume();
-        };
+        // by itself (ffmpeg error, disk full), where nobody presses stop. A recording that
+        // goes on in its next part after a mode switch has not ended: no event, the buffer waits.
+        ManualRecording.RecordingStopped += (_, _) => ResumeBufferAfterRecording();
+        // ... and a recording that could not even start (no monitor, no ffmpeg) after the buffer stepped aside.
+        ManualRecording.ResumeCompetingCapture = ResumeBufferAfterRecording;
+    }
+
+    private void ResumeBufferAfterRecording()
+    {
+        if (!_bufferPausedForRecording) return;
+        _bufferPausedForRecording = false;
+        Logger.Info("Resuming the replay buffer after the recording.");
+        ReplayBuffer.Resume();
     }
 
     private void ResolveDefaultAudioDevices()
@@ -498,6 +541,7 @@ public sealed class AppHost : IDisposable
     public void Initialize()
     {
         LogFolderWarnings();
+        StartDisplayWatcher();
         Hotkeys.Initialize();
         lock (_shortcutHotkeyGate) _shortcutHotkeySignature = ShortcutHotkeys.Signature(Settings.Current.Shortcuts.Items);   // what Initialize just registered
         // Codec detection runs async; not blocking startup.
@@ -688,6 +732,7 @@ public sealed class AppHost : IDisposable
     {
         // Last chance for notes that could not be saved earlier (locked file).
         try { GalleryMeta.Flush(); } catch (Exception ex) { Logger.Warn("GalleryMeta flush on exit failed: " + ex.Message); }
+        DisplayWatcher?.Dispose();   // first: no retarget into a buffer that is going away
         Foreground?.Dispose();
         GameDetector?.Dispose();
         GameWatcher?.Dispose();

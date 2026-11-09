@@ -6,7 +6,6 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
-using Screen = System.Windows.Forms.Screen;
 // WinForms is also referenced (UseWindowsForms=true); Button/CheckBox/ComboBox are
 // aliased globally (GlobalUsings), these are the remaining ambiguous WPF controls.
 using RadioButton = System.Windows.Controls.RadioButton;
@@ -39,6 +38,8 @@ public partial class CaptureView : UserControl
     private RadioButton? _autoRadio, _windowRadio, _monitorRadio;
     private StackPanel? _windowPanel, _monitorPanel, _autoPanel;
     private ComboBox? _windowBox, _monitorBox;
+    // True while the monitor list is rebuilt: the SelectionChanged that causes is not a user pick.
+    private bool _rebuildingMonitors;
     private TextBlock? _autoLiveText;
 
     public CaptureView()
@@ -52,8 +53,16 @@ public partial class CaptureView : UserControl
     {
         if (RowsContainer.Children.Count == 0)
             BuildUi();
+        else
+            RefreshMonitorList();   // monitors may have changed while this view was not shown
+        if (App.Host?.DisplayWatcher is { } watcher)
+        {
+            watcher.TopologyChanged -= OnTopologyChanged;
+            watcher.TopologyChanged += OnTopologyChanged;
+        }
         UpdatePickerVisibility();
         Refresh();
+        _timer?.Stop();
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
@@ -63,7 +72,17 @@ public partial class CaptureView : UserControl
     {
         _timer?.Stop();
         _timer = null;
+        if (App.Host?.DisplayWatcher is { } watcher)
+            watcher.TopologyChanged -= OnTopologyChanged;
     }
+
+    /// <summary>A monitor came, went or changed its mode (raised on a pool thread): the list follows, the choice stays.</summary>
+    private void OnTopologyChanged()
+        => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RefreshMonitorList();
+            Refresh();
+        }));
 
     private void BuildUi()
     {
@@ -178,21 +197,21 @@ public partial class CaptureView : UserControl
         RefreshMonitorList();
         _monitorBox.SelectionChanged += (_, _) =>
         {
-            if (_monitorBox.SelectedItem is MonitorChoice mc)
-            {
-                var capture = host.Settings.Current.Capture;
-                if (mc.DeviceName == capture.MonitorDeviceName) return;
-                capture.MonitorDeviceName = mc.DeviceName;
-                // The pick is a GDI name only: drop the stored identity of the previous monitor, the resolver
-                // then finds the new one by its name and stores its identity (MonitorRefUpgrade).
-                capture.MonitorDevicePath = null;
-                capture.MonitorFriendlyName = null;
-                capture.MonitorEdidMfg = null;
-                capture.MonitorEdidProduct = null;
-                host.Settings.Save();
-                host.ReplayBuffer.RequestRestart();
-                Refresh();
-            }
+            if (_rebuildingMonitors || _monitorBox.SelectedItem is not CaptureMonitorChoice choice) return;
+            var capture = host.Settings.Current.Capture;
+            if (choice.Value == MonitorRef.FromProfile(capture)) return;
+            // The whole identity of the picked monitor (all empty for the automatic entry = the primary monitor).
+            var pick = choice.Value;
+            capture.MonitorDevicePath = pick?.DevicePath;
+            capture.MonitorDeviceName = pick?.GdiName;
+            capture.MonitorFriendlyName = pick?.FriendlyName;
+            capture.MonitorEdidMfg = pick?.EdidMfg;
+            capture.MonitorEdidProduct = pick?.EdidProduct;
+            host.Settings.Save();
+            host.ReplayBuffer.RequestRestart();
+            // After this event: a "not connected" entry of the previous choice leaves the list.
+            Dispatcher.BeginInvoke(new Action(RefreshMonitorList));
+            Refresh();
         };
         _monitorPanel.Children.Add(_monitorBox);
         _monitorPanel.Children.Add(new TextBlock
@@ -294,24 +313,24 @@ public partial class CaptureView : UserControl
         else if (_windowBox.Items.Count > 0) _windowBox.SelectedIndex = 0;
     }
 
+    /// <summary>
+    /// Monitors as Windows names them, from the cached topology (no device per call), with the saved one selected - also
+    /// while it is not connected ("X (nicht verbunden)").
+    /// </summary>
     private void RefreshMonitorList()
     {
         var host = App.Host; if (host is null || _monitorBox is null) return;
-        var saved = host.Settings.Current.Capture.MonitorDeviceName;
-        _monitorBox.Items.Clear();
-        var screens = Screen.AllScreens;
-        MonitorChoice? toSelect = null;
-        for (int i = 0; i < screens.Length; i++)
+        var (items, selected) = CaptureMonitorList.Build(DisplayTopologyCache.Shared.Get(),
+                                                         MonitorRef.FromProfile(host.Settings.Current.Capture));
+        _rebuildingMonitors = true;
+        try
         {
-            var s = screens[i];
-            string label = $"Monitor {i + 1}  ({s.Bounds.Width}×{s.Bounds.Height}){(s.Primary ? L.T("  · primär", "  · primary") : "")}";
-            var choice = new MonitorChoice(s.DeviceName, label);
-            _monitorBox.Items.Add(choice);
-            if (s.DeviceName == saved) toSelect = choice;
+            _monitorBox.Items.Clear();
+            foreach (var item in items) _monitorBox.Items.Add(item);
+            _monitorBox.DisplayMemberPath = nameof(CaptureMonitorChoice.Display);
+            _monitorBox.SelectedIndex = selected;
         }
-        _monitorBox.DisplayMemberPath = nameof(MonitorChoice.Display);
-        if (toSelect != null) _monitorBox.SelectedItem = toSelect;
-        else if (_monitorBox.Items.Count > 0) _monitorBox.SelectedIndex = 0;
+        finally { _rebuildingMonitors = false; }
     }
 
     private void Refresh()
@@ -460,5 +479,4 @@ public partial class CaptureView : UserControl
     };
 
     private sealed record WindowChoice(string ProcessName, string Display);
-    private sealed record MonitorChoice(string DeviceName, string Display);
 }

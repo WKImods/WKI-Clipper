@@ -193,10 +193,20 @@ public partial class App : Application
                 Host.Sounds.Play(result.Success ? SoundCue.RecordingStopped : SoundCue.Error);
                 if (result.Success)
                     ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme gespeichert", "Recording saved"),
-                        System.IO.Path.GetFileName(result.Path), result.Path);
+                        System.IO.Path.GetFileName(result.Path) + (result.Note is { } note ? "\n" + note : ""), result.Path,
+                        durationSeconds: result.Note is null ? 4.0 : 8.0);
                 else
                     ToastService.Show(Views.ToastKind.Warning, L.T("Aufnahme fehlgeschlagen", "Recording failed"),
                         result.Error ?? L.T("Unbekannter Fehler.", "Unknown error."), durationSeconds: 6.0);
+            };
+            // A mode switch ended a part of the Ctrl+F9 recording: that part is saved, the recording goes on in the next file.
+            Host.ManualRecording.RecordingContinued += (_, part) =>
+            {
+                TrayHost.UpdateState(TrayState.Recording, System.IO.Path.GetFileNameWithoutExtension(part.NextPath));
+                ToastService.Show(Views.ToastKind.Recording, L.T("Aufnahme läuft weiter", "Recording continues"),
+                    part.Message + "\n" + L.T($"Gespeichert: {System.IO.Path.GetFileName(part.KeptPath)}",
+                                              $"Saved: {System.IO.Path.GetFileName(part.KeptPath)}"),
+                    part.KeptPath, durationSeconds: 5.0);
             };
             Host.Screenshots.ScreenshotSaved += (_, path) =>
             {

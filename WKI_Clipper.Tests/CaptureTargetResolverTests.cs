@@ -92,6 +92,33 @@ public sealed class CaptureTargetResolverTests
     }
 
     [Fact]
+    public void Reresolve_keeps_window_and_audio_and_follows_the_monitor()
+    {
+        var dell = TestDisplays.Dell();
+        var profile = MonitorProfile(MonitorRef.Of(dell));
+        var plan = CaptureTargetResolver.Resolve(profile, Settings(), TestSources.Cache(TestDisplays.Topology(TestDisplays.Lg(), dell)))
+            with { SysMode = SystemAudioMode.Process, AudioPid = 4242, AudioLabel = "Arma Reforger", TargetProcess = "ArmaReforgerSteam" };
+
+        // The DELL switched to 1080p (exclusive-fullscreen game).
+        var small = TestDisplays.Dell(w: 1920, h: 1080);
+        var next = CaptureTargetResolver.Reresolve(plan, profile, TestSources.Cache(TestDisplays.Topology(TestDisplays.Lg(), small)));
+
+        Assert.Equal((1920, 1080), (next.Source.Width, next.Source.Height));
+        Assert.True(CaptureSourceRules.SameMonitor(plan.Source, next.Source));
+        Assert.Equal((plan.SysMode, plan.AudioPid, plan.AudioLabel, plan.TargetProcess, plan.Hwnd, plan.UseWgc),
+                     (next.SysMode, next.AudioPid, next.AudioLabel, next.TargetProcess, next.Hwnd, next.UseWgc));
+        Assert.Equal("DELL S2721DGF · 1920×1080 · rechts", next.VideoLabel);
+        Assert.Null(next.Warning);
+
+        // The chosen monitor is gone meanwhile: the primary, with the warning.
+        var gone = CaptureTargetResolver.Reresolve(plan, profile, TestSources.Cache(TestDisplays.Topology(TestDisplays.Lg())));
+        Assert.True(gone.Source.Resolution.IsFallback);
+        Assert.NotNull(gone.Warning);
+        Assert.Throws<InvalidOperationException>(() =>
+            CaptureTargetResolver.Reresolve(plan, profile, TestSources.Cache(DisplayTopology.Empty("test: no displays"))));
+    }
+
+    [Fact]
     public void Monitor_on_another_gpu_names_both_gpus_in_the_warning()
     {
         var onIgpu = TestDisplays.Dell(gdi: @"\\.\DISPLAY6", adapter: 1, output: 0);
