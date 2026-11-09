@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Text.RegularExpressions;
 using WKI_Clipper.Services;
 using Xunit;
 
@@ -75,19 +74,20 @@ public sealed class LoggerSetPathTests
         {
             Assert.Equal(path, Logger.Path);
 
-            Logger.Info("unit-test info");
-            Logger.Warn("unit-test warn");
-            Logger.Error("unit-test error");
-            Logger.Error("unit-test failure", new InvalidOperationException("boom"));
+            // A background task an earlier test left running may log into the moved file too: only our own lines count.
+            string tag = "unit-test-" + Guid.NewGuid().ToString("N");
+            Logger.Info(tag + " info");
+            Logger.Warn(tag + " warn");
+            Logger.Error(tag + " error");
+            Logger.Error(tag + " failure", new InvalidOperationException("boom"));
 
-            var lines = File.ReadAllLines(path);
+            var lines = Array.FindAll(File.ReadAllLines(path), l => l.Contains(tag, StringComparison.Ordinal));
             Assert.Equal(4, lines.Length);
             var stamp = @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} ";
-            Assert.Matches(stamp + @"\[INFO\] unit-test info$", lines[0]);
-            Assert.Matches(stamp + @"\[WARN\] unit-test warn$", lines[1]);
-            Assert.Matches(stamp + @"\[ERR \] unit-test error$", lines[2]);
-            Assert.Matches(stamp + @"\[ERR \] unit-test failure \| System\.InvalidOperationException: boom$", lines[3]);
-            Assert.DoesNotContain(lines, l => !Regex.IsMatch(l, stamp));
+            Assert.Matches(stamp + @"\[INFO\] " + tag + " info$", lines[0]);
+            Assert.Matches(stamp + @"\[WARN\] " + tag + " warn$", lines[1]);
+            Assert.Matches(stamp + @"\[ERR \] " + tag + " error$", lines[2]);
+            Assert.Matches(stamp + @"\[ERR \] " + tag + @" failure \| System\.InvalidOperationException: boom$", lines[3]);
 
             File.WriteAllBytes(path, new byte[1_000_010]);
             Logger.Rotate();
