@@ -381,11 +381,20 @@ public sealed class AudioPipeService : IDisposable
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception ex) when (IsReaderGone(ex))
+        {
+            // ffmpeg ended (a run ended on a mode switch or the lock screen, a crash): its end of the pipe is closed. Expected,
+            // and the exit itself is handled and logged by the buffer - no error with a stack trace on every mode switch.
+            Logger.Info("Audio pipe: ffmpeg closed its end - the writer stops");
+        }
         catch (Exception ex)
         {
             Logger.Error("Audio pipe writer failed", ex);
         }
     }
+
+    /// <summary>A write failed because the reader (ffmpeg) closed the pipe ("Pipe is broken" and friends are IOExceptions).</summary>
+    internal static bool IsReaderGone(Exception ex) => ex is IOException;
 
     private static void TrimIfStale(BufferedWaveProvider? buf, string tag)
     {
