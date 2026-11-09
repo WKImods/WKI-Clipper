@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using WKI_Clipper.Models;
 
@@ -41,10 +42,10 @@ public static class FFmpegCommandBuilder
     /// is skipped entirely. The string must be a complete ffmpeg input fragment
     /// like <c>-f s16le -ar 48000 -ac 2 -i "\\.\pipe\WKI_Clipper_Audio_xyz"</c>.
     /// </param>
-    /// <param name="monitorIndex">
-    /// DXGI output index (ddagrab output_idx) of the monitor to capture, resolved
-    /// by <see cref="CaptureTargetResolver"/>. Used when no
-    /// <paramref name="videoInputArgs"/> is supplied.
+    /// <param name="source">
+    /// The monitor to capture, resolved by <see cref="CaptureTargetResolver"/>: its DXGI output index is ddagrab's
+    /// <c>output_idx</c>, its AMF index (only when certain) vsrc_amf's <c>monitor_index</c>, its size the Native bitrate.
+    /// Used when no <paramref name="videoInputArgs"/> is supplied. Null = output 0 (the primary monitor), never AMF.
     /// </param>
     /// <param name="videoInputArgs">
     /// When non-null, the video comes from an external rawvideo named pipe
@@ -58,7 +59,7 @@ public static class FFmpegCommandBuilder
     /// </param>
     public static string Build(AppSettings settings, string outputPath, bool segmentOutput,
         int segmentDurationSec = 5, int segmentWrap = 12, IReadOnlyList<string>? audioPipeArgs = null,
-        int monitorIndex = 0, string? videoInputArgs = null,
+        CaptureSource? source = null, string? videoInputArgs = null,
         KeyframeMode keyframes = KeyframeMode.EncoderDefault, bool mpegTsPipe = false)
     {
         var sb = new StringBuilder();
@@ -95,7 +96,8 @@ public static class FFmpegCommandBuilder
         // On top of that the whole path is opt-in (Video.UseAmfCapture, default off): it is
         // driver-level, and a system-wide stutter that survived closing the app pointed at
         // it. ddagrab is the safe default; the speed-up is not worth an unexplained machine.
-        bool amfNativeCapture = UsesAmfNativeCapture(settings, rawInput);
+        // And only when the monitor's vsrc_amf index is certain (source.AmfIndex): its numbering is not DXGI's.
+        bool amfNativeCapture = UsesAmfNativeCapture(settings, rawInput, source?.AmfIndex);
 
         if (rawInput)
         {
@@ -105,14 +107,14 @@ public static class FFmpegCommandBuilder
         else if (amfNativeCapture)
         {
             sb.Append("-init_hw_device amf=amf0 -filter_hw_device amf0 ");
-            sb.Append("-f lavfi -i \"vsrc_amf=monitor_index=").Append(monitorIndex)
+            sb.Append("-f lavfi -i \"vsrc_amf=monitor_index=").Append(source!.AmfIndex!.Value)
               .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
         }
         else
         {
             // DXGI Desktop Duplication of the chosen monitor. Captures at native
             // resolution; any downscale happens in the -vf chain below.
-            sb.Append("-f lavfi -i \"ddagrab=output_idx=").Append(monitorIndex)
+            sb.Append("-f lavfi -i \"ddagrab=output_idx=").Append(source?.OutputIndex ?? 0)
               .Append(":framerate=").Append(settings.Video.Framerate).Append("\" ");
         }
 
@@ -180,7 +182,7 @@ public static class FFmpegCommandBuilder
         }
 
         // Effective bitrate (monitor-aware for the Native preset).
-        int bitrate = EffectiveBitrate(settings, monitorIndex);
+        int bitrate = EffectiveBitrate(settings, source);
 
         // ddagrab delivers frames on the GPU (d3d11); hwdownload brings them to sysmem.
         string codec = settings.Video.Codec;
@@ -332,14 +334,14 @@ public static class FFmpegCommandBuilder
     /// <summary>The highest effective video bitrate over all monitors (a stable estimate across Alt-Tabs in Auto mode).</summary>
     internal static int MaxEffectiveBitrate(AppSettings settings)
     {
-        int best = EffectiveBitrate(settings, 0);
+        long pixels = 0;
         try
         {
-            int n = Screen.AllScreens.Length;
-            for (int i = 1; i < n; i++) best = Math.Max(best, EffectiveBitrate(settings, i));
+            foreach (var screen in Screen.AllScreens)
+                pixels = Math.Max(pixels, (long)screen.Bounds.Width * screen.Bounds.Height);
         }
         catch { }
-        return best;
+        return BitrateForPixels(settings, pixels > 0 ? pixels : WqhdPixels);
     }
 
     /// <summary>
@@ -347,12 +349,32 @@ public static class FFmpegCommandBuilder
     /// without downscale (a window comes through the rawvideo pipe), and nothing that must stay out of the footage.
     /// Part of the segment identity: this path and ddagrab/WGC give the encoder different input.
     /// </summary>
+    /// <remarks>
+    /// Without a monitor this only says whether the settings select it (the clicker label asks that, conservatively);
+    /// the capture itself uses the overload with the monitor's AMF index.
+    /// </remarks>
     internal static bool UsesAmfNativeCapture(AppSettings s, bool rawInput)
     {
         var (w, h) = GetResolution(s.Video.Resolution);
         bool needScale = w > 0 && h > 0;
         return AmfCaptureConfigured(s) && !rawInput && !needScale && !MustHonorCaptureExclusion(s);
     }
+
+    /// <summary>
+    /// <see cref="UsesAmfNativeCapture(AppSettings, bool)"/> for a monitor whose vsrc_amf index is
+    /// <paramref name="amfIndex"/>: null (the mapping is not certain, decision 6) keeps ddagrab - AMF would record a
+    /// guessed monitor. Logged once per run.
+    /// </summary>
+    internal static bool UsesAmfNativeCapture(AppSettings s, bool rawInput, int? amfIndex)
+    {
+        if (!UsesAmfNativeCapture(s, rawInput)) return false;
+        if (amfIndex is not null) return true;
+        if (Interlocked.Exchange(ref _amfSkipLogged, 1) == 0)
+            Logger.Info("AMF capture skipped: monitor mapping not certain");
+        return false;
+    }
+
+    private static int _amfSkipLogged;
 
     /// <summary>
     /// Turns the LAST <paramref name="durationSec"/> seconds of a source video into a
@@ -445,41 +467,34 @@ public static class FFmpegCommandBuilder
     // encoder can't consume (ffmpeg exits with "Impossible to convert ... src: d3d11"),
     // same as every recording path. Without it the grab fails and falls back to a
     // black GDI capture for fullscreen games.
-    public static string BuildScreenshot(string outputPath, int monitorIndex = 0)
-        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx={monitorIndex}:framerate=1\" -vf \"hwdownload,format=bgra\" -frames:v 1 -y \"{outputPath}\"";
+    /// <param name="outputIndex">The monitor's DXGI output on the default adapter (<see cref="CaptureSource.OutputIndex"/>).</param>
+    public static string BuildScreenshot(string outputPath, int outputIndex)
+        => $"-hide_banner -loglevel warning -f lavfi -i \"ddagrab=output_idx={outputIndex}:framerate=1\" -vf \"hwdownload,format=bgra\" -frames:v 1 -y \"{outputPath}\"";
 
     public static string BuildThumbnail(string videoPath, string thumbnailPath, int width = 320)
         => $"-hide_banner -loglevel error -ss 1 -i \"{videoPath}\" -frames:v 1 -vf \"scale={width}:-1\" -y \"{thumbnailPath}\"";
 
     /// <summary>
     /// Effective video bitrate. For fixed resolutions it uses the quality-preset
-    /// table; for Native it scales the WQHD base by the target monitor's actual
-    /// pixel count so an ultrawide (e.g. 3440×1440) isn't under-allocated.
+    /// table; for Native it scales the WQHD base by the captured monitor's current
+    /// pixel count (<paramref name="source"/>; unknown = WQHD) so an ultrawide
+    /// (e.g. 3440×1440) isn't under-allocated.
     /// </summary>
-    internal static int EffectiveBitrate(AppSettings settings, int monitorIndex)
+    internal static int EffectiveBitrate(AppSettings settings, CaptureSource? source)
+        => BitrateForPixels(settings, source is { Width: > 0, Height: > 0 } ? (long)source.Width * source.Height : WqhdPixels);
+
+    private const long WqhdPixels = 2560L * 1440;
+
+    private static int BitrateForPixels(AppSettings settings, long pixels)
     {
         if (settings.Video.Quality == QualityPreset.Custom)
             return settings.Video.Bitrate;
         if (settings.Video.Resolution != ResolutionPreset.Native)
             return QualityPresets.ComputeBitrate(settings.Video.Quality, settings.Video.Resolution);
 
-        long pixels = MonitorPixels(monitorIndex);
-        const long wqhdPixels = 2560L * 1440;
         int wqhdBitrate = QualityPresets.ComputeBitrate(settings.Video.Quality, ResolutionPreset.WQHD);
-        double factor = Math.Clamp((double)pixels / wqhdPixels, 0.6, 2.2);
+        double factor = Math.Clamp((double)pixels / WqhdPixels, 0.6, 2.2);
         return (int)(wqhdBitrate * factor);
-    }
-
-    private static long MonitorPixels(int monitorIndex)
-    {
-        try
-        {
-            var screens = Screen.AllScreens;
-            if (monitorIndex >= 0 && monitorIndex < screens.Length)
-                return (long)screens[monitorIndex].Bounds.Width * screens[monitorIndex].Bounds.Height;
-        }
-        catch { }
-        return 2560L * 1440;
     }
 
     private static (int w, int h) GetResolution(ResolutionPreset preset) => preset switch

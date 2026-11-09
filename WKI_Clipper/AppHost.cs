@@ -330,7 +330,38 @@ public sealed class AppHost : IDisposable
         WireCaptureExclusivity();
         WireGameFolders();
         WireClipNotes();
+        WireMonitorIdentityUpgrade();
         ResolveDefaultAudioDevices();
+    }
+
+    /// <summary>
+    /// The resolver found the chosen monitor by an older or incomplete identity (a 0.19 GDI name, a new port, a new GDI
+    /// slot): the settings get its current identity. Written on the UI thread (which owns the settings) and saved WITHOUT a
+    /// buffer restart - the monitor that is recorded does not change, only how it is stored.
+    /// </summary>
+    private void WireMonitorIdentityUpgrade()
+        => CaptureTargetResolver.MonitorRefUpgrade += next => RunOnUiThread(() => ApplyMonitorIdentityUpgrade(next));
+
+    private void ApplyMonitorIdentityUpgrade(MonitorRef next)
+    {
+        try
+        {
+            var capture = Settings.Current.Capture;
+            if (capture.Mode != CaptureMode.Monitor) return;
+            // Only what the CURRENT setting resolves to: the event may be late (raised on another thread before the user
+            // picked another monitor), and several resolves raise the same upgrade until it is saved.
+            var resolution = MonitorTargetRules.Resolve(MonitorRef.FromProfile(capture), DisplayTopologyCache.Shared.Get());
+            if (!resolution.UpgradeSavedRef || MonitorRef.Of(resolution.Display!) != next) return;
+
+            capture.MonitorDevicePath = next.DevicePath;
+            capture.MonitorDeviceName = next.GdiName;
+            capture.MonitorFriendlyName = next.FriendlyName;
+            capture.MonitorEdidMfg = next.EdidMfg;
+            capture.MonitorEdidProduct = next.EdidProduct;
+            Settings.Save();
+            Logger.Info($"Capture monitor identity updated ({resolution.Status}): '{next.FriendlyName ?? "-"}' gdi={next.GdiName ?? "-"} path={next.DevicePath ?? "-"}");
+        }
+        catch (Exception ex) { Logger.Warn("Capture monitor identity update failed: " + ex.Message); }
     }
 
     /// <summary>
@@ -545,8 +576,12 @@ public sealed class AppHost : IDisposable
         // recording is a freecam screen recording with all sounds — leave it.
         if (ManualRecording.IsRecording && Settings.Current.Capture.Mode != CaptureMode.Auto)
         {
-            var plan = CaptureTargetResolver.Resolve(Settings.Current.Capture, Settings.Current);
-            ManualRecording.RetargetAudio(plan.SysMode, plan.AudioPid);
+            try
+            {
+                var plan = CaptureTargetResolver.Resolve(Settings.Current.Capture, Settings.Current);
+                ManualRecording.RetargetAudio(plan.SysMode, plan.AudioPid);
+            }
+            catch (InvalidOperationException ex) { Logger.Warn("Recording audio retarget skipped: " + ex.Message); }
         }
     }
 

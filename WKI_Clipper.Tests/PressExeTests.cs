@@ -62,7 +62,7 @@ public sealed class PressExeTests
 public sealed class PinnedExeTests
 {
     private static CaptureTargetResolver.CapturePlan Plan(IntPtr hwnd, bool wgc)
-        => new(0, "", 0, 0, default, null, "x", hwnd, "", "", UseWgc: wgc);
+        => new(TestSources.Output(0), default, null, "x", hwnd, "", "", UseWgc: wgc, Warning: null);
 
     [Fact]
     public void A_pinned_window_names_the_exe_of_its_process()

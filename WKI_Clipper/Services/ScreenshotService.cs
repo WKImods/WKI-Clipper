@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace WKI_Clipper.Services;
@@ -50,8 +51,20 @@ public sealed class ScreenshotService
             GameFolderFor is { } f ? () => f(null) : null);
         var ts = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
 
-        var (idx, screen) = CaptureTargetResolver.ResolveActiveMonitor();
-        var path = Path.Combine(outDir, $"Shot_Display{idx + 1}_{ts}.png");
+        CaptureSource source;
+        try
+        {
+            source = CaptureTargetResolver.ResolveActiveMonitor();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.Warn("Screenshot: " + ex.Message);
+            ScreenshotFailed?.Invoke(this, Path.Combine(outDir, FileName(null, ts)));
+            return null;
+        }
+        if (source.Resolution.IsFallback)
+            Logger.Warn($"Screenshot: {source.Resolution.Reason} - taking the primary monitor '{source.Label}'");
+        var path = Path.Combine(outDir, FileName(source.Resolution.Display?.FriendlyName, ts));
 
         // Hide our own overlay so it isn't in the shot; let it actually disappear.
         var hider = OverlayHider?.Invoke();
@@ -61,14 +74,15 @@ public sealed class ScreenshotService
 
             // Primary: DXGI Desktop Duplication (ddagrab) — captures the whole monitor
             // including exclusive-fullscreen games, where GDI would be black.
-            if (await TryFFmpegMonitorAsync(path, idx))
+            if (await TryFFmpegMonitorAsync(path, source.OutputIndex))
             {
                 ScreenshotSaved?.Invoke(this, path);
                 return path;
             }
 
             // Fallback: GDI full-monitor copy (still whole monitor, never a window).
-            if (TryGdiMonitorGrab(screen, path))
+            if (source.Resolution.Display is { } display
+                && TryGdiMonitorGrab(new Rectangle(display.X, display.Y, display.Width, display.Height), path))
             {
                 ScreenshotSaved?.Invoke(this, path);
                 return path;
@@ -83,13 +97,20 @@ public sealed class ScreenshotService
         return null;
     }
 
-    private async Task<bool> TryFFmpegMonitorAsync(string outPath, int monitorIndex)
+    /// <summary>"Shot_LG-ULTRAGEAR+_2026-11-09_12-00-00.png": the monitor's Windows name, file-safe; "Display" without one.</summary>
+    internal static string FileName(string? friendlyName, string timestamp)
+    {
+        string name = Regex.Replace(GameFolderNaming.Sanitize(friendlyName), @"\s+", "-");
+        return $"Shot_{(name.Length > 0 ? name : "Display")}_{timestamp}.png";
+    }
+
+    private async Task<bool> TryFFmpegMonitorAsync(string outPath, int outputIndex)
     {
         try
         {
             var ffmpeg = new FFmpegService();
             if (!ffmpeg.IsAvailable()) return false;
-            var args = FFmpegCommandBuilder.BuildScreenshot(outPath, monitorIndex);
+            var args = FFmpegCommandBuilder.BuildScreenshot(outPath, outputIndex);
             var tcs = new TaskCompletionSource<int>();
             ffmpeg.Exited += (_, code) => tcs.TrySetResult(code);
             ffmpeg.Start(args);
@@ -102,11 +123,11 @@ public sealed class ScreenshotService
         }
     }
 
-    private static bool TryGdiMonitorGrab(System.Windows.Forms.Screen screen, string outPath)
+    /// <param name="b">The monitor rect in physical pixels (the app is per-monitor DPI aware, like the topology).</param>
+    private static bool TryGdiMonitorGrab(Rectangle b, string outPath)
     {
         try
         {
-            var b = screen.Bounds;
             if (b.Width <= 0 || b.Height <= 0) return false;
             using var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))

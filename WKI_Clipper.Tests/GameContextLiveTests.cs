@@ -35,7 +35,7 @@ public sealed class GameContextLiveTests
         {
             // A plan pinning this window drives the same path a WGC capture would.
             var plan = new CaptureTargetResolver.CapturePlan(
-                0, "", 0, 0, default, null, p.ProcessName, p.MainWindowHandle, "", "", UseWgc: true);
+                TestSources.Output(0), default, null, p.ProcessName, p.MainWindowHandle, "", "", UseWgc: true, Warning: null);
             var folder = ctx.ResolveFolder(plan);
 
             _out.WriteLine($"{p.ProcessName,-34} -> {folder}");
@@ -90,7 +90,7 @@ public sealed class GameContextLiveTests
         if (explorer != null)
         {
             var plan = new CaptureTargetResolver.CapturePlan(
-                0, "", 0, 0, default, null, "explorer", explorer.MainWindowHandle, "", "", UseWgc: true);
+                TestSources.Output(0), default, null, "explorer", explorer.MainWindowHandle, "", "", UseWgc: true, Warning: null);
             Assert.Equal(GameFolderNaming.DesktopFolder, ctx.ResolveFolder(plan));
         }
     }

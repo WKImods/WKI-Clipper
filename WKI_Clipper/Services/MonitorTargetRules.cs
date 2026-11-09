@@ -13,6 +13,8 @@ public enum MonitorResolutionStatus
     Matched,
     /// <summary>Only a GDI name is saved (0.19 and older) and a monitor has it.</summary>
     Legacy,
+    /// <summary>Nothing is saved: the monitor the target window (Auto/Window mode) or the cursor (screenshots) is on.</summary>
+    FollowsTarget,
     /// <summary>Nothing is saved: the primary monitor, no warning.</summary>
     PrimaryByDefault,
     /// <summary>The saved monitor is not connected or the capture cannot reach it: the primary monitor, with a warning.</summary>
@@ -22,7 +24,8 @@ public enum MonitorResolutionStatus
 }
 
 /// <param name="Display">
-/// The monitor to capture: the saved one, the primary for <see cref="MonitorResolutionStatus.PrimaryByDefault"/> and
+/// The monitor to capture: the saved one (or the followed one for <see cref="MonitorResolutionStatus.FollowsTarget"/>), the
+/// primary for <see cref="MonitorResolutionStatus.PrimaryByDefault"/> and
 /// <see cref="MonitorResolutionStatus.FallbackPrimary"/>, null for <see cref="MonitorResolutionStatus.NoDisplays"/>. When not
 /// null it has a DXGI output on the default adapter (<see cref="CaptureSourceRules.ForDisplay"/> gives a source). When the
 /// monitor was matched while Windows reports no device path for it (a sleeping DisplayPort monitor), it carries the saved
@@ -65,6 +68,23 @@ public static class MonitorTargetRules
 
         var next = MonitorRef.Of(found);
         return new MonitorResolution(status, found, reason, next != saved && saved.LosesNothingTo(next));
+    }
+
+    /// <summary>
+    /// The monitor a window (Auto/Window mode) or the cursor (screenshots) is on: nothing is saved, nothing is upgraded.
+    /// <paramref name="display"/> null (no window, or a monitor handle the topology does not know) = the primary monitor
+    /// without a warning; a monitor the capture cannot reach = the primary monitor as a fallback, with the reason.
+    /// <paramref name="reason"/> says how <paramref name="display"/> was found (or why there is none).
+    /// </summary>
+    public static MonitorResolution Follow(DisplayInfo? display, DisplayTopology topo, string reason)
+    {
+        if (display is null)
+            return OnPrimary(topo, MonitorResolutionStatus.PrimaryByDefault, reason);
+
+        string? unreachable = Unreachable(display, topo, Quote(display.FriendlyName));
+        if (unreachable is not null)
+            return OnPrimary(topo, MonitorResolutionStatus.FallbackPrimary, unreachable);
+        return new MonitorResolution(MonitorResolutionStatus.FollowsTarget, display, reason, UpgradeSavedRef: false);
     }
 
     private static (DisplayInfo? Found, MonitorResolutionStatus Status, string Reason) Find(MonitorRef saved, DisplayTopology topo)

@@ -160,12 +160,18 @@ public partial class StatusView : UserControl
         }
 
         // Effective capture plan (same resolver F9/Ctrl+F9 use). Buffer's pinned
-        // plan if running, else a fresh preview of the current profile.
-        var plan = host.ReplayBuffer.CurrentPlan
-                   ?? CaptureTargetResolver.Resolve(s.Capture, s);
+        // plan if running, else a fresh preview of the current profile (from the cached
+        // topology: no device is created per tick).
+        var plan = host.ReplayBuffer.CurrentPlan;
+        string? planError = null;
+        if (plan is null)
+        {
+            try { plan = CaptureTargetResolver.Resolve(s.Capture, s); }
+            catch (InvalidOperationException ex) { planError = ex.Message; }
+        }
 
         // Audio (effective route, not just the checkboxes)
-        _audioText!.Text = $"{plan.AudioLabel}  ·  {L.T("Offset", "Offset")} {s.Audio.OffsetMilliseconds} ms";
+        _audioText!.Text = $"{plan?.AudioLabel ?? "—"}  ·  {L.T("Offset", "Offset")} {s.Audio.OffsetMilliseconds} ms";
 
         // Video
         var resName = s.Video.Resolution switch
@@ -183,7 +189,7 @@ public partial class StatusView : UserControl
         _videoText!.Text = $"{resName}  ·  {s.Video.Framerate} fps  ·  {codecLabel}  ·  {bitrate / 1_000_000} Mbps";
 
         // Capture target (effective, from the resolver)
-        _captureSrcText!.Text = plan.VideoLabel;
+        _captureSrcText!.Text = plan?.VideoLabel ?? planError ?? "—";
 
         // FFmpeg
         _ffmpegText!.Text = host.FFmpeg.IsAvailable()

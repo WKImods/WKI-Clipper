@@ -40,7 +40,7 @@ public sealed class LongClipCommandTests
     public void Buffer_command_line_is_unchanged_with_the_encoder_default()
     {
         var args = FFmpegCommandBuilder.Build(Fixed(), @"C:\buf\seg_0_%02d.mp4", segmentOutput: true,
-            segmentDurationSec: 5, segmentWrap: 12, audioPipeArgs: new[] { Pipe }, monitorIndex: 0);
+            segmentDurationSec: 5, segmentWrap: 12, audioPipeArgs: new[] { Pipe }, source: TestSources.Output(0));
         Assert.Equal(BufferSnapshot, args);
     }
 
@@ -58,7 +58,7 @@ public sealed class LongClipCommandTests
     public void Forced_keyframes_add_the_expression_the_idr_flag_and_the_delta()
     {
         var args = FFmpegCommandBuilder.Build(Fixed(), @"C:\buf\seg_0_%02d.mp4", segmentOutput: true,
-            segmentDurationSec: 5, segmentWrap: 12, audioPipeArgs: new[] { Pipe }, monitorIndex: 0,
+            segmentDurationSec: 5, segmentWrap: 12, audioPipeArgs: new[] { Pipe }, source: TestSources.Output(0),
             keyframes: KeyframeMode.ForcedAtSegmentBoundary);
 
         Assert.Contains("-force_key_frames \"expr:gte(t,n_forced*5)\" -forced_idr 1 ", args);
@@ -176,8 +176,11 @@ public sealed class LongClipCommandTests
         s.Crosshair.Enabled = false;
         s.Widgets.Widgets.Clear();
         s.PerfOverlay.Enabled = false;
-        bool expected = FFmpegCommandBuilder.UsesAmfNativeCapture(s, rawInput: false);
-        var args = FFmpegCommandBuilder.Build(s, "o.mp4", segmentOutput: false);
-        Assert.Equal(expected, args.Contains("vsrc_amf"));
+        foreach (var source in new[] { TestSources.Certain(), TestSources.Output(0, amf: null) })
+        {
+            bool expected = FFmpegCommandBuilder.UsesAmfNativeCapture(s, rawInput: false, source.AmfIndex);
+            var args = FFmpegCommandBuilder.Build(s, "o.mp4", segmentOutput: false, source: source);
+            Assert.Equal(expected, args.Contains("vsrc_amf"));
+        }
     }
 }

@@ -407,7 +407,7 @@ public sealed class ReplayBufferService : IDisposable
             // monitor), the previous segments are a different display/resolution.
             // Start a fresh save-window so they can never be spliced into a clip
             // (which would give wrong footage or break the stream-copy concat).
-            if (folderMoved || (prevPlan is { } pp && pp.MonitorIndex != plan.MonitorIndex))
+            if (folderMoved || (prevPlan is { } pp && !CaptureSourceRules.SameMonitor(pp.Source, plan.Source)))
                 _sessionStartUtc = DateTime.UtcNow;
         }
 
@@ -433,7 +433,7 @@ public sealed class ReplayBufferService : IDisposable
         // Wrap = how many segments this run holds: what a save picks, +1 for tail tolerance,
         // + RingPlan.Reserve so the oldest picked segment is not the next one overwritten.
         int wrap = ring.Wrap;
-        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"}), lookback={DurationText.Format(EffectiveDurationSeconds)}");
+        Logger.Info($"ReplayBuffer.Start: gen={_generation}, cold={clearHistory}, video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (output={plan.Source.OutputIndex}, pid={plan.AudioPid?.ToString() ?? "null"}), lookback={DurationText.Format(EffectiveDurationSeconds)}");
 
         // Audio pipe first (named pipe must exist before ffmpeg opens it).
         // If audio init fails, fall back to video-only.
@@ -457,7 +457,7 @@ public sealed class ReplayBufferService : IDisposable
 
         // Occlusion-proof WGC window capture when the plan targets a window —
         // the clip stays on the game even when another window covers it. Any
-        // failure falls back to monitor ddagrab (plan.MonitorIndex).
+        // failure falls back to monitor ddagrab (plan.Source).
         string? videoArgs = null;
         if (plan.UseWgc)
         {
@@ -498,22 +498,22 @@ public sealed class ReplayBufferService : IDisposable
         var keyframes = KeyframePolicy.Effective(settings.ReplayBuffer);
         string capturePath = videoArgs != null
             ? "wgc"
-            : FFmpegCommandBuilder.UsesAmfNativeCapture(settings, rawInput: false) ? "amf" : "dda";
+            : FFmpegCommandBuilder.UsesAmfNativeCapture(settings, rawInput: false, plan.Source.AmfIndex) ? "amf" : "dda";
         string source = _wgc != null && videoArgs != null
-            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.MonitorIndex)
-            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.MonitorWidth, plan.MonitorHeight, plan.MonitorIndex);
+            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.Source.OutputIndex)
+            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.Source.Width, plan.Source.Height, plan.Source.OutputIndex);
         string stream = SegmentIdentity.StreamKey(settings.Video.Codec, settings.Video.Framerate,
             settings.Video.Resolution, audioArgs?.Count ?? 0, capturePath, keyframes);
         var identity = new SegmentIdentity(source, stream);
         int ownGeneration = _generation;
         _generations[ownGeneration] = new GenerationInfo(ownGeneration, identity,
-            plan.TargetProcess ?? $"Monitor {plan.MonitorIndex + 1}", DateTime.UtcNow, null);
+            plan.TargetProcess ?? plan.Source.Label, DateTime.UtcNow, null);
         _currentIdentity = identity;
         _epoch = new BufferEpoch(ring, identity, ownGeneration, _bufferDir, memoryMode ? _memory : null);
 
         var args = FFmpegCommandBuilder.Build(settings, _segmentPattern,
             segmentOutput: true, segmentDurationSec: segSec, segmentWrap: wrap,
-            audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
+            audioPipeArgs: audioArgs, source: plan.Source,
             videoInputArgs: videoArgs, keyframes: keyframes, mpegTsPipe: memoryMode);
         Logger.Info("[buffer-ffmpeg] CMD: " + args);
 
@@ -752,9 +752,9 @@ public sealed class ReplayBufferService : IDisposable
         catch { return new List<(long, DateTime)>(); }
     }
 
-    private DiskForecast BuildForecast(string dir, int durationSeconds, int segSec, int monitorIndex, long? observedBps)
+    private DiskForecast BuildForecast(string dir, int durationSeconds, int segSec, CaptureSource? source, long? observedBps)
     {
-        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, monitorIndex);
+        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, source);
         long segBytes = DiskPlan.SegmentBytes(DiskPlan.EstimateSegmentBytes(segSec, videoBps), observedBps, segSec);
         long required = DiskPlan.RequiredBytes(durationSeconds, segSec, segBytes);
         if (!DiskProbe.TryGetFreeSpace(dir, out long free, out string drive))
@@ -775,8 +775,13 @@ public sealed class ReplayBufferService : IDisposable
     {
         var rb = _settings.Current.ReplayBuffer;
         string dir = string.IsNullOrEmpty(_bufferDir) ? ResolveBufferDir(warn: false) : _bufferDir;
-        var plan = CurrentPlan ?? CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-        return BuildForecast(dir, DurationText.Clamp(durationSeconds), Math.Max(1, rb.SegmentDurationSeconds), plan.MonitorIndex, null);
+        CaptureSource? source = CurrentPlan?.Source;
+        if (source is null)
+        {
+            try { source = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current).Source; }
+            catch (InvalidOperationException) { }   // no monitor to capture: the estimate uses the WQHD base
+        }
+        return BuildForecast(dir, DurationText.Clamp(durationSeconds), Math.Max(1, rb.SegmentDurationSeconds), source, null);
     }
 
     /// <summary>
@@ -796,7 +801,7 @@ public sealed class ReplayBufferService : IDisposable
         var observed = DiskPlan.ObservedBytesPerSecond(RecentSamples(
             g => g.Identity.Stream.StartsWith(prefix, StringComparison.Ordinal), 12));
 
-        var f = BuildForecast(_bufferDir, configured, seg, plan.MonitorIndex, observed);
+        var f = BuildForecast(_bufferDir, configured, seg, plan.Source, observed);
         _diskRingBytes = f.RequiredBytes;
         if (f.Decision.Shortened)
             _diskRingBytes = f.RequiredBytes * DiskPlan.RingSegments(f.Decision.EffectiveSeconds, seg)
@@ -1145,10 +1150,10 @@ public sealed class ReplayBufferService : IDisposable
         {
             if (!IsRunning) return;
             var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-            // "Video unchanged" = same monitor AND, for WGC window capture, the
-            // same window — a different hwnd needs a new video pipeline.
+            // "Video unchanged" = same source (monitor, DXGI output, size) AND, for WGC
+            // window capture, the same window — a different hwnd needs a new video pipeline.
             bool videoUnchanged = CurrentPlan is { } prev
-                && prev.MonitorIndex == plan.MonitorIndex
+                && CaptureSourceRules.SameSource(prev.Source, plan.Source)
                 && prev.UseWgc == plan.UseWgc
                 && (!plan.UseWgc || prev.Hwnd == plan.Hwnd);
             if (videoUnchanged && _audio != null)
@@ -2132,7 +2137,7 @@ public sealed class ReplayBufferService : IDisposable
         int seg = Math.Max(1, _runningRing.SegmentSeconds);
         int current = EffectiveDurationSeconds;
         int gen = _generation;
-        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, CurrentPlan?.MonitorIndex ?? 0);
+        long videoBps = FFmpegCommandBuilder.EffectiveBitrate(_settings.Current, CurrentPlan?.Source);
         long segBytes = DiskPlan.SegmentBytes(DiskPlan.EstimateSegmentBytes(seg, videoBps),
             DiskPlan.ObservedBytesPerSecond(RecentSamples(g => g.Generation == gen, 12)), seg);
         var d = DiskPlan.Decide(current, seg, segBytes, free + DiskProbe.OwnSegmentBytes(_bufferDir));

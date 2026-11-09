@@ -1,6 +1,7 @@
 using WKI_Clipper.Models;
 using WKI_Clipper.Services;
 using Xunit;
+using CaptureSource = WKI_Clipper.Services.CaptureSource;
 
 namespace WKI_Clipper.Tests;
 
@@ -46,7 +47,7 @@ public class CapturePathTests
     [Fact]
     public void Amf_full_monitor_capture_stays_on_the_gpu()
     {
-        var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false, monitorIndex: 0);
+        var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false, source: TestSources.Certain(0));
 
         Assert.Contains("vsrc_amf", args);
         Assert.Contains("-init_hw_device amf", args);
@@ -57,8 +58,33 @@ public class CapturePathTests
     [Fact]
     public void The_monitor_index_is_carried_over_to_the_amf_source()
     {
-        var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false, monitorIndex: 2);
+        var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false, source: TestSources.Certain(2));
         Assert.Contains("vsrc_amf=monitor_index=2", args);
+    }
+
+    [Fact]
+    public void Ddagrab_uses_the_resolved_output_index()
+    {
+        // The DXGI output the resolver found, never a position in Screen.AllScreens.
+        var s = new AppSettings();
+        s.Video.Framerate = 60;
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false, source: TestSources.Output(3));
+        Assert.Contains("ddagrab=output_idx=3:framerate=60", args);
+    }
+
+    [Fact]
+    public void Amf_is_used_only_with_a_certain_index()
+    {
+        // vsrc_amf counts monitors its own way: without a certain mapping it would record a guessed monitor.
+        CaptureSource uncertain = TestSources.Output(1, amf: null);
+        var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false, source: uncertain);
+
+        Assert.DoesNotContain("vsrc_amf", args);
+        Assert.Contains("ddagrab=output_idx=1:", args);
+        Assert.False(FFmpegCommandBuilder.UsesAmfNativeCapture(Amf(), rawInput: false, amfIndex: null));
+        Assert.True(FFmpegCommandBuilder.UsesAmfNativeCapture(Amf(), rawInput: false, amfIndex: 1));
+        Assert.Contains("vsrc_amf=monitor_index=1:", FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false,
+            source: TestSources.Output(1, amf: 1)));
     }
 
     [Theory]
@@ -128,7 +154,7 @@ public class CapturePathTests
         var s = Amf();
         s.Crosshair.Enabled = false;
 
-        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false);
+        var args = FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false, source: TestSources.Certain());
 
         Assert.Contains("vsrc_amf", args);
         Assert.DoesNotContain("hwdownload", args);
@@ -172,14 +198,14 @@ public class CapturePathTests
         var s = Amf();
         s.Widgets.GetOrAdd(WidgetId.WhatsApp).ExcludeFromCapture = false;   // user chose to show it
         Assert.False(FFmpegCommandBuilder.MustHonorCaptureExclusion(s));
-        Assert.Contains("vsrc_amf", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false));
+        Assert.Contains("vsrc_amf", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false, source: TestSources.Certain()));
     }
 
     [Fact]
     public void Audio_mapping_survives_the_new_video_input()
     {
         var args = FFmpegCommandBuilder.Build(Amf(), "out.mp4", segmentOutput: false,
-            audioPipeArgs: new[] { "-i a", "-i b" });
+            audioPipeArgs: new[] { "-i a", "-i b" }, source: TestSources.Certain());
 
         Assert.Contains("-map 0:v", args);
         Assert.Contains("-map 1:a", args);

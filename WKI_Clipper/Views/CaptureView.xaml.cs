@@ -180,8 +180,15 @@ public partial class CaptureView : UserControl
         {
             if (_monitorBox.SelectedItem is MonitorChoice mc)
             {
-                if (mc.DeviceName == host.Settings.Current.Capture.MonitorDeviceName) return;
-                host.Settings.Current.Capture.MonitorDeviceName = mc.DeviceName;
+                var capture = host.Settings.Current.Capture;
+                if (mc.DeviceName == capture.MonitorDeviceName) return;
+                capture.MonitorDeviceName = mc.DeviceName;
+                // The pick is a GDI name only: drop the stored identity of the previous monitor, the resolver
+                // then finds the new one by its name and stores its identity (MonitorRefUpgrade).
+                capture.MonitorDevicePath = null;
+                capture.MonitorFriendlyName = null;
+                capture.MonitorEdidMfg = null;
+                capture.MonitorEdidProduct = null;
                 host.Settings.Save();
                 host.ReplayBuffer.RequestRestart();
                 Refresh();
@@ -314,24 +321,27 @@ public partial class CaptureView : UserControl
         var host = App.Host;
         if (host is null || _targetText is null) return;
 
-        // What Ctrl+F9 would capture right now (fresh resolve of the current profile).
-        var preview = CaptureTargetResolver.Resolve(host.Settings.Current.Capture, host.Settings.Current);
+        // What Ctrl+F9 would capture right now (fresh resolve of the current profile; the
+        // topology comes from the cache, so this 1-s tick creates no device).
+        CaptureTargetResolver.CapturePlan? preview = null;
+        string? previewError = null;
+        try { preview = CaptureTargetResolver.Resolve(host.Settings.Current.Capture, host.Settings.Current); }
+        catch (InvalidOperationException ex) { previewError = ex.Message; }
         // What F9 captures (the pinned buffer plan, if running).
         var bufferPlan = host.ReplayBuffer.CurrentPlan;
 
-        _targetText.Text = (bufferPlan?.VideoLabel) ?? preview.VideoLabel;
-        _audioText!.Text = L.T("Ton: ", "Audio: ") + ((bufferPlan?.AudioLabel) ?? preview.AudioLabel);
+        _targetText.Text = bufferPlan?.VideoLabel ?? preview?.VideoLabel ?? previewError ?? "";
+        _audioText!.Text = L.T("Ton: ", "Audio: ") + (bufferPlan?.AudioLabel ?? preview?.AudioLabel ?? "—");
 
         // Live line in the Automatik panel: what a capture started RIGHT NOW
         // would grab (the resolver already excludes this overlay itself, so this
         // shows the window/monitor behind it).
         if (_autoLiveText != null)
         {
-            string mon = $"Monitor {preview.MonitorIndex + 1} ({preview.MonitorWidth}×{preview.MonitorHeight})";
             string prefix = L.T("Jetzt im Vordergrund: ", "Currently in foreground: ");
-            _autoLiveText.Text = preview.TargetProcess != null
-                ? $"{prefix}{preview.TargetProcess} → {mon}"
-                : $"{prefix}{mon}";
+            _autoLiveText.Text = preview is not { } p ? $"{prefix}{previewError}"
+                : p.TargetProcess != null ? $"{prefix}{p.TargetProcess} → {p.Source.Label}"
+                : $"{prefix}{p.Source.Label}";
         }
 
         if (_autoLongWarn != null)
@@ -341,11 +351,11 @@ public partial class CaptureView : UserControl
         // Both F9 and Strg+F9 use the pinned target; a divergence only exists
         // transiently (freecam dwell) or when a fresh resolve differs — be
         // honest about it then.
-        if (bufferPlan is { } bp && bp.VideoLabel != preview.VideoLabel)
+        if (bufferPlan is { } bp && preview is { } pv && bp.VideoLabel != pv.VideoLabel)
         {
             _noteText!.Text = L.T(
-                $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {preview.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.",
-                $"Note: Ctrl+F9 would currently capture instead: {preview.VideoLabel}. F9 stays on the pinned target above.");
+                $"Hinweis: Strg+F9 würde gerade stattdessen aufnehmen: {pv.VideoLabel}. F9 bleibt beim oben gepinnten Ziel.",
+                $"Note: Ctrl+F9 would currently capture instead: {pv.VideoLabel}. F9 stays on the pinned target above.");
             _noteText.Visibility = Visibility.Visible;
         }
         else

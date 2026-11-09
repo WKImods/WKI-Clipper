@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
-using System.Windows.Forms;
 using WKI_Clipper.Models;
 using WKI_Clipper.Native;
 
@@ -14,25 +13,35 @@ namespace WKI_Clipper.Services;
 /// the status UI all consume identically. This is what keeps F9, Ctrl+F9 and F10 in
 /// lock-step instead of each guessing its own target.
 ///
-/// Phase 1 is monitor-based: even "window" targets resolve to the window's MONITOR
-/// (ddagrab output index), which is alt-tab-stable and can capture exclusive
-/// fullscreen. Occlusion-proof per-window capture (staying on the game while another
-/// window covers it) is the Phase 2 WGC job.
+/// Every target resolves to a MONITOR as Windows/DXGI name it (<see cref="DisplayTopology"/>): Monitor mode
+/// finds the saved monitor by its identity (<see cref="MonitorTargetRules"/>), Auto/Window take the monitor
+/// the window is on (HMONITOR → topology). The capture index is always that monitor's DXGI output on the
+/// default adapter - never a position in a list. Window targets are recorded occlusion-proof through WGC
+/// when possible; the monitor is then only the fallback and the size estimate.
 /// </summary>
 public static class CaptureTargetResolver
 {
+    /// <param name="Source">The monitor ddagrab records: its DXGI output on the default adapter, size, label and how it
+    /// was found. With WGC it is the monitor the window is on.</param>
+    /// <param name="Warning">User text when the monitor that should be recorded cannot be and the primary monitor is
+    /// recorded instead (the chosen monitor is missing or hangs on another GPU); null otherwise.</param>
     public readonly record struct CapturePlan(
-        int MonitorIndex,
-        string MonitorDevice,
-        int MonitorWidth,
-        int MonitorHeight,
+        CaptureSource Source,
         SystemAudioMode SysMode,
         int? AudioPid,
         string? TargetProcess,
         IntPtr Hwnd,
         string VideoLabel,
         string AudioLabel,
-        bool UseWgc);
+        bool UseWgc,
+        string? Warning);
+
+    /// <summary>
+    /// The chosen monitor was found by an older or incomplete identity (a 0.19 GDI name, a new port, a new GDI slot): the
+    /// settings should store this one instead. Raised on the resolving thread, by every resolve that finds it so, until the
+    /// settings carry it. The app writes it without restarting the buffer - what is recorded stays the same.
+    /// </summary>
+    public static event Action<MonitorRef>? MonitorRefUpgrade;
 
     private static int SelfPid => Environment.ProcessId;
 
@@ -69,18 +78,15 @@ public static class CaptureTargetResolver
         return result.OrderBy(e => e.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
-    public static CapturePlan Resolve(CaptureProfile profile, AppSettings settings)
+    /// <summary>
+    /// The plan for <paramref name="profile"/> on the current display topology (<paramref name="topology"/>, default
+    /// <see cref="DisplayTopologyCache.Shared"/>: cheap while nothing changed, so the views may call this every second).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No monitor the capture can reach (the message says why).</exception>
+    public static CapturePlan Resolve(CaptureProfile profile, AppSettings settings, DisplayTopologyCache? topology = null)
     {
+        var topo = (topology ?? DisplayTopologyCache.Shared).Get();
         var (hwnd, videoPid, appName) = ResolveApp(profile);
-
-        int idx;
-        Screen screen;
-        if (profile.Mode == CaptureMode.Monitor)
-            (idx, screen) = MonitorByDevice(profile.MonitorDeviceName);
-        else if (hwnd != IntPtr.Zero)
-            (idx, screen) = MonitorForHwnd(hwnd);
-        else
-            (idx, screen) = PrimaryMonitor();
 
         // --- Audio route ---
         SystemAudioMode sysMode;
@@ -124,12 +130,83 @@ public static class CaptureTargetResolver
                       && WgcWindowCapture.IsSupported
                       && !WgcWindowCapture.IsBlocked(hwnd);
 
-        string videoLabel = BuildVideoLabel(profile, idx, screen, appName, hwnd, useWgc);
+        var video = ResolveVideo(profile, appName, hwnd, MonitorOf(hwnd), useWgc, topo);
         string audioLabel = BuildAudioLabel(sysMode, audioName, settings);
 
-        return new CapturePlan(idx, screen.DeviceName, screen.Bounds.Width, screen.Bounds.Height,
-            sysMode, audioPid, appName, hwnd, videoLabel, audioLabel, useWgc);
+        return new CapturePlan(video.Source, sysMode, audioPid, appName, hwnd, video.Label, audioLabel, useWgc, video.Warning);
     }
+
+    /// <summary>
+    /// The video half of a plan - source, label, warning - with the window's monitor passed in as a handle
+    /// (<paramref name="windowMonitor"/>, 0 = no window). Raises <see cref="MonitorRefUpgrade"/> when the saved monitor
+    /// asks for it.
+    /// </summary>
+    internal static (CaptureSource Source, string Label, string? Warning) ResolveVideo(CaptureProfile profile, string? appName,
+        IntPtr hwnd, nint windowMonitor, bool useWgc, DisplayTopology topo)
+    {
+        MonitorRef? saved = null;
+        MonitorResolution resolution;
+        if (profile.Mode == CaptureMode.Monitor)
+        {
+            saved = MonitorRef.FromProfile(profile);
+            resolution = MonitorTargetRules.Resolve(saved, topo);
+        }
+        else
+        {
+            resolution = FollowWindow(windowMonitor, topo);
+        }
+        var source = SourceOf(resolution, topo);
+
+        if (resolution.UpgradeSavedRef)
+            RaiseUpgrade(MonitorRef.Of(resolution.Display!));
+
+        string monitor = !resolution.IsFallback ? source.Label
+            : saved is not null ? MonitorLabels.Fallback(source.Label, saved)
+            : L.T($"Ersatz: {source.Label}", $"Fallback: {source.Label}");
+        // With WGC the window itself is recorded; the fallback monitor would only be the size estimate.
+        string? warning = resolution.IsFallback && !useWgc ? FallbackWarning(profile.Mode, resolution) : null;
+        return (source, BuildVideoLabel(profile, monitor, appName, hwnd, useWgc), warning);
+    }
+
+    private static MonitorResolution FollowWindow(nint windowMonitor, DisplayTopology topo)
+    {
+        var display = topo.ByHMonitor(windowMonitor);
+        string reason = windowMonitor == 0 ? L.T("kein Fenster", "no window")
+            : display is null ? L.T("Monitor des Fensters gerade unbekannt", "the window's monitor is not known right now")
+            : L.T("Monitor des Fensters", "monitor of the window");
+        return MonitorTargetRules.Follow(display, topo, reason);
+    }
+
+    /// <summary>The source of a resolved monitor; throws for <see cref="MonitorResolutionStatus.NoDisplays"/>.</summary>
+    private static CaptureSource SourceOf(MonitorResolution resolution, DisplayTopology topo)
+    {
+        string noMonitor = L.T($"Kein Monitor, den die Aufnahme erreicht: {resolution.Reason}",
+                               $"No monitor the capture can reach: {resolution.Reason}");
+        if (resolution.Display is null) throw new InvalidOperationException(noMonitor);
+        // A resolved display always has an output on the default adapter (MonitorResolution's contract).
+        return CaptureSourceRules.ForDisplay(resolution.Display, topo, resolution) ?? throw new InvalidOperationException(noMonitor);
+    }
+
+    /// <summary>"Gewählter Monitor „X“ ist nicht verbunden – nehme Hauptmonitor „Y“" (the reason names X and why).</summary>
+    private static string FallbackWarning(CaptureMode mode, MonitorResolution resolution)
+    {
+        string name = MonitorLabels.NameOf(resolution.Display!.FriendlyName);
+        return mode == CaptureMode.Monitor
+            ? L.T($"Gewählter Monitor {resolution.Reason} – nehme Hauptmonitor „{name}“",
+                  $"Chosen monitor {resolution.Reason} – recording the primary monitor “{name}” instead")
+            : L.T($"Fenster-Monitor {resolution.Reason} – nehme Hauptmonitor „{name}“",
+                  $"The window's monitor {resolution.Reason} – recording the primary monitor “{name}” instead");
+    }
+
+    private static void RaiseUpgrade(MonitorRef next)
+    {
+        try { MonitorRefUpgrade?.Invoke(next); }
+        catch (Exception ex) { Logger.Warn("Monitor identity upgrade handler threw: " + ex.Message); }
+    }
+
+    /// <summary>The HMONITOR <paramref name="hwnd"/> is on; 0 without a window.</summary>
+    private static nint MonitorOf(IntPtr hwnd)
+        => hwnd == IntPtr.Zero ? 0 : DisplayConfig.MonitorFromWindow(hwnd, DisplayConfig.MONITOR_DEFAULTTONEAREST);
 
     // -------- app (window/pid) resolution --------
 
@@ -228,71 +305,40 @@ public static class CaptureTargetResolver
     /// profile. Screenshots use this so they are ALWAYS a whole monitor regardless of
     /// Auto/Window/Monitor mode. Prefers the foreground window's monitor; if that is
     /// our own overlay (or there is none), falls back to the monitor under the cursor.
+    /// A monitor the capture cannot reach falls back to the primary (the resolution says so).
     /// </summary>
-    public static (int MonitorIndex, Screen Screen) ResolveActiveMonitor()
+    /// <exception cref="InvalidOperationException">No monitor the capture can reach.</exception>
+    public static CaptureSource ResolveActiveMonitor(DisplayTopologyCache? topology = null)
     {
+        var topo = (topology ?? DisplayTopologyCache.Shared).Get();
+        nint monitor = 0;
+        string reason = "";
         var hwnd = User32.GetForegroundWindow();
         if (hwnd != IntPtr.Zero)
         {
             User32.GetWindowThreadProcessId(hwnd, out uint pid);
             if (pid != 0 && (int)pid != SelfPid)
-                return MonitorForHwnd(hwnd);
+            {
+                monitor = MonitorOf(hwnd);
+                reason = L.T("Monitor des Vordergrundfensters", "monitor of the foreground window");
+            }
         }
-        try
+        if (monitor == 0 && User32.GetCursorPos(out var cursor))
         {
-            var s = Screen.FromPoint(System.Windows.Forms.Cursor.Position);
-            return (IndexOfScreen(s), s);
+            monitor = DisplayConfig.MonitorFromPoint(cursor, DisplayConfig.MONITOR_DEFAULTTONEAREST);
+            reason = L.T("Monitor unter dem Mauszeiger", "monitor under the cursor");
         }
-        catch
-        {
-            return PrimaryMonitor();
-        }
-    }
 
-    // -------- monitor mapping --------
-    // NOTE: ddagrab output_idx is the DXGI output index. We map via WinForms
-    // Screen order, which matches DXGI output order on typical single-GPU setups.
-    // A precise DXGI enumeration is a Phase 2 refinement.
-
-    private static (int, Screen) MonitorForHwnd(IntPtr hwnd)
-    {
-        var screen = Screen.FromHandle(hwnd);
-        int i = IndexOfScreen(screen);
-        return (i, screen);
-    }
-
-    private static (int, Screen) MonitorByDevice(string? device)
-    {
-        var screens = Screen.AllScreens;
-        if (!string.IsNullOrEmpty(device))
-        {
-            int i = Array.FindIndex(screens, s => s.DeviceName == device);
-            if (i >= 0) return (i, screens[i]);
-        }
-        return PrimaryMonitor();
-    }
-
-    private static (int, Screen) PrimaryMonitor()
-    {
-        var screens = Screen.AllScreens;
-        var primary = Screen.PrimaryScreen ?? (screens.Length > 0 ? screens[0] : null);
-        if (primary == null) return (0, screens.Length > 0 ? screens[0] : Screen.AllScreens[0]);
-        int i = IndexOfScreen(primary);
-        return (i, primary);
-    }
-
-    private static int IndexOfScreen(Screen screen)
-    {
-        var screens = Screen.AllScreens;
-        int i = Array.FindIndex(screens, s => s.DeviceName == screen.DeviceName);
-        return i < 0 ? 0 : i;
+        var display = topo.ByHMonitor(monitor);
+        if (display is null) reason = L.T("aktiver Monitor gerade unbekannt", "the active monitor is not known right now");
+        return SourceOf(MonitorTargetRules.Follow(display, topo, reason), topo);
     }
 
     // -------- labels for honest UI --------
 
-    private static string BuildVideoLabel(CaptureProfile profile, int idx, Screen screen, string? appName, IntPtr hwnd, bool useWgc)
+    /// <param name="mon">The monitor part: its label (<see cref="MonitorLabels"/>), or the fallback text.</param>
+    private static string BuildVideoLabel(CaptureProfile profile, string mon, string? appName, IntPtr hwnd, bool useWgc)
     {
-        string mon = $"Monitor {idx + 1} ({screen.Bounds.Width}×{screen.Bounds.Height})";
         string auto = L.T("Automatik: ", "Automatic: ");
         if (useWgc && appName != null)
         {

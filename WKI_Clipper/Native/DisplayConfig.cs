@@ -5,7 +5,8 @@ namespace WKI_Clipper.Native;
 
 /// <summary>
 /// Display topology interop: the CCD API (QueryDisplayConfig / DisplayConfigGetDeviceInfo) for the monitor's
-/// name, device path and EDID ids, GetMonitorInfo for the GDI name of an HMONITOR, and the thread DPI context
+/// name, device path and EDID ids, GetMonitorInfo for the GDI name of an HMONITOR, MonitorFromWindow /
+/// MonitorFromPoint for the HMONITOR of a window or point, and the thread DPI context
 /// the topology reader runs under. Read-only: nothing here changes a display setting.
 /// </summary>
 internal static class DisplayConfig
@@ -24,6 +25,9 @@ internal static class DisplayConfig
 
     /// <summary>MONITORINFO.dwFlags: the primary monitor.</summary>
     public const uint MONITORINFOF_PRIMARY = 0x00000001;
+
+    /// <summary>MonitorFromWindow / MonitorFromPoint: the nearest monitor when the window or point is on none.</summary>
+    public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
     /// <summary>DPI_AWARENESS_CONTEXT values (pseudo handles).</summary>
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_UNAWARE = new(-1);
@@ -191,4 +195,12 @@ internal static class DisplayConfig
     /// <summary>Sets the calling thread's DPI awareness; returns the previous context (zero on failure).</summary>
     [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
+    /// <summary>The HMONITOR a window is on (most of its area); with <see cref="MONITOR_DEFAULTTONEAREST"/> never zero for a real window.</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    /// <summary>The HMONITOR a point in screen coordinates (the calling thread's DPI context) is on.</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromPoint(User32.POINT pt, uint dwFlags);
 }

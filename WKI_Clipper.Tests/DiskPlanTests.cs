@@ -52,7 +52,7 @@ public sealed class DiskPlanTests
         var s = new AppSettings();
         s.Video.Quality = QualityPreset.Mittel;
         s.Video.Resolution = ResolutionPreset.WQHD;
-        Assert.Equal(25_000_000, FFmpegCommandBuilder.EffectiveBitrate(s, 0));
+        Assert.Equal(25_000_000, FFmpegCommandBuilder.EffectiveBitrate(s, null));
     }
 
     [Fact]

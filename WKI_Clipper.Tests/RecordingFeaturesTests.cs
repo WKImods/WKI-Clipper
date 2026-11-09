@@ -60,6 +60,63 @@ public sealed class RecordingFeaturesTests
         Assert.Contains("-c copy", args);
     }
 
+    // ---- FFmpegCommandBuilder: source size (R4, R7) ----
+
+    /// <summary>The 1440p preset as the buffer runs it (AMF, 60 fps, "Mittel").</summary>
+    private static AppSettings Preset1440p()
+    {
+        var s = new AppSettings();
+        s.Video.Resolution = ResolutionPreset.WQHD;
+        s.Video.Quality = QualityPreset.Mittel;
+        s.Video.Codec = "h264_amf";
+        s.Video.Framerate = 60;
+        s.Audio.OffsetMilliseconds = 0;
+        return s;
+    }
+
+    private const string Scale1440p =
+        "-vf \"hwdownload,format=bgra,scale=2560:1440:force_original_aspect_ratio=decrease," +
+        "pad=2560:1440:(ow-iw)/2:(oh-ih)/2:black,setsar=1\" ";
+
+    [Fact]
+    public void Native_bitrate_uses_the_source_size_not_a_screen_index()
+    {
+        var s = new AppSettings();
+        s.Video.Resolution = ResolutionPreset.Native;
+        s.Video.Quality = QualityPreset.Mittel;   // 25 Mbit/s at 2560x1440
+
+        Assert.Equal(33_593_750, FFmpegCommandBuilder.EffectiveBitrate(s, TestSources.Output(0, width: 3440, height: 1440)));
+        Assert.Equal(15_000_000, FFmpegCommandBuilder.EffectiveBitrate(s, TestSources.Output(0, width: 1920, height: 1080)));   // floor 0.6
+        Assert.Equal(55_000_000, FFmpegCommandBuilder.EffectiveBitrate(s, TestSources.Output(0, width: 3840, height: 2160)));   // cap 2.2
+        Assert.Equal(25_000_000, FFmpegCommandBuilder.EffectiveBitrate(s, null));   // unknown: the WQHD base
+        Assert.Contains("-b:v 33593750 ", FFmpegCommandBuilder.Build(s, "out.mp4", segmentOutput: false,
+            source: TestSources.Output(2, width: 3440, height: 1440)));
+    }
+
+    [Fact]
+    public void Preset_1440p_scales_and_pads_a_1080p_source_to_2560x1440()
+    {
+        var args = FFmpegCommandBuilder.Build(Preset1440p(), "out.mp4", segmentOutput: false,
+            source: TestSources.Output(0, width: 1920, height: 1080));
+
+        Assert.Contains(Scale1440p, args);
+        Assert.Contains("-b:v 25000000 ", args);   // the preset's bitrate, whatever the source
+    }
+
+    [Fact]
+    public void Preset_1440p_scales_and_pads_a_2160p_source_to_2560x1440()
+    {
+        var uhd = FFmpegCommandBuilder.Build(Preset1440p(), "out.mp4", segmentOutput: false,
+            source: TestSources.Output(0, width: 3840, height: 2160));
+        var fullHd = FFmpegCommandBuilder.Build(Preset1440p(), "out.mp4", segmentOutput: false,
+            source: TestSources.Output(0, width: 1920, height: 1080));
+
+        Assert.Contains(Scale1440p, uhd);
+        Assert.Contains("-b:v 25000000 ", uhd);
+        // A mode change of the same monitor keeps the command, so the segments keep their stream parameters.
+        Assert.Equal(fullHd, uhd);
+    }
+
     // ---- FFmpegCommandBuilder: instant GIF ----
 
     [Fact]

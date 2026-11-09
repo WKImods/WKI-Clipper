@@ -46,7 +46,7 @@ public sealed class ManualRecordingService : IDisposable
             GameFolderFor is { } f ? () => f(plan) : null);
         var filename = $"Rec_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
         var path = Path.Combine(clipsDir, filename);
-        Logger.Info($"ManualRecording target: video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (monitorIdx={plan.MonitorIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
+        Logger.Info($"ManualRecording target: video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (output={plan.Source.OutputIndex}, pid={plan.AudioPid?.ToString() ?? "null"})");
 
         // Start the audio pipe FIRST so the named pipe exists before ffmpeg opens
         // it. If audio init fails, build the ffmpeg command WITHOUT the pipe input
@@ -103,7 +103,7 @@ public sealed class ManualRecordingService : IDisposable
         }
 
         var args = FFmpegCommandBuilder.Build(_settings.Current, path,
-            segmentOutput: false, audioPipeArgs: audioArgs, monitorIndex: plan.MonitorIndex,
+            segmentOutput: false, audioPipeArgs: audioArgs, source: plan.Source,
             videoInputArgs: videoArgs);
         Logger.Info("[rec-ffmpeg] CMD: " + args);
 
