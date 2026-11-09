@@ -110,7 +110,7 @@ switching Windows between 100, 125 and 150 % keeps your layout where you put it.
 |------|-----------|
 | **Automatic** | Follows the window you click (after ~1.5 s dwell). A running `Ctrl+F9` recording stays on the window it started on; an `F9` clip only ever contains one window, never two mixed. |
 | **Specific window** | Occlusion-proof window capture (Windows Graphics Capture) — keeps recording the window even when it is covered. The mode for a main game that must never switch. |
-| **Whole monitor** | A whole display via Desktop Duplication (`ddagrab`). |
+| **Whole monitor** | A whole display via Desktop Duplication (`ddagrab`). The chosen monitor is stored by its identity (device path, name, EDID), listed by its real name ("LG ULTRAGEAR+ · 3440×1440 · Hauptmonitor") and recorded by its real DXGI output. If it is unplugged, the primary monitor is recorded with a notice and the clipper returns on its own when it is back. A resolution change (a game in exclusive fullscreen) restarts the buffer on the same monitor; with a preset output size the clip history survives. |
 
 - **Game-only audio:** the WASAPI process-loopback API records just the game (plus your
   microphone) — no Discord, no browser. Optional second audio track for the mic.
@@ -333,6 +333,10 @@ One widget, two tabs: **Crosshair** (see [Crosshair](#crosshair)) and **AutoClic
 used is remembered.
 
 <img src="docs/screenshots/gaming-utilities-crosshair.png" height="420" alt="Gaming Utilities widget on the Crosshair tab: the Crosshair and AutoClicker tabs at the top, Applies to, the crosshair library and the image adjustments">
+
+**New in 0.19.1:** *Whole monitor* records the monitor you chose, also with several monitors,
+lists monitors by their real names and keeps the buffer running through resolution changes of
+exclusive-fullscreen games (see [Capture](#capture)).
 
 **New in 0.19.0:** [mouse patterns](#mouse-patterns) in the AutoClicker tab — record a mouse
 movement once and replay it on a hotkey, from wherever the mouse is, also in games without a
@@ -692,6 +696,8 @@ WKI_Clipper.exe (.NET 8 / WPF, tray)
 - **Game detection** (crosshair profiles, FPS, *Only show while a game is detected*)
   recognises a fullscreen or borderless window, or your *Specific window* target. A game in
   a smaller window is not detected for these.
+- **Monitors on a second GPU** (e.g. a mainboard port next to a graphics card) cannot be
+  captured as *Whole monitor*; the clipper records the primary monitor and says why.
 - **Replay length** can deviate by up to ~5 s because of segment boundaries.
 - **AV1 stays on the disk:** it cannot be buffered in RAM, so an AV1 buffer is always the
   hidden disk ring (30 minutes ≈ 6–7 GB at the default quality).
