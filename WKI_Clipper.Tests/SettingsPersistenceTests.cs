@@ -208,4 +208,52 @@ public sealed class SettingsPersistenceTests : IDisposable
         Assert.False(File.Exists(Bak));
         Assert.False(File.Exists(Tmp));
     }
+
+    // ---- monitor identity ----
+
+    [Fact]
+    public void The_chosen_monitor_identity_round_trips()
+    {
+        var s = NewService();
+        s.Current.Capture.Mode = CaptureMode.Monitor;
+        s.Current.Capture.MonitorDeviceName = @"\\.\DISPLAY2";
+        s.Current.Capture.MonitorDevicePath = @"\\?\DISPLAY#DELA0F5#7&2e952966&2&UID257#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        s.Current.Capture.MonitorFriendlyName = "DELL S2721DGF";
+        s.Current.Capture.MonitorEdidMfg = 0xAC10;
+        s.Current.Capture.MonitorEdidProduct = 0xA0F5;
+        s.Save();
+
+        var loaded = new SettingsService(_dir).Load().Capture;
+
+        Assert.Equal(@"\\.\DISPLAY2", loaded.MonitorDeviceName);
+        Assert.Equal(s.Current.Capture.MonitorDevicePath, loaded.MonitorDevicePath);
+        Assert.Equal("DELL S2721DGF", loaded.MonitorFriendlyName);
+        Assert.Equal((ushort)0xAC10, loaded.MonitorEdidMfg);
+        Assert.Equal((ushort)0xA0F5, loaded.MonitorEdidProduct);
+    }
+
+    [Fact]
+    public void A_settings_file_from_before_the_monitor_identity_loads_with_only_the_gdi_name()
+    {
+        var s = NewService();
+        s.Current.Capture.Mode = CaptureMode.Monitor;
+        s.Current.Capture.MonitorDeviceName = @"\\.\DISPLAY2";
+        s.Save();
+        // 0.19 and older wrote no identity fields at all.
+        var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Main))!;
+        var capture = root["Capture"]!.AsObject();
+        foreach (var name in new[] { "MonitorDevicePath", "MonitorFriendlyName", "MonitorEdidMfg", "MonitorEdidProduct" })
+            Assert.True(capture.Remove(name), name);
+        File.WriteAllText(Main, root.ToJsonString());
+
+        var loaded = new SettingsService(_dir).Load().Capture;
+
+        Assert.Equal(CaptureMode.Monitor, loaded.Mode);
+        Assert.Equal(@"\\.\DISPLAY2", loaded.MonitorDeviceName);
+        Assert.Null(loaded.MonitorDevicePath);
+        Assert.Null(loaded.MonitorFriendlyName);
+        Assert.Null(loaded.MonitorEdidMfg);
+        Assert.Null(loaded.MonitorEdidProduct);
+        Assert.Equal(new MonitorRef(null, @"\\.\DISPLAY2", null, null, null), MonitorRef.FromProfile(loaded));
+    }
 }

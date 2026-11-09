@@ -188,7 +188,7 @@ public sealed class SettingsService
             else
             {
                 s.Capture.CoupleAudio = false;
-                s.Capture.Mode = s.Video.CaptureSource == CaptureSource.ActiveWindow
+                s.Capture.Mode = s.Video.CaptureSource == Models.CaptureSource.ActiveWindow
                     ? CaptureMode.Auto
                     : CaptureMode.Monitor;
             }

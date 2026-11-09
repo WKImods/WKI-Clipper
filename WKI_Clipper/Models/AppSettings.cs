@@ -126,10 +126,28 @@ public sealed class CaptureProfile
     public CaptureMode Mode { get; set; } = CaptureMode.Auto;
 
     /// <summary>
-    /// For <see cref="CaptureMode.Monitor"/>: the display device name (stable
-    /// across replugging) to capture. null = primary monitor.
+    /// For <see cref="CaptureMode.Monitor"/>: the GDI name (<c>\\.\DISPLAYn</c>) of the chosen
+    /// monitor. It is a source slot of the graphics adapter, NOT a property of the monitor:
+    /// it can change after replugging, waking up or a driver reset. Only a legacy value
+    /// (0.19 and older stored nothing else) and the tie-breaker between identical models;
+    /// the identity is <see cref="MonitorDevicePath"/>. All Monitor* fields null = primary monitor.
     /// </summary>
     public string? MonitorDeviceName { get; set; }
+
+    /// <summary>
+    /// For <see cref="CaptureMode.Monitor"/>: the monitor device path of the chosen monitor
+    /// (CCD <c>monitorDevicePath</c>, compared case-insensitively) - its stable identity.
+    /// </summary>
+    public string? MonitorDevicePath { get; set; }
+
+    /// <summary>The Windows name of the chosen monitor ("LG ULTRAGEAR+"), to label it while it is not connected.</summary>
+    public string? MonitorFriendlyName { get; set; }
+
+    /// <summary>EDID manufacturer id of the chosen monitor: finds it again when its device path changed.</summary>
+    public ushort? MonitorEdidMfg { get; set; }
+
+    /// <summary>EDID product code of the chosen monitor (see <see cref="MonitorEdidMfg"/>).</summary>
+    public ushort? MonitorEdidProduct { get; set; }
 
     /// <summary>
     /// For <see cref="CaptureMode.Window"/>: the process name (without .exe) whose
@@ -702,8 +720,9 @@ public sealed class CrosshairSettings
 
 /// <summary>
 /// One floating widget's persisted placement. Position is stored relative to the
-/// monitor named by <see cref="MonitorDeviceName"/> (device name is stable across
-/// replugging); on load it is clamped back onto a visible work area.
+/// monitor named by <see cref="MonitorDeviceName"/> (a GDI name - an adapter source slot,
+/// not stable: it can change after replugging or a driver reset); on load it is clamped
+/// back onto a visible work area.
 /// </summary>
 public sealed class WidgetState
 {
@@ -716,7 +735,7 @@ public sealed class WidgetState
     public double Y { get; set; }
     public double Width { get; set; }
     public double Height { get; set; }
-    /// <summary>Device name of the monitor the position is relative to. null = primary.</summary>
+    /// <summary>GDI name (<c>\\.\DISPLAYn</c>, an adapter slot, not stable) of the monitor the position is relative to. null = primary.</summary>
     public string? MonitorDeviceName { get; set; }
     /// <summary>
     /// Window opacity 0.3–1.0 (property initializer = default for settings files
