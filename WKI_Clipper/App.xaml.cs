@@ -160,6 +160,12 @@ public partial class App : Application
             {
                 ToastService.Show(Views.ToastKind.Info, L.T("Replay-Buffer", "Replay buffer"), msg, durationSeconds: 3.5);
             };
+            // The recorded monitor is not the one it should be (fallback to the primary), or is again.
+            Host.ReplayBuffer.CaptureNotice += (_, notice) =>
+            {
+                ToastService.Show(notice.IsWarning ? Views.ToastKind.Warning : Views.ToastKind.Info,
+                    L.T("Aufnahme-Monitor", "Capture monitor"), notice.Message, durationSeconds: notice.IsWarning ? 6.0 : 3.5);
+            };
             // Sound cues. A save plays its cue when it STARTS (a long clip takes a while to write, the
             // feedback belongs to the key press); only save refusals/failures map to the error cue.
             Host.ReplayBuffer.SaveStarted += (_, _) => Host.Sounds.Play(SoundCue.ClipSaved);

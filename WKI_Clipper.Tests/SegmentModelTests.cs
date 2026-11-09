@@ -99,16 +99,18 @@ public sealed class SegmentIdentityTests
         => Assert.Equal("anything", new SegmentIdentity("s", "anything").SettingsKey);
 
     [Fact]
-    public void Source_keys_match_the_strings_the_buffer_always_used()
+    public void Source_keys_name_the_window_or_the_monitor_identity_and_the_size()
     {
-        Assert.Equal("wgc:65872:2560x1440", SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, 0));
-        Assert.Equal("mon:1:3440x1440", SegmentIdentity.SourceKey(false, IntPtr.Zero, 3440, 1440, 1));
+        const string lg = @"\\?\display#gsm780b#7&2e952966&2&uid256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        Assert.Equal("wgc:65872:2560x1440", SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, lg));
+        Assert.Equal($"mon:{lg}:3440x1440", SegmentIdentity.SourceKey(false, IntPtr.Zero, 3440, 1440, lg));
+        Assert.Equal(@"mon:gdi:\\.\DISPLAY2:1920x1080", SegmentIdentity.SourceKey(false, IntPtr.Zero, 1920, 1080, @"gdi:\\.\DISPLAY2"));
     }
 
     [Fact]
     public void A_window_source_knows_its_handle()
     {
-        var id = new SegmentIdentity(SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, 0), "x");
+        var id = new SegmentIdentity(SegmentIdentity.SourceKey(true, new IntPtr(65872), 2560, 1440, "gdi:x"), "x");
         Assert.True(id.IsWgc);
         Assert.Equal(new IntPtr(65872), id.WgcHwnd);
     }

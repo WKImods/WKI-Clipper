@@ -14,9 +14,14 @@ namespace WKI_Clipper.Services;
 /// </summary>
 public sealed record SegmentIdentity(string Source, string Stream)
 {
-    /// <summary>The same strings the buffer always used as identity (so nothing changes for existing logic).</summary>
-    public static string SourceKey(bool wgc, IntPtr hwnd, int width, int height, int monitorIndex)
-        => wgc ? $"wgc:{hwnd}:{width}x{height}" : $"mon:{monitorIndex}:{width}x{height}";
+    /// <summary>
+    /// A window: <c>wgc:{hwnd}:{W}x{H}</c>. A monitor: <c>mon:{displayKey}:{W}x{H}</c> with the monitor's identity
+    /// (<see cref="CaptureSource.DisplayKey"/>), deliberately without the DXGI output index - a new primary renumbers the
+    /// outputs without changing what is captured, while another monitor at the same output and size is other footage.
+    /// The keys live only in memory (a cold start forgets them), so the index-based keys of 0.19 never meet these.
+    /// </summary>
+    public static string SourceKey(bool wgc, IntPtr hwnd, int width, int height, string displayKey)
+        => wgc ? $"wgc:{hwnd}:{width}x{height}" : $"mon:{displayKey}:{width}x{height}";
 
     /// <param name="capturePath">"wgc", "amf" or "dda": the capture paths produce different encoder input.</param>
     /// <param name="audioTracks">0 when audio init failed - that generation is video-only and cannot join the others.</param>

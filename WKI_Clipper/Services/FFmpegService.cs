@@ -22,6 +22,7 @@ public sealed class FFmpegService : IDisposable
 
     private Process? _process;
     private CancellationTokenSource? _readerCts;
+    private Task? _stdErrPump;
     /// <summary>Set by StopAsync so the Exited handler can distinguish
     /// "user/owner asked us to stop" from "ffmpeg died unexpectedly".</summary>
     public bool StopRequested { get; private set; }
@@ -191,7 +192,18 @@ public sealed class FFmpegService : IDisposable
             throw new InvalidOperationException("Failed to start ffmpeg.");
 
         _readerCts = new CancellationTokenSource();
-        _ = Task.Run(() => PumpStdErr(_process, _readerCts.Token));
+        _stdErrPump = Task.Run(() => PumpStdErr(_process, _readerCts.Token));
+    }
+
+    /// <summary>
+    /// Waits until every stderr line of the ended process has been raised: <see cref="Exited"/> can come while the pipe
+    /// still holds the last lines - the ones that say why it ended. False when <paramref name="timeout"/> ran out first.
+    /// </summary>
+    public bool WaitForStdErrEnd(TimeSpan timeout)
+    {
+        var pump = _stdErrPump;
+        try { return pump is null || pump.Wait(timeout); }
+        catch { return true; }
     }
 
     private async Task PumpStdErr(Process p, CancellationToken ct)

@@ -48,6 +48,21 @@ public static class CaptureSourceRules
         => SameMonitor(a, b) && a.AdapterLuid == b.AdapterLuid && a.OutputIndex == b.OutputIndex
            && a.Width == b.Width && a.Height == b.Height;
 
+    /// <summary>
+    /// The log line of a capture start (decision 8): <c>Capture.Monitor: saved={path|gdi|null} -> {Status} ({Reason})
+    /// display='{label}' gdi={gdi} adapter={luid} default={idx} output={o} {W}x{H}@({X},{Y}) primary={b} path={path}</c>.
+    /// </summary>
+    /// <param name="saved">The saved monitor identity that applies (Monitor mode); null when none does.</param>
+    /// <param name="capturePath">"dda", "amf" or "wgc".</param>
+    internal static string LogLine(MonitorRef? saved, CaptureSource s, DisplayTopology t, string capturePath)
+    {
+        var d = s.Resolution.Display;
+        string at = d is null ? "" : $"@({d.X},{d.Y})";
+        return $"Capture.Monitor: saved={saved?.DevicePath ?? saved?.GdiName ?? "null"} -> {s.Resolution.Status} ({s.Resolution.Reason}) " +
+               $"display='{s.Label}' gdi={s.GdiName} adapter={DisplayTopology.LuidText(s.AdapterLuid)} default={t.DefaultAdapterIndex} " +
+               $"output={s.OutputIndex} {s.Width}x{s.Height}{at} primary={d?.IsPrimary} path={capturePath}";
+    }
+
     /// <summary>Lower-case device path, else <c>gdi:</c> + upper-case GDI name.</summary>
     internal static string DisplayKeyOf(DisplayInfo d)
         => string.IsNullOrEmpty(d.DevicePath) ? "gdi:" + d.GdiName.ToUpperInvariant() : d.DevicePath.ToLowerInvariant();

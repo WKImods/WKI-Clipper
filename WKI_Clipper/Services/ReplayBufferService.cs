@@ -59,6 +59,17 @@ public sealed class ReplayBufferService : IDisposable
     // are still usable.
     private readonly ConcurrentDictionary<int, GenerationInfo> _generations = new();
     private volatile SegmentIdentity? _currentIdentity;
+    // The source the last StartCore started. Kept by StopCoreAsync (which empties CurrentPlan): a warm restart stops first
+    // and decides about the session reset only afterwards.
+    private CaptureSource? _lastStartedSource;
+    // One notice per fallback transition (decision 4), across all runs; used under _lifecycleLock.
+    private readonly CaptureNoticeTracker _notices = new();
+    // Automatic restarts after display-caused ffmpeg exits (R2, R8), across all runs.
+    private readonly AutoRestartLedger _autoRestarts = new();
+    // The buffer was started and not stopped since (Toggle off, a pause for a manual recording, the settings switch and a
+    // full drive all stop it). Guarded by _lifecycleLock. An automatic restart only brings back a buffer that is still wanted.
+    private bool _wantedOn;
+    private volatile bool _autoRestartPending;
     // Pauses of the buffer for manual recordings: they explain a hole in a stitched clip.
     private readonly object _suspendLock = new();
     private readonly List<SuspendInterval> _suspensions = new();
@@ -137,6 +148,34 @@ public sealed class ReplayBufferService : IDisposable
     public string? StorageLine => StorageKind is { } kind ? BufferStoragePlanner.StatusLine(kind, StorageBytes) : null;
     /// <summary>The capture plan the running buffer resolved (for honest UI). Null when stopped.</summary>
     public CaptureTargetResolver.CapturePlan? CurrentPlan { get; private set; }
+
+    /// <summary>The source the last start recorded; unlike <see cref="CurrentPlan"/> it is kept while the buffer is stopped.</summary>
+    internal CaptureSource? LastStartedSource => _lastStartedSource;
+
+    /// <summary>The display topology plans are resolved on; null = <see cref="DisplayTopologyCache.Shared"/> (tests set their own).</summary>
+    internal DisplayTopologyCache? Topology { get; set; }
+
+    /// <summary>
+    /// When the display configuration last changed (the display watcher sets it); null or a null answer = no change known.
+    /// An ffmpeg exit within <see cref="DisplayRestartPolicy.DisplayChangeWindow"/> of it counts as caused by the display.
+    /// </summary>
+    public Func<DateTime?>? LastDisplayChangeUtc { get; set; }
+
+    /// <summary>How long an automatic restart waits for the display to settle (tests shorten it).</summary>
+    internal TimeSpan AutoRestartDelay { get; set; } = DisplayRestartPolicy.RestartDelay;
+
+    /// <summary>
+    /// An automatic restart after a display-caused ffmpeg exit is on its way: no ffmpeg runs for a moment, but the buffer is
+    /// still on - a toggle turns it off, a manual recording pauses it.
+    /// </summary>
+    public bool AutoRestartPending => _autoRestartPending;
+
+    /// <summary>
+    /// The monitor that should be recorded cannot be and the primary is recorded instead (a warning, raised once per
+    /// transition and again when the reason changes), or it is recorded again (an info, once). Raised under the lifecycle
+    /// lock from whatever thread starts the buffer.
+    /// </summary>
+    public event EventHandler<CaptureNoticeInfo>? CaptureNotice;
     public event EventHandler<ReplaySavedInfo>? ReplaySaved;
     public event EventHandler<string>? GifSaved;             // final gif path
     public event EventHandler<string>? BufferError;
@@ -305,6 +344,7 @@ public sealed class ReplayBufferService : IDisposable
             if (IsRunning) return;
             if (Suspended) return;
             if (!_settings.Current.ReplayBuffer.Enabled) return;
+            _wantedOn = true;
             StartCore(clearHistory);
         }
         finally { _lifecycleLock.Release(); }
@@ -393,8 +433,19 @@ public sealed class ReplayBufferService : IDisposable
         // Same resolver as manual recording + the status UI, so F9 clips exactly
         // what the UI advertises. Resolved once per generation → pinned; alt-tab
         // does not restart the buffer, so the clip stays on the game's monitor.
-        var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
-        var prevPlan = CurrentPlan;
+        CaptureTargetResolver.CapturePlan plan;
+        try
+        {
+            plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current, Topology);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // No monitor the capture can reach: nothing to record - say why instead of staying off without a word.
+            Logger.Warn($"ReplayBuffer: not starting - {ex.Message}{Environment.NewLine}{TopologyNow().Dump()}");
+            BufferError?.Invoke(this, ex.Message);
+            return;
+        }
+        var topology = TopologyNow();
 
         if (clearHistory)
         {
@@ -404,10 +455,11 @@ public sealed class ReplayBufferService : IDisposable
         {
             _generation++;
             // If the target MONITOR changed (e.g. the game launched on another
-            // monitor), the previous segments are a different display/resolution.
+            // monitor, the chosen one is gone), the previous segments are other footage.
             // Start a fresh save-window so they can never be spliced into a clip
             // (which would give wrong footage or break the stream-copy concat).
-            if (folderMoved || (prevPlan is { } pp && !CaptureSourceRules.SameMonitor(pp.Source, plan.Source)))
+            // Compared with the last STARTED source: the stop of this warm restart already emptied CurrentPlan.
+            if (SessionRules.ShouldResetSession(_lastStartedSource, plan.Source, folderMoved))
                 _sessionStartUtc = DateTime.UtcNow;
         }
 
@@ -425,6 +477,8 @@ public sealed class ReplayBufferService : IDisposable
         else if (!DecideDiskPlan(plan)) return;
 
         CurrentPlan = plan;
+        _lastStartedSource = plan.Source;
+        AnnounceNotice(plan, topology);
 
         _segmentPattern = SegmentPatternFor(_bufferDir, _generation);
         var ring = CurrentRingPlan();
@@ -499,9 +553,13 @@ public sealed class ReplayBufferService : IDisposable
         string capturePath = videoArgs != null
             ? "wgc"
             : FFmpegCommandBuilder.UsesAmfNativeCapture(settings, rawInput: false, plan.Source.AmfIndex) ? "amf" : "dda";
+        Logger.Info(CaptureSourceRules.LogLine(
+            settings.Capture.Mode == CaptureMode.Monitor ? MonitorRef.FromProfile(settings.Capture) : null,
+            plan.Source, topology, capturePath));
+        // A monitor is keyed by its identity, not its DXGI output: a new primary renumbers the outputs, the footage stays the same.
         string source = _wgc != null && videoArgs != null
-            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.Source.OutputIndex)
-            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.Source.Width, plan.Source.Height, plan.Source.OutputIndex);
+            ? SegmentIdentity.SourceKey(true, plan.Hwnd, _wgc.Width, _wgc.Height, plan.Source.DisplayKey)
+            : SegmentIdentity.SourceKey(false, IntPtr.Zero, plan.Source.Width, plan.Source.Height, plan.Source.DisplayKey);
         string stream = SegmentIdentity.StreamKey(settings.Video.Codec, settings.Video.Framerate,
             settings.Video.Resolution, audioArgs?.Count ?? 0, capturePath, keyframes);
         var identity = new SegmentIdentity(source, stream);
@@ -542,9 +600,13 @@ public sealed class ReplayBufferService : IDisposable
             _wgc = null;
             return;
         }
+        // Why a run ended is in its last lines: an unexpected exit searches them for ddagrab's mode-change errors.
+        var stderrTail = new StderrTail(DisplayRestartPolicy.StderrLines);
         _ffmpeg.StdErrLine += (_, line) =>
         {
-            if (!string.IsNullOrWhiteSpace(line)) Logger.Info("[buffer-ffmpeg] " + line);
+            if (string.IsNullOrWhiteSpace(line)) return;
+            Logger.Info("[buffer-ffmpeg] " + line);
+            stderrTail.Add(line);
         };
         // Capture LOCAL references so this handler only reacts to ITS OWN
         // ffmpeg/audio/wgc instances (an old ffmpeg dying after a restart must
@@ -574,23 +636,19 @@ public sealed class ReplayBufferService : IDisposable
                 _wgc = null;
             }
 
-            // Any exit we did NOT request is unexpected — report it, regardless
-            // of the exit code (0/255 self-exit means the pipeline died). Only a
+            // Any exit we did NOT request is unexpected, regardless of the exit
+            // code (0/255 self-exit means the pipeline died): a display mode change
+            // restarts the buffer by itself, everything else is reported. Only a
             // StopRequested exit (our own graceful/forced stop) is silent.
             if (!ownFfmpeg.StopRequested)
             {
-                MarkGenerationStopped(ownGeneration);
                 // Genuine crash: drop the dead instance so IsRunning is accurate
                 // and the process handle isn't held until GC. (Re-check we're
                 // still the current instance to avoid nulling a fresh restart.)
                 if (_ffmpeg == ownFfmpeg) _ffmpeg = null;
-                // A full drive is the one crash with an obvious cause the user can fix.
-                if (DiskProbe.TryGetFreeSpace(_bufferDir, out long freeNow, out string driveNow)
-                    && freeNow < DiskPlan.CriticalBytes)
-                    BufferError?.Invoke(this, FullDiskMessage(driveNow));
-                else
-                    BufferError?.Invoke(this, L.T($"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.",
-                                                  $"Buffer stopped unexpectedly (ffmpeg code {code}) — check the log."));
+                // The pipe may still hold the last lines when the process is already gone.
+                ownFfmpeg.WaitForStdErrEnd(TimeSpan.FromMilliseconds(500));
+                OnUnexpectedExit(code, stderrTail.Text, ownGeneration);
             }
         };
 
@@ -636,6 +694,56 @@ public sealed class ReplayBufferService : IDisposable
     {
         if (_generations.TryGetValue(generation, out var info) && info.StoppedUtc is null)
             _generations.TryUpdate(generation, info with { StoppedUtc = DateTime.UtcNow }, info);
+    }
+
+    private DisplayTopology TopologyNow() => (Topology ?? DisplayTopologyCache.Shared).Get();
+
+    /// <summary>
+    /// Announces a fallback that starts, changes or ends with <paramref name="plan"/> (decision 4): log with the topology,
+    /// then <see cref="CaptureNotice"/>. Assumes _lifecycleLock is held.
+    /// </summary>
+    private void AnnounceNotice(CaptureTargetResolver.CapturePlan plan, DisplayTopology topology)
+    {
+        if (_notices.Next(plan) is not { } notice) return;
+        Logger.Warn($"Capture monitor: {notice.Message}{Environment.NewLine}{topology.Dump()}");
+        try { CaptureNotice?.Invoke(this, notice); }
+        catch (Exception ex) { Logger.Warn("CaptureNotice handler threw: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// The buffer's ffmpeg of <paramref name="generation"/> ended without being asked to. A full drive is reported as such.
+    /// An exit the display explains (R2: a mode-change error in <paramref name="recentStderr"/>, or a display change just
+    /// before) brings the buffer back by itself: one warm restart once the display settled, at most
+    /// <see cref="DisplayRestartPolicy.MaxRestarts"/> per <see cref="DisplayRestartPolicy.RestartWindow"/> (R8). Anything
+    /// else - and an exit beyond that bound - gets the "stopped unexpectedly" toast as before.
+    /// </summary>
+    internal UnexpectedExitAction OnUnexpectedExit(int code, string? recentStderr, int generation)
+    {
+        MarkGenerationStopped(generation);
+        // A full drive is the one crash with an obvious cause the user can fix.
+        if (DiskProbe.TryGetFreeSpace(_bufferDir, out long freeNow, out string driveNow)
+            && freeNow < DiskPlan.CriticalBytes)
+        {
+            BufferError?.Invoke(this, FullDiskMessage(driveNow));
+            return UnexpectedExitAction.FullDisk;
+        }
+
+        var now = DateTime.UtcNow;
+        var lastChange = LastDisplayChangeUtc?.Invoke();
+        if (_autoRestarts.TryTake(recentStderr, lastChange, now, out int attempt))
+        {
+            Logger.Info($"ReplayBuffer: auto-restart after display change ({attempt}/{DisplayRestartPolicy.MaxRestarts})");
+            _autoRestartPending = true;
+            RequestWork(fullRestart: false, autoRestart: true);
+            return UnexpectedExitAction.AutoRestart;
+        }
+
+        if (DisplayRestartPolicy.IsDisplayCaused(recentStderr, lastChange, now))
+            Logger.Warn($"ReplayBuffer: ffmpeg ended after a display change, but {DisplayRestartPolicy.MaxRestarts} automatic restarts " +
+                        $"within {DisplayRestartPolicy.RestartWindow.TotalSeconds:0} s already - not restarting again");
+        BufferError?.Invoke(this, L.T($"Buffer unerwartet beendet (ffmpeg code {code}) — schau ins Log.",
+                                      $"Buffer stopped unexpectedly (ffmpeg code {code}) — check the log."));
+        return UnexpectedExitAction.Report;
     }
 
     // ---- buffer folder change ----
@@ -778,7 +886,7 @@ public sealed class ReplayBufferService : IDisposable
         CaptureSource? source = CurrentPlan?.Source;
         if (source is null)
         {
-            try { source = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current).Source; }
+            try { source = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current, Topology).Source; }
             catch (InvalidOperationException) { }   // no monitor to capture: the estimate uses the WQHD base
         }
         return BuildForecast(dir, DurationText.Clamp(durationSeconds), Math.Max(1, rb.SegmentDurationSeconds), source, null);
@@ -1036,6 +1144,9 @@ public sealed class ReplayBufferService : IDisposable
         await _lifecycleLock.WaitAsync().ConfigureAwait(false);
         try
         {
+            // Off, or paused for a manual recording: a scheduled automatic restart must not bring it back.
+            _wantedOn = false;
+            _autoRestartPending = false;
             await StopCoreAsync().ConfigureAwait(false);
             // Off for real (not a pause for a manual recording): the RAM goes back now, the next start is a cold one anyway.
             if (!Suspended)
@@ -1066,13 +1177,15 @@ public sealed class ReplayBufferService : IDisposable
         _videoPipe = null;
         _wgc?.Dispose();
         _wgc = null;
+        // _lastStartedSource stays: the StartCore of a warm restart compares with it.
         CurrentPlan = null;
         BufferStateChanged?.Invoke(this, false);
     }
 
     public async Task ToggleAsync()
     {
-        if (IsRunning)
+        // Coming back from a mode switch counts as on: a cold start now would throw the history away.
+        if (IsRunning || AutoRestartPending)
         {
             await StopAsync().ConfigureAwait(false);
         }
@@ -1105,12 +1218,18 @@ public sealed class ReplayBufferService : IDisposable
     public void RequestRetarget() => RequestWork(fullRestart: false);
 
     private bool _pendingFullRestart;
+    // A display-caused exit asked to bring the buffer back (nothing runs, so a plain restart would do nothing).
+    private bool _pendingAutoRestart;
 
-    private void RequestWork(bool fullRestart)
+    private void RequestWork(bool fullRestart, bool autoRestart = false)
     {
         lock (_debounceLock)
         {
             if (fullRestart) _pendingFullRestart = true;
+            if (autoRestart) _pendingAutoRestart = true;
+            // After a mode switch the display needs a moment to settle (R8): whatever is coalesced with the automatic
+            // restart waits as long as it does.
+            var delay = _pendingAutoRestart ? AutoRestartDelay : TimeSpan.FromMilliseconds(300);
             _restartDebounceCts?.Cancel();
             _restartDebounceCts?.Dispose();
             var cts = new CancellationTokenSource();
@@ -1118,22 +1237,58 @@ public sealed class ReplayBufferService : IDisposable
             var token = cts.Token;
             _ = Task.Run(async () =>
             {
-                try { await Task.Delay(300, token).ConfigureAwait(false); }
+                try { await Task.Delay(delay, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
                 if (token.IsCancellationRequested) return;
-                bool full;
+                bool full, auto;
                 lock (_debounceLock)
                 {
                     full = _pendingFullRestart;
+                    auto = _pendingAutoRestart;
                     _pendingFullRestart = false;
+                    _pendingAutoRestart = false;
                 }
                 try
                 {
-                    if (full) await RestartIfRunningAsync().ConfigureAwait(false);
+                    if (auto) await AutoRestartAsync(settingsChanged: full).ConfigureAwait(false);
+                    else if (full) await RestartIfRunningAsync().ConfigureAwait(false);
                     else await RetargetAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex) { Logger.Error("Debounced buffer restart/retarget failed", ex); }
             });
+        }
+    }
+
+    /// <summary>
+    /// The automatic restart after a display-caused exit: starts the buffer again WARM (a new generation, the history
+    /// kept), re-resolving the monitor at its new mode - unless it was switched off or paused for a recording meanwhile.
+    /// </summary>
+    /// <param name="settingsChanged">A settings restart was coalesced into this one.</param>
+    private async Task AutoRestartAsync(bool settingsChanged)
+    {
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (IsRunning)
+            {
+                // Something started it meanwhile; only a coalesced settings change still needs the restart.
+                if (!settingsChanged) return;
+                Logger.Info("ReplayBuffer: restart triggered by settings change");
+                await StopCoreAsync().ConfigureAwait(false);
+                StartCore(clearHistory: false);
+                return;
+            }
+            if (!_wantedOn || Suspended || !_settings.Current.ReplayBuffer.Enabled)
+            {
+                Logger.Info("ReplayBuffer: automatic restart dropped - the buffer was switched off or paused meanwhile");
+                return;
+            }
+            StartCore(clearHistory: false);
+        }
+        finally
+        {
+            _autoRestartPending = false;
+            _lifecycleLock.Release();
         }
     }
 
@@ -1149,18 +1304,26 @@ public sealed class ReplayBufferService : IDisposable
         try
         {
             if (!IsRunning) return;
-            var plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current);
+            CaptureTargetResolver.CapturePlan plan;
+            try
+            {
+                plan = CaptureTargetResolver.Resolve(_settings.Current.Capture, _settings.Current, Topology);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // No monitor to move to: the running capture goes on as it is (if it dies, its exit is handled).
+                Logger.Warn("ReplayBuffer: retarget skipped - " + ex.Message);
+                return;
+            }
             // "Video unchanged" = same source (monitor, DXGI output, size) AND, for WGC
             // window capture, the same window — a different hwnd needs a new video pipeline.
-            bool videoUnchanged = CurrentPlan is { } prev
-                && CaptureSourceRules.SameSource(prev.Source, plan.Source)
-                && prev.UseWgc == plan.UseWgc
-                && (!plan.UseWgc || prev.Hwnd == plan.Hwnd);
+            bool videoUnchanged = CurrentPlan is { } prev && SessionRules.KeepsVideo(prev, plan);
             if (videoUnchanged && _audio != null)
             {
                 if (_audio.SwapSystemSource(plan.SysMode, plan.AudioPid))
                 {
                     CurrentPlan = plan;
+                    AnnounceNotice(plan, TopologyNow());
                     Logger.Info($"ReplayBuffer: retargeted audio in place → video='{plan.VideoLabel}', audio='{plan.AudioLabel}' (kein Video-Neustart, Historie intakt)");
                     return;
                 }
@@ -1181,6 +1344,7 @@ public sealed class ReplayBufferService : IDisposable
             _restartDebounceCts?.Cancel();
             _restartDebounceCts?.Dispose();
             _restartDebounceCts = null;
+            _pendingAutoRestart = false;
         }
     }
 
@@ -2033,6 +2197,8 @@ public sealed class ReplayBufferService : IDisposable
 
     private void StartWatchdog()
     {
+        // A run that died on its own (no StopCore since) left its watchdog running - an automatic restart must not stack them.
+        _watchdogCts?.Cancel();
         _watchdogCts = new CancellationTokenSource();
         var token = _watchdogCts.Token;
         StartMaintenance(token);

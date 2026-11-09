@@ -420,7 +420,8 @@ public sealed class AppHost : IDisposable
     {
         ManualRecording.SuspendCompetingCapture = async () =>
         {
-            _bufferPausedForRecording = ReplayBuffer.IsRunning;
+            // A buffer coming back from a display mode switch is on, too: its pending restart must not start next to the recording.
+            _bufferPausedForRecording = ReplayBuffer.IsRunning || ReplayBuffer.AutoRestartPending;
             if (!_bufferPausedForRecording) return;
             Logger.Info("Pausing the replay buffer for a manual recording.");
             await ReplayBuffer.SuspendAsync().ConfigureAwait(false);
