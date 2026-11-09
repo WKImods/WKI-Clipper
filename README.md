@@ -334,6 +334,12 @@ used is remembered.
 
 <img src="docs/screenshots/gaming-utilities-crosshair.png" height="420" alt="Gaming Utilities widget on the Crosshair tab: the Crosshair and AutoClicker tabs at the top, Applies to, the crosshair library and the image adjustments">
 
+**New in 0.19.2:** after a game switches the resolution the buffer is back within about two
+seconds, also while it records sound; a monitor in standby, the lock screen or a UAC prompt no
+longer bring restart notices: the buffer waits and records again as soon as the monitor and the
+desktop are back. Stopping a long Ctrl+F9 recording waits until the file is completely written,
+however slow the drive, instead of cutting it off after ten seconds.
+
 **New in 0.19.1:** *Whole monitor* records the monitor you chose, also with several monitors,
 lists monitors by their real names and keeps the buffer running through resolution changes of
 exclusive-fullscreen games (see [Capture](#capture)).
