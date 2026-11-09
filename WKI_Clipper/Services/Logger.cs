@@ -12,20 +12,31 @@ public static class Logger
     private static readonly object _lock = new();
     private static string? _path;
 
+    /// <summary>Where the app logs unless redirected: %LOCALAPPDATA%\WKI_Clipper\wki_clipper.log. Computing it creates nothing.</summary>
+    internal static string DefaultPath => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKI_Clipper", "wki_clipper.log");
+
     public static string Path
     {
         get
         {
-            if (_path is null)
+            lock (_lock)
             {
-                var dir = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "WKI_Clipper");
-                Directory.CreateDirectory(dir);
-                _path = System.IO.Path.Combine(dir, "wki_clipper.log");
+                if (_path is null)
+                {
+                    var path = DefaultPath;
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+                    _path = path;
+                }
+                return _path;
             }
-            return _path;
         }
+    }
+
+    /// <summary>Test seam: log somewhere else (null = back to the default).</summary>
+    internal static void SetPath(string? path)
+    {
+        lock (_lock) _path = path;
     }
 
     public static void Info(string msg)  => Write("INFO", msg);
@@ -49,9 +60,13 @@ public static class Logger
     {
         try
         {
-            if (File.Exists(Path) && new FileInfo(Path).Length > 1_000_000)
+            lock (_lock)
             {
-                File.Move(Path, Path + ".old", overwrite: true);
+                var path = Path;
+                if (File.Exists(path) && new FileInfo(path).Length > 1_000_000)
+                {
+                    File.Move(path, path + ".old", overwrite: true);
+                }
             }
         }
         catch { }
