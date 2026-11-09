@@ -250,6 +250,33 @@ public sealed class FFmpegService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Ends ffmpeg like <see cref="StopAsync"/> ("q", Kill after <paramref name="timeout"/>), but not as a stop asked for:
+    /// <see cref="StopRequested"/> stays false and the stderr pump keeps running, so the owner handles the exit like one
+    /// ffmpeg chose - with its last lines. For a run whose video input died while ffmpeg keeps going on its audio input.
+    /// </summary>
+    public async Task QuitAsync(TimeSpan timeout)
+    {
+        var p = _process;
+        if (p is null) return;
+        try
+        {
+            if (p.HasExited) return;
+            await p.StandardInput.WriteAsync("q\n");
+            await p.StandardInput.FlushAsync();
+        }
+        catch { /* stdin may already be closed */ }
+
+        try
+        {
+            if (!await Task.Run(() => p.WaitForExit((int)timeout.TotalMilliseconds)))
+            {
+                try { p.Kill(entireProcessTree: false); } catch { }
+            }
+        }
+        catch { /* the process was disposed meanwhile */ }
+    }
+
     private static int SafeExitCode(Process? p)
     {
         try { return p?.ExitCode ?? -1; } catch { return -1; }

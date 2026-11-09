@@ -50,6 +50,19 @@ public static class DisplayRestartPolicy
         => !string.IsNullOrEmpty(stderr)
            && ModeChangeMarkers.Any(m => stderr.Contains(m, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>How long a run whose video input died gets to end on "q" before it is killed.</summary>
+    public static readonly TimeSpan QuitTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// ffmpeg's line for the video input (always input 0) failing while ffmpeg runs - ddagrab on a mode switch mid-run:
+    /// "[in#0/lavfi @ ...] Error during demuxing: ...". ffmpeg does NOT exit on it while the audio input still delivers;
+    /// it records audio without picture until someone ends it. A failure while opening ("Error opening input") exits by itself.
+    /// </summary>
+    public static bool IsVideoInputLost(string? line)
+        => !string.IsNullOrEmpty(line)
+           && line.Contains("[in#0", StringComparison.Ordinal)
+           && line.Contains("Error during demuxing", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// How much longer a restart waits so that it comes <paramref name="restartDelay"/> after the LAST display event (R8): a
     /// flip during the wait pushes it back, so a burst of flips costs one restart, not one per flip. Null when the display

@@ -91,6 +91,9 @@ public sealed class ReplayBufferService : IDisposable
     private volatile SaveProgressInfo? _currentSave;
     // When the current generation's ffmpeg started — the stall check needs a grace period.
     private DateTime _genStartedUtc = DateTime.MaxValue;
+    // Watchdog only: starts in a row that never delivered a picture, and whether the sleeping monitor was announced.
+    private int _noPictureStreak;
+    private bool _sleepAnnounced;
     // The ring the RUNNING ffmpeg was started with. Settings change instantly but segment_wrap is
     // fixed until the debounced restart, so picks and prune must be sized from this, not from
     // the settings alone. A reference (RingPlan is a class) so another thread never sees a torn plan.
@@ -650,18 +653,28 @@ public sealed class ReplayBufferService : IDisposable
             _wgc = null;
             return;
         }
+        // Capture LOCAL references so this handler only reacts to ITS OWN
+        // ffmpeg/audio/wgc instances (an old ffmpeg dying after a restart must
+        // not dispose the brand-new pipeline or fire a false error).
+        var ownFfmpeg = _ffmpeg;
         // Why a run ended is in its last lines: an unexpected exit searches them for ddagrab's mode-change errors.
         var stderrTail = new StderrTail(DisplayRestartPolicy.StderrLines);
+        int videoLost = 0;
         _ffmpeg.StdErrLine += (_, line) =>
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             Logger.Info("[buffer-ffmpeg] " + line);
             stderrTail.Add(line);
+            // ddagrab died mid-run (mode switch, monitor woke up): ffmpeg keeps going on the audio input and the ring stops
+            // turning until the stall watchdog notices 30-50 s later. Ending the run now hands its exit - with the error in
+            // stderr - to the display auto-restart (R2).
+            if (DisplayRestartPolicy.IsVideoInputLost(line) && Interlocked.Exchange(ref videoLost, 1) == 0
+                && !ownFfmpeg.StopRequested)
+            {
+                Logger.Warn("ReplayBuffer: the video input ended while ffmpeg keeps running - ending the run so it restarts");
+                _ = ownFfmpeg.QuitAsync(DisplayRestartPolicy.QuitTimeout);
+            }
         };
-        // Capture LOCAL references so this handler only reacts to ITS OWN
-        // ffmpeg/audio/wgc instances (an old ffmpeg dying after a restart must
-        // not dispose the brand-new pipeline or fire a false error).
-        var ownFfmpeg = _ffmpeg;
         var ownAudio = _audio;
         var ownWgc = _wgc;
         var ownVideoPipe = _videoPipe;
@@ -1849,24 +1862,24 @@ public sealed class ReplayBufferService : IDisposable
     /// the newest COMPLETED segment: the open one keeps its timestamp fresh while it grows,
     /// so it would report health right up to a 46 MB segment nobody can use.
     /// </summary>
-    private bool IsStalled(out TimeSpan age)
+    private bool IsStalled(out TimeSpan age, out bool deliveredAny)
     {
         age = TimeSpan.Zero;
+        deliveredAny = false;
         if (!IsRunning || string.IsNullOrEmpty(_bufferDir)) return false;
         try
         {
-            int segSec = Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
-            var stale = BufferHealth.StaleAfter(segSec);
-
             // A fresh generation needs time to complete its first segment.
             var sinceStart = DateTime.UtcNow - _genStartedUtc;
-            if (sinceStart < stale + TimeSpan.FromSeconds(segSec)) return false;
+            if (sinceStart < StallGrace()) return false;
+            var stale = BufferHealth.StaleAfter(SegmentSeconds());
 
             var identity = _currentIdentity;   // read once: not once per file
             if (_epoch?.Memory is { } mem)
             {
                 // The RAM ring holds complete segments only: the newest one is the measure.
                 var newest = mem.Snapshot().LastOrDefault(s => IsIdentity(s.Generation, identity) && s.EndUtc >= _genStartedUtc);
+                deliveredAny = newest is not null;
                 age = newest is null ? sinceStart : DateTime.UtcNow - newest.EndUtc;
                 return age > stale;
             }
@@ -1879,10 +1892,58 @@ public sealed class ReplayBufferService : IDisposable
             // Fewer than two files after the grace period means nothing ever completed.
             if (times.Count < 2) { age = sinceStart; return true; }
 
+            deliveredAny = true;
             age = DateTime.UtcNow - times[^2];
             return age > stale;
         }
         catch { return false; }
+    }
+
+    private int SegmentSeconds() => Math.Max(1, _settings.Current.ReplayBuffer.SegmentDurationSeconds);
+
+    /// <summary>What a fresh generation gets to complete its first segment before the watchdog looks at it.</summary>
+    private TimeSpan StallGrace() => BufferHealth.StaleAfter(SegmentSeconds()) + TimeSpan.FromSeconds(SegmentSeconds());
+
+    /// <summary>
+    /// The watchdog's answer to a stalled ring (<see cref="StallRestartPolicy"/>): a ring that ran is restarted with its toast;
+    /// starts that never delivered a picture back off and go quiet, and a sleeping monitor gets one notice instead of a toast
+    /// per restart. Returns whether to restart now and with or without the toast.
+    /// </summary>
+    private StallAction DecideStall(bool deliveredAny, TimeSpan stalledFor)
+    {
+        if (deliveredAny)
+        {
+            _noPictureStreak = 0;
+            _sleepAnnounced = false;
+            return StallAction.Restart;
+        }
+
+        bool asleep = false;
+        try
+        {
+            if (CurrentPlan is { UseWgc: false } plan)
+                asleep = StallRestartPolicy.IsAsleep(TopologyNow(), plan.Source.GdiName);
+        }
+        catch (Exception ex) { Logger.Warn("Replay buffer: reading the display state failed: " + ex.Message); }
+
+        if (asleep && !_sleepAnnounced)
+        {
+            _sleepAnnounced = true;
+            Logger.Warn($"Replay buffer: no picture {stalledFor.TotalSeconds:0}s after the start and the monitor " +
+                        $"'{CurrentPlan?.Source.GdiName}' has no device (deep standby) - waiting for it, restarts back off and stay quiet");
+            BufferInfo?.Invoke(this, L.T(
+                "Monitor im Standby — der Buffer wartet und nimmt wieder auf, sobald der Monitor an ist.",
+                "Monitor in standby — the buffer waits and records again as soon as the monitor is on."));
+        }
+
+        var action = StallRestartPolicy.Decide(false, asleep, _noPictureStreak, DateTime.UtcNow - _genStartedUtc, StallGrace());
+        if (action == StallAction.Wait) return action;
+        _noPictureStreak++;
+        if (action == StallAction.RestartQuietly)
+            Logger.Info($"Replay buffer: still no picture {stalledFor.TotalSeconds:0}s after the start (start {_noPictureStreak} in a row" +
+                        $"{(asleep ? ", monitor asleep" : "")}) - restarting quietly, the next one waits " +
+                        $"{StallRestartPolicy.NoPictureBackoff(_noPictureStreak).TotalSeconds:0}s longer");
+        return action;
     }
 
     /// <summary>
@@ -2344,7 +2405,7 @@ public sealed class ReplayBufferService : IDisposable
                     // A wedged ffmpeg does not exit, so nothing else here would ever notice:
                     // the process lives, the open segment keeps growing, and every F9 then
                     // returns the same stale footage. Restarting is the only way back.
-                    if (IsStalled(out var stalledFor))
+                    if (IsStalled(out var stalledFor, out bool delivered))
                     {
                         // A full drive stalls ffmpeg too - restarting it in a loop would only make that worse.
                         if (DiskProbe.TryGetFreeSpace(_bufferDir, out long freeStalled, out string driveStalled)
@@ -2353,12 +2414,25 @@ public sealed class ReplayBufferService : IDisposable
                             await StopForFullDiskAsync(driveStalled).ConfigureAwait(false);
                             return;
                         }
-                        Logger.Warn($"Replay buffer stalled: no completed segment for {stalledFor.TotalSeconds:0}s — restarting.");
-                        BufferError?.Invoke(this, L.T(
-                            $"Buffer lieferte {stalledFor.TotalSeconds:0}s lang keine neuen Daten — wurde neu gestartet.",
-                            $"Buffer produced no new data for {stalledFor.TotalSeconds:0}s — restarted."));
-                        await RestartIfRunningAsync().ConfigureAwait(false);
-                        return;   // the restart starts a fresh watchdog
+                        var action = DecideStall(delivered, stalledFor);
+                        if (action != StallAction.Wait)
+                        {
+                            if (action == StallAction.Restart)
+                            {
+                                Logger.Warn($"Replay buffer stalled: no completed segment for {stalledFor.TotalSeconds:0}s — restarting.");
+                                BufferError?.Invoke(this, L.T(
+                                    $"Buffer lieferte {stalledFor.TotalSeconds:0}s lang keine neuen Daten — wurde neu gestartet.",
+                                    $"Buffer produced no new data for {stalledFor.TotalSeconds:0}s — restarted."));
+                            }
+                            await RestartIfRunningAsync().ConfigureAwait(false);
+                            return;   // the restart starts a fresh watchdog
+                        }
+                    }
+                    else if (delivered)
+                    {
+                        // Pictures again: the next start that delivers nothing is a new episode.
+                        _noPictureStreak = 0;
+                        _sleepAnnounced = false;
                     }
 
                     PruneOldSegments();

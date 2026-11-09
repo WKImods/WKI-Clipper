@@ -201,20 +201,29 @@ public sealed class ManualRecordingService : IDisposable
             throw new FileNotFoundException("ffmpeg.exe not found. Place it in Assets/ffmpeg/ or add to PATH.", _ffmpeg.FFmpegPath);
         }
 
+        // Capture the own instances so a stale exit (after a new recording began)
+        // can't fire events for the wrong session.
+        var ownFfmpeg = _ffmpeg;
         // Why a part ended is in its last lines: a display mode switch leaves ddagrab's errors there.
         var stderrTail = new StderrTail(DisplayRestartPolicy.StderrLines);
+        int videoLost = 0;
         _ffmpeg.StdErrLine += (_, line) =>
         {
             if (!string.IsNullOrWhiteSpace(line))
             {
                 Logger.Info("[rec-ffmpeg] " + line);
                 stderrTail.Add(line);
+                // ddagrab died mid-part: ffmpeg would go on recording sound without picture. Ending the part now lets the
+                // recording continue in the next part (R2) like after any display-caused exit.
+                if (DisplayRestartPolicy.IsVideoInputLost(line) && Interlocked.Exchange(ref videoLost, 1) == 0
+                    && !ownFfmpeg.StopRequested)
+                {
+                    Logger.Warn("ManualRecording: the video input ended while ffmpeg keeps running - ending this part");
+                    _ = ownFfmpeg.QuitAsync(DisplayRestartPolicy.QuitTimeout);
+                }
             }
             FFmpegLog?.Invoke(this, line);
         };
-        // Capture the own instances so a stale exit (after a new recording began)
-        // can't fire events for the wrong session.
-        var ownFfmpeg = _ffmpeg;
         var ownAudio = _audio;
         var ownWgc = _wgc;
         var ownVideoPipe = _videoPipe;
