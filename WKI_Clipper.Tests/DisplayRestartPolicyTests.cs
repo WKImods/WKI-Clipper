@@ -57,8 +57,9 @@ public sealed class DisplayRestartPolicyTests
         Assert.True(DisplayRestartPolicy.ShouldAutoRestart(stderr, null, Now, oneOld));
     }
 
+    /// <summary>The mode-change errors, plus the start refused while the lock screen or a UAC prompt has the input (0.19.2).</summary>
     [Fact]
     public void Markers_are_the_ddagrab_mode_change_errors()
-        => Assert.Equal(new[] { "Output parameters changed", "887a0026", "887a0022", "887a0005" },
+        => Assert.Equal(new[] { "Output parameters changed", "887a0026", "887a0022", "887a0005", "Desktop duplication access denied" },
                         DisplayRestartPolicy.ModeChangeMarkers);
 }

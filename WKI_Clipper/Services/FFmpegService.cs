@@ -269,7 +269,8 @@ public sealed class FFmpegService : IDisposable
 
         try
         {
-            if (!await Task.Run(() => p.WaitForExit((int)timeout.TotalMilliseconds)))
+            // A stop asked for meanwhile owns the deadline (StopAsync waits and kills on its own).
+            if (!await Task.Run(() => p.WaitForExit((int)timeout.TotalMilliseconds)) && !StopRequested)
             {
                 try { p.Kill(entireProcessTree: false); } catch { }
             }

@@ -14,8 +14,12 @@ namespace WKI_Clipper.Services;
 /// </summary>
 public static class DisplayRestartPolicy
 {
-    /// <summary>ddagrab's mode-change errors in stderr (matched case-insensitively): ACCESS_LOST, NOT_CURRENTLY_AVAILABLE, DEVICE_REMOVED.</summary>
-    public static readonly string[] ModeChangeMarkers = { "Output parameters changed", "887a0026", "887a0022", "887a0005" };
+    /// <summary>
+    /// ddagrab's mode-change errors in stderr (matched case-insensitively): ACCESS_LOST, NOT_CURRENTLY_AVAILABLE,
+    /// DEVICE_REMOVED - and E_ACCESSDENIED at the start while the secure desktop (lock screen, UAC) has the input.
+    /// </summary>
+    public static readonly string[] ModeChangeMarkers =
+        { "Output parameters changed", "887a0026", "887a0022", "887a0005", "Desktop duplication access denied" };
 
     /// <summary>An exit this soon after a display change counts as caused by it.</summary>
     public static readonly TimeSpan DisplayChangeWindow = TimeSpan.FromSeconds(10);
@@ -50,8 +54,33 @@ public static class DisplayRestartPolicy
         => !string.IsNullOrEmpty(stderr)
            && ModeChangeMarkers.Any(m => stderr.Contains(m, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>How long a run whose video input died gets to end on "q" before it is killed.</summary>
+    /// <summary>How long a buffer run whose video input died gets to end on "q" before it is killed (its segments are small).</summary>
     public static readonly TimeSpan QuitTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// The same for a Ctrl+F9 part of <paramref name="partBytes"/>: its "+faststart" trailer rewrites the whole file, gigabytes
+    /// after a long recording, and a kill in the middle leaves a file without its index. Sized like a clip's faststart pass.
+    /// </summary>
+    public static TimeSpan RecordingQuitTimeout(long partBytes) => QuitTimeout + ConcatWatch.FinalizeQuietPeriod(partBytes);
+
+    /// <summary>How often a restart waiting for the desktop looks again.</summary>
+    public static readonly TimeSpan DesktopPollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Waits until <paramref name="available"/> says the input desktop is back (<see cref="InputDesktop"/>): a capture started
+    /// on the lock screen or under a UAC prompt fails at once. No limit - the lock screen lasts as long as the user is away -
+    /// but <paramref name="token"/> ends it. <paramref name="onWaiting"/> is called once when it has to wait at all.
+    /// Returns whether it waited.
+    /// </summary>
+    internal static async Task<bool> WaitForInputDesktopAsync(Func<bool> available, TimeSpan poll, Action? onWaiting,
+                                                              CancellationToken token)
+    {
+        if (available()) return false;
+        onWaiting?.Invoke();
+        do await Task.Delay(poll, token).ConfigureAwait(false);
+        while (!available());
+        return true;
+    }
 
     /// <summary>
     /// ffmpeg's line for the video input (always input 0) failing while ffmpeg runs - ddagrab on a mode switch mid-run:

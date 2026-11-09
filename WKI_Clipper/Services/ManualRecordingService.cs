@@ -69,6 +69,9 @@ public sealed class ManualRecordingService : IDisposable
     /// <summary>The longest the next part waits on top of <see cref="ContinueDelay"/> for a display that keeps changing.</summary>
     internal TimeSpan ContinueMaxWait { get; set; } = DisplayRestartPolicy.MaxSettleWait;
 
+    /// <summary>Whether the input desktop is this session's (<see cref="InputDesktop"/>): the next part waits while it is not (tests replace it).</summary>
+    internal Func<bool> InputDesktopAvailable { get; set; } = InputDesktop.IsAvailable;
+
     /// <summary>Tests: replaces starting the capture of a part (gets its plan and file); the test then plays ffmpeg's end.</summary>
     internal Action<CaptureTargetResolver.CapturePlan, string>? StartPartOverride { get; set; }
 
@@ -218,8 +221,12 @@ public sealed class ManualRecordingService : IDisposable
                 if (DisplayRestartPolicy.IsVideoInputLost(line) && Interlocked.Exchange(ref videoLost, 1) == 0
                     && !ownFfmpeg.StopRequested)
                 {
-                    Logger.Warn("ManualRecording: the video input ended while ffmpeg keeps running - ending this part");
-                    _ = ownFfmpeg.QuitAsync(DisplayRestartPolicy.QuitTimeout);
+                    long bytes = 0;
+                    try { bytes = new FileInfo(path).Length; } catch { }
+                    var quitTimeout = DisplayRestartPolicy.RecordingQuitTimeout(bytes);
+                    Logger.Warn($"ManualRecording: the video input ended while ffmpeg keeps running - ending this part " +
+                                $"({bytes / (1024 * 1024)} MiB, up to {quitTimeout.TotalSeconds:0} s to finish the file)");
+                    _ = ownFfmpeg.QuitAsync(quitTimeout);
                 }
             }
             FFmpegLog?.Invoke(this, line);
@@ -342,6 +349,11 @@ public sealed class ManualRecordingService : IDisposable
             {
                 await DisplayRestartPolicy.WaitForQuietDisplayAsync(() => LastDisplayChangeUtc?.Invoke(), delay, maxWait,
                                                                    pending.Cts.Token).ConfigureAwait(false);
+                // ACCESS_LOST also means the lock screen or a UAC prompt took the desktop: the next part could not start there.
+                if (await DisplayRestartPolicy.WaitForInputDesktopAsync(InputDesktopAvailable, DisplayRestartPolicy.DesktopPollInterval,
+                        () => Logger.Info($"ManualRecording: the desktop is locked or a UAC prompt is open - part {part} waits for it"),
+                        pending.Cts.Token).ConfigureAwait(false))
+                    Logger.Info($"ManualRecording: the desktop is back - starting part {part}");
             }
             catch (OperationCanceledException) { return; }
             StartNextPart(pending);

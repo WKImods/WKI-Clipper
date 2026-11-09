@@ -179,6 +179,12 @@ public sealed class ReplayBufferService : IDisposable
     internal TimeSpan AutoRestartMaxWait { get; set; } = DisplayRestartPolicy.MaxSettleWait;
 
     /// <summary>
+    /// Whether the input desktop is this session's (<see cref="InputDesktop"/>): an automatic restart waits while the lock
+    /// screen or a UAC prompt has it - the capture would fail at once (tests replace it).
+    /// </summary>
+    internal Func<bool> InputDesktopAvailable { get; set; } = InputDesktop.IsAvailable;
+
+    /// <summary>
     /// Tests: replaces starting the run (storage, audio, ffmpeg) once its plan is resolved; the run then counts as started
     /// (<see cref="CurrentPlan"/>, the last started source) without an ffmpeg.
     /// </summary>
@@ -445,6 +451,9 @@ public sealed class ReplayBufferService : IDisposable
         _memoryCapSeconds = 0;
         _memoryLimited = false;
         _lowMemoryAnnounced = false;
+        // A start of its own is a new episode: its first start without a picture gets the toast again, a sleeping monitor its notice.
+        _noPictureStreak = 0;
+        _sleepAnnounced = false;
     }
 
     // Assumes _lifecycleLock is held.
@@ -730,8 +739,10 @@ public sealed class ReplayBufferService : IDisposable
                 // At once: ffmpeg blocks as soon as the stdout pipe is full.
                 // A reader that fails keeps draining the pipe (ffmpeg must not block) and the run is restarted - instead
                 // of ffmpeg hanging on a full stdout until the stall watchdog notices it 20-50 s later.
+                // A run ended because its picture died finished cleanly on "q": its open segment is kept like on a stop.
                 var feed = new MemoryBufferFeed(_ffmpeg.StandardOutputStream!, _memory!.OpenWriter(ownGeneration), segSec,
-                    KeyframePolicy.SegmentTimeDelta(settings.Video.Framerate, keyframes), () => ownFfmpeg.StopRequested,
+                    KeyframePolicy.SegmentTimeDelta(settings.Video.Framerate, keyframes),
+                    () => ownFfmpeg.StopRequested || Volatile.Read(ref videoLost) == 1,
                     cause =>
                     {
                         if (_ffmpeg != ownFfmpeg) return;
@@ -1347,7 +1358,15 @@ public sealed class ReplayBufferService : IDisposable
                 try
                 {
                     if (waitForDisplay)
+                    {
                         await DisplayRestartPolicy.WaitForQuietDisplayAsync(LastDisplayChangeUtc, delay, maxWait, token).ConfigureAwait(false);
+                        // ACCESS_LOST also means the lock screen, Ctrl+Alt+Del or a UAC prompt took the desktop: a start now
+                        // fails with "access denied" and nothing would bring the buffer back after it (no display event).
+                        if (await DisplayRestartPolicy.WaitForInputDesktopAsync(InputDesktopAvailable, DisplayRestartPolicy.DesktopPollInterval,
+                                () => Logger.Info("ReplayBuffer: the desktop is locked or a UAC prompt is open - the restart waits for it"),
+                                token).ConfigureAwait(false))
+                            Logger.Info("ReplayBuffer: the desktop is back - restarting");
+                    }
                     else
                         await Task.Delay(delay, token).ConfigureAwait(false);
                 }
@@ -1892,7 +1911,8 @@ public sealed class ReplayBufferService : IDisposable
             // Fewer than two files after the grace period means nothing ever completed.
             if (times.Count < 2) { age = sinceStart; return true; }
 
-            deliveredAny = true;
+            // Files of earlier runs of the same identity stay after a warm restart: only this run's own count.
+            deliveredAny = StallRestartPolicy.DeliveredSince(times, _genStartedUtc);
             age = DateTime.UtcNow - times[^2];
             return age > stale;
         }

@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using WKI_Clipper.Services;
 using Xunit;
@@ -85,6 +87,17 @@ public sealed class StallRestartPolicyTests
         Assert.False(StallRestartPolicy.IsAsleep(topology, ""));
     }
 
+    [Fact]
+    public void A_disk_ring_counts_only_its_own_files_as_delivered()
+    {
+        var start = new DateTime(2026, 11, 9, 16, 0, 0, DateTimeKind.Utc);
+        var earlierRun = new[] { start.AddMinutes(-3), start.AddMinutes(-2), start.AddSeconds(-1) };
+
+        Assert.False(StallRestartPolicy.DeliveredSince(earlierRun, start));                               // a warm restart that never delivered
+        Assert.False(StallRestartPolicy.DeliveredSince(earlierRun.Append(start.AddSeconds(30)), start));  // only the open file
+        Assert.True(StallRestartPolicy.DeliveredSince(earlierRun.Append(start.AddSeconds(5)).Append(start.AddSeconds(30)), start));
+    }
+
     private static DisplayInfo Display(string gdi, string? path)
         => new(1, gdi, path, "LG ULTRAGEAR+", 0, 0, 3440, 1440, true, 0, 0, "DP", 0x6D1E, 0x780B);
 
@@ -110,6 +123,48 @@ public sealed class VideoInputLostTests
     [InlineData("[in#0 @ 0000024eb7fd9580] Error opening input: Generic error in an external library")]   // exits by itself
     public void Other_lines_are_not(string? line)
         => Assert.False(DisplayRestartPolicy.IsVideoInputLost(line));
+
+    [Fact]
+    public void A_start_refused_on_the_secure_desktop_counts_as_display_caused()
+        => Assert.True(DisplayRestartPolicy.HasModeChangeMarker(
+            "[Parsed_ddagrab_0 @ 01] Desktop duplication access denied\n[in#0 @ 02] Error opening input: Operation not permitted"));
+
+    [Theory]
+    [InlineData(0L, 23)]                              // the 20 s floor of a faststart pass + 3 s
+    [InlineData(4L * 1024 * 1024 * 1024, 207)]        // 4 GiB at 20 MiB/s + 3 s
+    [InlineData(11L * 1024 * 1024 * 1024, 566)]       // a long recording: minutes, never a kill in the middle of its trailer
+    public void A_recording_part_gets_the_time_its_faststart_trailer_needs(long bytes, int seconds)
+        => Assert.Equal(seconds, (int)DisplayRestartPolicy.RecordingQuitTimeout(bytes).TotalSeconds);
+}
+
+public sealed class InputDesktopWaitTests
+{
+    [Fact]
+    public async Task An_available_desktop_does_not_wait()
+    {
+        int waits = 0;
+        Assert.False(await DisplayRestartPolicy.WaitForInputDesktopAsync(() => true, TimeSpan.FromMilliseconds(10), () => waits++,
+                                                                        CancellationToken.None));
+        Assert.Equal(0, waits);
+    }
+
+    [Fact]
+    public async Task A_locked_desktop_is_waited_for_and_announced_once()
+    {
+        int polls = 0, waits = 0;
+        Assert.True(await DisplayRestartPolicy.WaitForInputDesktopAsync(() => ++polls >= 4, TimeSpan.FromMilliseconds(10),
+                                                                       () => waits++, CancellationToken.None));
+        Assert.Equal(4, polls);
+        Assert.Equal(1, waits);
+    }
+
+    [Fact]
+    public async Task A_cancelled_wait_ends()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => DisplayRestartPolicy.WaitForInputDesktopAsync(() => false, TimeSpan.FromMilliseconds(10), null, cts.Token));
+    }
 }
 
 /// <summary>

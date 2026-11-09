@@ -31,6 +31,25 @@ public sealed class ManualRecordingTests
         "Conversion failed!";
 
     [Fact]
+    public async Task Part_2_after_the_lock_screen_or_a_UAC_prompt_took_the_desktop_waits_until_it_is_back()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        env.WriteFootage(first);
+
+        env.DesktopAvailable = false;
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 0, stopRequested: false, AccessLostStderr));
+        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        Assert.Single(env.Starts);                      // no part 2 on the secure desktop
+        Assert.True(env.Recording.IsRecording);
+        Assert.Empty(env.Stopped);
+
+        env.DesktopAvailable = true;
+        await Wait.Until(() => env.Starts.Count == 2);
+        Assert.Empty(env.Stopped);
+    }
+
+    [Fact]
     public async Task Mode_change_exit_keeps_part_1_and_starts_part_2()
     {
         using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg(w: 3840, h: 2160)));
@@ -301,6 +320,8 @@ public sealed class ManualRecordingTests
         public ConcurrentQueue<(string Path, CaptureTargetResolver.CapturePlan Plan)> Starts { get; } = new();
         public ConcurrentQueue<RecordingResult> Stopped { get; } = new();
         public ConcurrentQueue<RecordingPart> Continued { get; } = new();
+        /// <summary>False = the lock screen or a UAC prompt has the input.</summary>
+        public volatile bool DesktopAvailable = true;
 
         /// <param name="saved">The chosen monitor; null = nothing saved (the primary monitor).</param>
         public RecordingEnv(DisplayTopology topology, TimeSpan? continueDelay = null, MonitorRef? saved = null)
@@ -326,6 +347,8 @@ public sealed class ManualRecordingTests
                 // The key follows the topology, so a changed topology is read again.
                 Topology = new DisplayTopologyCache(() => Topology, () => Topology.Fingerprint),
                 ContinueDelay = continueDelay ?? TimeSpan.FromMilliseconds(20),
+                // Not this machine's desktop: a test must not depend on whether the PC is locked while it runs.
+                InputDesktopAvailable = () => DesktopAvailable,
                 StartPartOverride = (plan, path) => Starts.Enqueue((path, plan))
             };
             Recording.RecordingStopped += (_, r) => Stopped.Enqueue(r);

@@ -199,6 +199,38 @@ public sealed class ReplayBufferMonitorTests
     }
 
     [Fact]
+    public async Task Restart_after_the_lock_screen_or_a_UAC_prompt_took_the_desktop_waits_until_it_is_back()
+    {
+        using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
+        await env.Buffer.ToggleAsync();
+        Assert.Single(env.Starts);
+
+        // Win+L: ddagrab loses its output (ACCESS_LOST); a start before the user is back would fail with "access denied".
+        env.DesktopAvailable = false;
+        Assert.Equal(UnexpectedExitAction.AutoRestart,
+                     env.Buffer.OnUnexpectedExit(0, "[Parsed_ddagrab_0 @ 01] AcquireNextFrame failed: 887a0026", generation: 0));
+        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        Assert.Single(env.Starts);
+        Assert.True(env.Buffer.AutoRestartPending);
+
+        env.DesktopAvailable = true;
+        await WaitUntil(() => !env.Buffer.AutoRestartPending);
+        Assert.Equal(2, env.Starts.Count);
+        Assert.Empty(env.Errors);
+    }
+
+    [Fact]
+    public void A_start_refused_while_the_secure_desktop_has_the_input_restarts_by_itself()
+    {
+        using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));
+        const string denied = "[Parsed_ddagrab_0 @ 01] Desktop duplication access denied\n" +
+                              "[in#0 @ 02] Error opening input: Operation not permitted";
+
+        Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, denied, generation: 0));
+        Assert.Empty(env.Errors);
+    }
+
+    [Fact]
     public async Task Restart_that_finds_no_monitor_says_why_and_waits_for_one()
     {
         using var env = new BufferEnv(autoRestartDelay: TimeSpan.FromMilliseconds(50), topology: TestDisplays.Topology(TestDisplays.Lg()));
@@ -503,6 +535,8 @@ public sealed class ReplayBufferMonitorTests
         private readonly RegistryKey _root;
 
         public volatile DisplayTopology Topo;
+        /// <summary>False = the lock screen or a UAC prompt has the input.</summary>
+        public volatile bool DesktopAvailable = true;
         public ReplayBufferService Buffer { get; }
         public ConcurrentQueue<string> Errors { get; } = new();
         public ConcurrentQueue<CaptureTargetResolver.CapturePlan> Starts { get; } = new();
@@ -528,6 +562,8 @@ public sealed class ReplayBufferMonitorTests
                 Topology = new DisplayTopologyCache(() => Topo, () => Topo.Fingerprint),
                 // Long by default: a scheduled restart must not run in the middle of a test that does not wait for it.
                 AutoRestartDelay = autoRestartDelay ?? TimeSpan.FromMinutes(10),
+                // Not this machine's desktop: a test must not depend on whether the PC is locked while it runs.
+                InputDesktopAvailable = () => DesktopAvailable,
                 StartRunOverride = plan => Starts.Enqueue(plan)
             };
             Buffer.BufferError += (_, m) => Errors.Enqueue(m);
