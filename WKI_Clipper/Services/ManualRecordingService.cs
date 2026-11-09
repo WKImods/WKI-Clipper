@@ -221,12 +221,10 @@ public sealed class ManualRecordingService : IDisposable
                 if (DisplayRestartPolicy.IsVideoInputLost(line) && Interlocked.Exchange(ref videoLost, 1) == 0
                     && !ownFfmpeg.StopRequested)
                 {
-                    long bytes = 0;
-                    try { bytes = new FileInfo(path).Length; } catch { }
-                    var quitTimeout = DisplayRestartPolicy.RecordingQuitTimeout(bytes);
+                    long bytes = SafeLength(path);
                     Logger.Warn($"ManualRecording: the video input ended while ffmpeg keeps running - ending this part " +
-                                $"({bytes / (1024 * 1024)} MiB, up to {quitTimeout.TotalSeconds:0} s to finish the file)");
-                    _ = ownFfmpeg.QuitAsync(quitTimeout);
+                                $"({bytes / (1024 * 1024)} MiB)");
+                    _ = ownFfmpeg.FinishAsync(FinishWatch.Cap(bytes), asStop: false);
                 }
             }
             FFmpegLog?.Invoke(this, line);
@@ -257,7 +255,7 @@ public sealed class ManualRecordingService : IDisposable
             bool stopRequested = ownFfmpeg.StopRequested;
             // The pipe may still hold the last lines when the process is already gone.
             if (!stopRequested) ownFfmpeg.WaitForStdErrEnd(TimeSpan.FromMilliseconds(500));
-            OnPartExited(path, code, stopRequested, stderrTail.Text);
+            OnPartExited(path, code, stopRequested, stderrTail.Text, killed: ownFfmpeg.Killed);
         };
 
         _ffmpeg.Start(args);
@@ -272,12 +270,16 @@ public sealed class ManualRecordingService : IDisposable
     /// <see cref="DisplayRestartPolicy.RestartWindow"/>. Anything else fails as before. The end of a part that is not the
     /// running one is ignored.
     /// </summary>
-    internal PartExitAction OnPartExited(string path, int code, bool stopRequested, string? recentStderr)
+    /// <param name="killed">ffmpeg was killed because it did not finish in time (<see cref="FFmpegService.Killed"/>).</param>
+    internal PartExitAction OnPartExited(string path, int code, bool stopRequested, string? recentStderr, bool killed = false)
     {
         // A usable clip must exist and be non-trivial. We requested the stop → exit -1
         // from the kill-on-timeout is fine as long as the file is valid.
         bool fileValid = false;
         try { fileValid = File.Exists(path) && new FileInfo(path).Length > MinValidBytes; } catch { }
+        // Killed while finishing: with faststart the index (moov) is written last, so the file may have none - unplayable,
+        // but its footage is still in it (repair tools can rebuild the index). Never "saved", never deleted.
+        bool noIndex = killed && fileValid && !Mp4Duration.TryRead(path, out _);
 
         RecordingResult result;
         PartExitAction action;
@@ -292,16 +294,16 @@ public sealed class ManualRecordingService : IDisposable
             stopRequested |= _stopRequested;
             var now = DateTime.UtcNow;
             var lastChange = LastDisplayChangeUtc?.Invoke();
-            if (fileValid && !stopRequested && _continuations.TryTake(recentStderr, lastChange, now, out int attempt))
+            if (fileValid && !noIndex && !stopRequested && _continuations.TryTake(recentStderr, lastChange, now, out int attempt))
             {
                 ScheduleNextPart(path, attempt);
                 return PartExitAction.Continues;
             }
-            if (fileValid && !stopRequested && DisplayRestartPolicy.IsDisplayCaused(recentStderr, lastChange, now))
+            if (fileValid && !noIndex && !stopRequested && DisplayRestartPolicy.IsDisplayCaused(recentStderr, lastChange, now))
                 Logger.Warn($"ManualRecording: ffmpeg ended after a display change, but {DisplayRestartPolicy.MaxRestarts} parts " +
                             $"within {DisplayRestartPolicy.RestartWindow.TotalSeconds:0} s already - not continuing again");
 
-            bool success = fileValid && (stopRequested || code == 0);
+            bool success = fileValid && !noIndex && (stopRequested || code == 0);
             if (success)
             {
                 result = new RecordingResult(path, true, null);
@@ -313,7 +315,13 @@ public sealed class ManualRecordingService : IDisposable
                 {
                     try { if (File.Exists(path)) File.Delete(path); } catch { }
                 }
-                string err = stopRequested
+                if (noIndex)
+                    Logger.Warn($"ManualRecording: ffmpeg was killed while finishing '{Path.GetFileName(path)}' - the file has no " +
+                                "index (moov) and is kept as it is");
+                string err = noIndex
+                    ? L.T($"Aufnahme unvollständig — ffmpeg hing beim Abschließen, „{Path.GetFileName(path)}“ hat keinen Index und lässt sich so nicht abspielen. Die Datei bleibt erhalten.",
+                          $"Recording incomplete — ffmpeg hung while finishing, “{Path.GetFileName(path)}” has no index and cannot be played as it is. The file is kept.")
+                    : stopRequested
                     ? L.T("Aufnahme unvollständig — die Datei ist defekt und wurde verworfen.",
                           "Recording incomplete — the file is broken and was discarded.")
                     : L.T($"Aufnahme fehlgeschlagen (ffmpeg code {code}). Schau ins Log.",
@@ -351,9 +359,14 @@ public sealed class ManualRecordingService : IDisposable
                                                                    pending.Cts.Token).ConfigureAwait(false);
                 // ACCESS_LOST also means the lock screen or a UAC prompt took the desktop: the next part could not start there.
                 if (await DisplayRestartPolicy.WaitForInputDesktopAsync(InputDesktopAvailable, DisplayRestartPolicy.DesktopPollInterval,
-                        () => Logger.Info($"ManualRecording: the desktop is locked or a UAC prompt is open - part {part} waits for it"),
+                        () => Logger.Info($"ManualRecording: another desktop has the input (lock screen / UAC / screen saver) - part {part} waits for it"),
                         pending.Cts.Token).ConfigureAwait(false))
-                    Logger.Info($"ManualRecording: the desktop is back - starting part {part}");
+                {
+                    // Back on the desktop a game takes its fullscreen mode again: settle once more before the part starts.
+                    Logger.Info($"ManualRecording: the desktop is back - part {part} starts once the display is quiet");
+                    await DisplayRestartPolicy.WaitForQuietDisplayAsync(() => LastDisplayChangeUtc?.Invoke(), delay, maxWait,
+                                                                       pending.Cts.Token).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) { return; }
             StartNextPart(pending);
@@ -460,7 +473,14 @@ public sealed class ManualRecordingService : IDisposable
 
         var ffmpeg = _ffmpeg;
         if (ffmpeg is null || !ffmpeg.IsRunning) return;
-        await ffmpeg.StopAsync(TimeSpan.FromSeconds(10));
+        // Not a fixed 10 s: the faststart trailer of a long part rewrites gigabytes - killed in the middle it has no index.
+        await ffmpeg.FinishAsync(FinishWatch.Cap(SafeLength(CurrentOutputPath)), asStop: true);
+    }
+
+    private static long SafeLength(string? path)
+    {
+        try { return path is null ? 0 : new FileInfo(path).Length; }
+        catch { return 0; }
     }
 
     /// <summary>

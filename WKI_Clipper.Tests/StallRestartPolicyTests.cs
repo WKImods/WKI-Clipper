@@ -90,12 +90,12 @@ public sealed class StallRestartPolicyTests
     [Fact]
     public void A_disk_ring_counts_only_its_own_files_as_delivered()
     {
-        var start = new DateTime(2026, 11, 9, 16, 0, 0, DateTimeKind.Utc);
-        var earlierRun = new[] { start.AddMinutes(-3), start.AddMinutes(-2), start.AddSeconds(-1) };
+        var earlierRun = new[] { 41, 41, 41, 41 };
 
-        Assert.False(StallRestartPolicy.DeliveredSince(earlierRun, start));                               // a warm restart that never delivered
-        Assert.False(StallRestartPolicy.DeliveredSince(earlierRun.Append(start.AddSeconds(30)), start));  // only the open file
-        Assert.True(StallRestartPolicy.DeliveredSince(earlierRun.Append(start.AddSeconds(5)).Append(start.AddSeconds(30)), start));
+        Assert.False(StallRestartPolicy.DeliveredByRun(earlierRun, 42));                   // a warm restart that never delivered
+        Assert.False(StallRestartPolicy.DeliveredByRun(earlierRun.Append(42), 42));        // only the open file
+        Assert.True(StallRestartPolicy.DeliveredByRun(earlierRun.Append(42).Append(42), 42));
+        Assert.False(StallRestartPolicy.DeliveredByRun(new[] { -1, -1, -1 }, 42));          // names it cannot read
     }
 
     private static DisplayInfo Display(string gdi, string? path)
@@ -129,16 +129,102 @@ public sealed class VideoInputLostTests
         => Assert.True(DisplayRestartPolicy.HasModeChangeMarker(
             "[Parsed_ddagrab_0 @ 01] Desktop duplication access denied\n[in#0 @ 02] Error opening input: Operation not permitted"));
 
+}
+
+/// <summary>
+/// Ending a Ctrl+F9 part: its "+faststart" trailer rewrites the whole file (minutes after a long recording on a slow drive)
+/// without a progress line. The kill comes only when ffmpeg stops reading, or at a cap sized to the file.
+/// </summary>
+public sealed class FinishWatchTests
+{
+    private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(5);
+
     [Theory]
-    [InlineData(0L, 23)]                              // the 20 s floor of a faststart pass + 3 s
-    [InlineData(4L * 1024 * 1024 * 1024, 207)]        // 4 GiB at 20 MiB/s + 3 s
-    [InlineData(11L * 1024 * 1024 * 1024, 566)]       // a long recording: minutes, never a kill in the middle of its trailer
-    public void A_recording_part_gets_the_time_its_faststart_trailer_needs(long bytes, int seconds)
-        => Assert.Equal(seconds, (int)DisplayRestartPolicy.RecordingQuitTimeout(bytes).TotalSeconds);
+    [InlineData(0L, 100)]                             // a minute + twice the 20 s floor
+    [InlineData(4L * 1024 * 1024 * 1024, 469)]        // a minute + 2 x 4 GiB at 20 MiB/s
+    [InlineData(11L * 1024 * 1024 * 1024, 1186)]      // an hour of recording: about 20 minutes at the very most
+    public void The_cap_is_sized_to_the_part(long bytes, int seconds)
+        => Assert.Equal(seconds, (int)FinishWatch.Cap(bytes).TotalSeconds);
+
+    [Fact]
+    public async Task An_ffmpeg_that_keeps_reading_is_not_killed_after_the_quiet_time()
+    {
+        ulong read = 0;
+        int polls = 0;
+        // Exits after ~60 polls (~300 ms), far beyond the 50 ms quiet time - it read all along.
+        bool exited = await FinishWatch.WaitAsync(() => ++polls > 60, () => read += 4096,
+                                                  TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(10), Poll);
+        Assert.True(exited);
+    }
+
+    [Fact]
+    public async Task An_ffmpeg_that_stops_reading_is_given_up_after_the_quiet_time()
+    {
+        var sw = Stopwatch.StartNew();
+        bool exited = await FinishWatch.WaitAsync(() => false, () => 1234UL, TimeSpan.FromMilliseconds(100),
+                                                  TimeSpan.FromSeconds(10), Poll);
+        Assert.False(exited);
+        Assert.InRange(sw.Elapsed, TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task An_unknown_read_counter_never_counts_as_quiet_only_the_cap_ends_the_wait()
+    {
+        var sw = Stopwatch.StartNew();
+        bool exited = await FinishWatch.WaitAsync(() => false, () => null, TimeSpan.FromMilliseconds(10),
+                                                  TimeSpan.FromMilliseconds(300), Poll);
+        Assert.False(exited);
+        Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(300), $"gave up after {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task A_reading_ffmpeg_still_ends_at_the_cap()
+    {
+        ulong read = 0;
+        bool exited = await FinishWatch.WaitAsync(() => false, () => read += 1, TimeSpan.FromMilliseconds(50),
+                                                  TimeSpan.FromMilliseconds(200), Poll);
+        Assert.False(exited);
+    }
+
+    /// <summary>The real thing: "q" ends a recording-shaped ffmpeg cleanly, as a stop, without a kill.</summary>
+    [Fact]
+    public async Task Finish_ends_a_running_ffmpeg_cleanly_as_a_stop()
+    {
+        var ffmpeg = FFmpegTestSupport.Find();
+        if (ffmpeg is null) return;
+        using var service = new FFmpegService(ffmpeg);
+        var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.Exited += (_, code) => exited.TrySetResult(code);
+        service.Start("-hide_banner -nostats -f lavfi -i testsrc2=size=64x64:rate=10 -f lavfi -i anullsrc=r=48000:cl=stereo " +
+                      "-map 0:v -map 1:a -c:v rawvideo -c:a pcm_s16le -f null -");
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        await service.FinishAsync(FinishWatch.Cap(0), asStop: true);
+
+        Assert.Same(exited.Task, await Task.WhenAny(exited.Task, Task.Delay(TimeSpan.FromSeconds(5))));
+        Assert.Equal(0, await exited.Task);
+        Assert.True(service.StopRequested);
+        Assert.False(service.Killed);
+    }
 }
 
 public sealed class InputDesktopWaitTests
 {
+    [Theory]
+    [InlineData("Default", "Default", true)]
+    [InlineData("default", "Default", true)]
+    [InlineData("Screen-saver", "Default", false)]     // a screen saver's desktop
+    [InlineData("KeePassSecureDesktop", "Default", false)]
+    [InlineData(null, "Default", true)]                // a name it cannot read never blocks a restart
+    [InlineData("Default", null, true)]
+    public void Only_the_clippers_own_desktop_counts_as_available(string? input, string? own, bool same)
+        => Assert.Equal(same, InputDesktop.IsSameDesktop(input, own));
+
+    /// <summary>The real P/Invoke reads the name (independent of whether the PC is locked while the tests run).</summary>
+    [Fact]
+    public void The_clipper_s_own_desktop_name_is_read()
+        => Assert.Equal("Default", InputDesktop.OwnDesktopName(), ignoreCase: true);
+
     [Fact]
     public async Task An_available_desktop_does_not_wait()
     {

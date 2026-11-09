@@ -46,11 +46,12 @@ public static class StallRestartPolicy
     }
 
     /// <summary>
-    /// Disk ring: the run started at <paramref name="runStartedUtc"/> completed a segment - two of its own files, the completed
-    /// one and the open one after it. Files of earlier runs of the same identity (kept by a warm restart) do not count.
+    /// Disk ring: the run of generation <paramref name="runGeneration"/> completed a segment - two of its own files, the
+    /// completed one and the open one after it. Files of earlier runs of the same identity (kept by a warm restart) do not
+    /// count; judged by the generation in the file name, so a clock that jumps cannot mix them up.
     /// </summary>
-    public static bool DeliveredSince(IEnumerable<DateTime> segmentWriteTimesUtc, DateTime runStartedUtc)
-        => segmentWriteTimesUtc.Count(t => t >= runStartedUtc) >= 2;
+    public static bool DeliveredByRun(IEnumerable<int> fileGenerations, int runGeneration)
+        => fileGenerations.Count(g => g == runGeneration) >= 2;
 
     /// <summary>
     /// The monitor <paramref name="gdiName"/> sleeps deeply: Windows lists it without its device path, or not at all any more.

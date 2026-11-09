@@ -83,6 +83,17 @@ internal static partial class User32
 
     public const uint DESKTOP_READOBJECTS = 0x0001;
 
+    /// <summary>The desktop a thread is on. The handle must not be closed.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetThreadDesktop(uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, [Out] char[]? pvInfo, uint nLength, out uint lpnLengthNeeded);
+
+    /// <summary><see cref="GetUserObjectInformation"/>: the object's name (e.g. "Default", "Winlogon", "Screen-saver").</summary>
+    public const int UOI_NAME = 2;
+
     // --- Extended window styles (widget windows toggle NOACTIVATE when pinned) ---
 
     [DllImport("user32.dll", SetLastError = true)]

@@ -220,6 +220,40 @@ public sealed class ReplayBufferMonitorTests
     }
 
     [Fact]
+    public void Exits_while_another_desktop_has_the_input_do_not_use_up_the_restart_bound()
+    {
+        using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));
+
+        // Several UAC prompts in a minute: every one ends the run, none may leave the buffer off.
+        env.DesktopAvailable = false;
+        for (int i = 0; i < 6; i++)
+            Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(0, ModeChangeStderr, generation: 0));
+        Assert.Empty(env.Errors);
+
+        // Back on the desktop the bound counts as before.
+        env.DesktopAvailable = true;
+        for (int i = 0; i < DisplayRestartPolicy.MaxRestarts; i++)
+            Assert.Equal(UnexpectedExitAction.AutoRestart, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+        Assert.Equal(UnexpectedExitAction.Report, env.Buffer.OnUnexpectedExit(1, ModeChangeStderr, generation: 0));
+    }
+
+    [Fact]
+    public void A_cold_start_begins_a_new_episode_without_picture()
+    {
+        using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        var streak = typeof(ReplayBufferService).GetField("_noPictureStreak", flags)!;
+        var announced = typeof(ReplayBufferService).GetField("_sleepAnnounced", flags)!;
+        streak.SetValue(env.Buffer, 5);
+        announced.SetValue(env.Buffer, true);
+
+        typeof(ReplayBufferService).GetMethod("ResetHistoryForColdStart", flags)!.Invoke(env.Buffer, null);
+
+        Assert.Equal(0, streak.GetValue(env.Buffer));
+        Assert.Equal(false, announced.GetValue(env.Buffer));
+    }
+
+    [Fact]
     public void A_start_refused_while_the_secure_desktop_has_the_input_restarts_by_itself()
     {
         using var env = new BufferEnv(topology: TestDisplays.Topology(TestDisplays.Lg()));

@@ -831,6 +831,17 @@ public sealed class ReplayBufferService : IDisposable
 
         var now = DateTime.UtcNow;
         var lastChange = LastDisplayChangeUtc?.Invoke();
+        // The lock screen, a UAC prompt or a screen saver has the desktop: nothing can be captured until the user is back,
+        // and the restart waits for exactly that - so it cannot loop and is not counted against the bound (R8). Several UAC
+        // prompts in a minute must not use the bound up and leave the buffer off.
+        if (!InputDesktopAvailable())
+        {
+            Logger.Info("ReplayBuffer: ffmpeg ended while another desktop has the input (lock screen / UAC / screen saver) " +
+                        "- restarting once the desktop is back");
+            _autoRestartPending = true;
+            RequestWork(fullRestart: false, autoRestart: true);
+            return UnexpectedExitAction.AutoRestart;
+        }
         if (_autoRestarts.TryTake(recentStderr, lastChange, now, out int attempt))
         {
             Logger.Info($"ReplayBuffer: auto-restart after display change ({attempt}/{DisplayRestartPolicy.MaxRestarts})");
@@ -1363,9 +1374,13 @@ public sealed class ReplayBufferService : IDisposable
                         // ACCESS_LOST also means the lock screen, Ctrl+Alt+Del or a UAC prompt took the desktop: a start now
                         // fails with "access denied" and nothing would bring the buffer back after it (no display event).
                         if (await DisplayRestartPolicy.WaitForInputDesktopAsync(InputDesktopAvailable, DisplayRestartPolicy.DesktopPollInterval,
-                                () => Logger.Info("ReplayBuffer: the desktop is locked or a UAC prompt is open - the restart waits for it"),
+                                () => Logger.Info("ReplayBuffer: another desktop has the input (lock screen / UAC / screen saver) - the restart waits for it"),
                                 token).ConfigureAwait(false))
-                            Logger.Info("ReplayBuffer: the desktop is back - restarting");
+                        {
+                            // Back on the desktop a game takes its fullscreen mode again, a monitor may still wake: settle once more.
+                            Logger.Info("ReplayBuffer: the desktop is back - restarting once the display is quiet");
+                            await DisplayRestartPolicy.WaitForQuietDisplayAsync(LastDisplayChangeUtc, delay, maxWait, token).ConfigureAwait(false);
+                        }
                     }
                     else
                         await Task.Delay(delay, token).ConfigureAwait(false);
@@ -1894,26 +1909,28 @@ public sealed class ReplayBufferService : IDisposable
             var stale = BufferHealth.StaleAfter(SegmentSeconds());
 
             var identity = _currentIdentity;   // read once: not once per file
+            // Segments of earlier runs of the same identity stay after a warm restart: only this run's own show it delivered.
+            int run = Volatile.Read(ref _generation);
             if (_epoch?.Memory is { } mem)
             {
                 // The RAM ring holds complete segments only: the newest one is the measure.
-                var newest = mem.Snapshot().LastOrDefault(s => IsIdentity(s.Generation, identity) && s.EndUtc >= _genStartedUtc);
-                deliveredAny = newest is not null;
+                var segments = mem.Snapshot();
+                var newest = segments.LastOrDefault(s => IsIdentity(s.Generation, identity) && s.EndUtc >= _genStartedUtc);
+                deliveredAny = segments.Any(s => s.Generation == run);
                 age = newest is null ? sinceStart : DateTime.UtcNow - newest.EndUtc;
                 return age > stale;
             }
-            var times = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
+            var files = new DirectoryInfo(_bufferDir).EnumerateFiles("seg_*.mp4")
                 .Where(fi => fi.Length > 1024 && IsCurrentIdentity(fi.Name, identity))
-                .Select(fi => fi.LastWriteTimeUtc)
-                .OrderBy(t => t)
+                .Select(fi => (fi.LastWriteTimeUtc, Generation: SegmentName.TryParseGeneration(fi.Name, out int g) ? g : -1))
+                .OrderBy(f => f.LastWriteTimeUtc)
                 .ToList();
 
             // Fewer than two files after the grace period means nothing ever completed.
-            if (times.Count < 2) { age = sinceStart; return true; }
+            if (files.Count < 2) { age = sinceStart; return true; }
 
-            // Files of earlier runs of the same identity stay after a warm restart: only this run's own count.
-            deliveredAny = StallRestartPolicy.DeliveredSince(times, _genStartedUtc);
-            age = DateTime.UtcNow - times[^2];
+            deliveredAny = StallRestartPolicy.DeliveredByRun(files.Select(f => f.Generation), run);
+            age = DateTime.UtcNow - files[^2].LastWriteTimeUtc;
             return age > stale;
         }
         catch { return false; }

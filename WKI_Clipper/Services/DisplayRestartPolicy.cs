@@ -54,14 +54,11 @@ public static class DisplayRestartPolicy
         => !string.IsNullOrEmpty(stderr)
            && ModeChangeMarkers.Any(m => stderr.Contains(m, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>How long a buffer run whose video input died gets to end on "q" before it is killed (its segments are small).</summary>
-    public static readonly TimeSpan QuitTimeout = TimeSpan.FromSeconds(3);
-
     /// <summary>
-    /// The same for a Ctrl+F9 part of <paramref name="partBytes"/>: its "+faststart" trailer rewrites the whole file, gigabytes
-    /// after a long recording, and a kill in the middle leaves a file without its index. Sized like a clip's faststart pass.
+    /// How long a buffer run whose video input died gets to end on "q" before it is killed (its segments are small; a
+    /// Ctrl+F9 part with its long faststart trailer ends by <see cref="FinishWatch"/> instead).
     /// </summary>
-    public static TimeSpan RecordingQuitTimeout(long partBytes) => QuitTimeout + ConcatWatch.FinalizeQuietPeriod(partBytes);
+    public static readonly TimeSpan QuitTimeout = TimeSpan.FromSeconds(3);
 
     /// <summary>How often a restart waiting for the desktop looks again.</summary>
     public static readonly TimeSpan DesktopPollInterval = TimeSpan.FromSeconds(1);

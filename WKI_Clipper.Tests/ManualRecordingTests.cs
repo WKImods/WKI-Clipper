@@ -30,6 +30,69 @@ public sealed class ManualRecordingTests
         "[h264_amf @ 0000020b] Encoder failed\n" +
         "Conversion failed!";
 
+    // ---- a part ffmpeg was killed on while it finished (faststart writes the index last) ----
+
+    /// <summary>What a killed faststart part looks like: footage, but no moov (its index comes last).</summary>
+    private static void WriteFootageWithoutIndex(string path)
+        => File.WriteAllBytes(path, Mp4Builder.Concat(Mp4Builder.Box("ftyp", new byte[16]), Mp4Builder.Box("mdat", new byte[64 * 1024])));
+
+    private static void WriteFootageWithIndex(string path)
+        => File.WriteAllBytes(path, Mp4Builder.Concat(
+            Mp4Builder.Box("ftyp", new byte[16]),
+            Mp4Builder.Box("moov", Mp4Builder.Box("mvhd", new byte[] { 0, 0, 0, 0 }, Mp4Builder.U32(0), Mp4Builder.U32(0),
+                                                  Mp4Builder.U32(1000), Mp4Builder.U32(60_000), new byte[80])),
+            Mp4Builder.Box("mdat", new byte[64 * 1024])));
+
+    [Fact]
+    public void A_part_killed_while_finishing_without_its_index_is_not_saved_and_is_kept()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        WriteFootageWithoutIndex(first);
+
+        Assert.Equal(PartExitAction.Failed, env.Recording.OnPartExited(first, -1, stopRequested: true, "", killed: true));
+
+        var result = Assert.Single(env.Stopped);
+        Assert.False(result.Success);
+        Assert.Contains("keinen Index", result.Error);
+        Assert.True(File.Exists(first));                // footage that tools can still rescue: never deleted
+        Assert.False(env.Recording.IsRecording);
+    }
+
+    [Fact]
+    public void A_part_killed_while_finishing_that_has_its_index_is_saved()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        WriteFootageWithIndex(first);
+
+        Assert.Equal(PartExitAction.Saved, env.Recording.OnPartExited(first, -1, stopRequested: true, "", killed: true));
+        Assert.True(Assert.Single(env.Stopped).Success);
+    }
+
+    [Fact]
+    public void A_part_killed_without_its_index_after_a_display_change_does_not_go_on_into_part_2()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        WriteFootageWithoutIndex(first);
+
+        Assert.Equal(PartExitAction.Failed, env.Recording.OnPartExited(first, -1, stopRequested: false, AccessLostStderr, killed: true));
+        Assert.Single(env.Starts);
+        Assert.True(File.Exists(first));
+        Assert.Contains("keinen Index", Assert.Single(env.Stopped).Error);
+    }
+
+    [Fact]
+    public void A_part_that_ended_by_itself_is_judged_as_before()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        env.WriteFootage(first);   // no index either - but ffmpeg was not killed, so nothing changes
+
+        Assert.Equal(PartExitAction.Saved, env.Recording.OnPartExited(first, 0, stopRequested: true, ""));
+    }
+
     [Fact]
     public async Task Part_2_after_the_lock_screen_or_a_UAC_prompt_took_the_desktop_waits_until_it_is_back()
     {

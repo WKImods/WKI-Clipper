@@ -27,6 +27,12 @@ public sealed class FFmpegService : IDisposable
     /// "user/owner asked us to stop" from "ffmpeg died unexpectedly".</summary>
     public bool StopRequested { get; private set; }
 
+    /// <summary>True once this service killed ffmpeg because it did not end in time: whatever it wrote may be unfinished.</summary>
+    public bool Killed { get; private set; }
+
+    /// <summary>Bytes the running ffmpeg has read (null = unknown): the sign of life of <see cref="FinishAsync"/> (tests replace it).</summary>
+    internal Func<Process, ulong?> ReadCounter { get; set; } = ProcessIo.TryGetReadBytes;
+
     public event EventHandler<string>? StdErrLine;
     public event EventHandler<int>? Exited;
 
@@ -239,10 +245,7 @@ public sealed class FFmpegService : IDisposable
         try
         {
             var exited = await Task.Run(() => _process.WaitForExit((int)timeout.TotalMilliseconds));
-            if (!exited)
-            {
-                try { _process.Kill(entireProcessTree: false); } catch { }
-            }
+            if (!exited) Kill(_process);
         }
         finally
         {
@@ -270,12 +273,58 @@ public sealed class FFmpegService : IDisposable
         try
         {
             // A stop asked for meanwhile owns the deadline (StopAsync waits and kills on its own).
-            if (!await Task.Run(() => p.WaitForExit((int)timeout.TotalMilliseconds)) && !StopRequested)
-            {
-                try { p.Kill(entireProcessTree: false); } catch { }
-            }
+            if (!await Task.Run(() => p.WaitForExit((int)timeout.TotalMilliseconds)) && !StopRequested) Kill(p);
         }
         catch { /* the process was disposed meanwhile */ }
+    }
+
+    /// <summary>
+    /// Ends a recording part: "q", then waits as long as ffmpeg is still busy finishing its file - a "+faststart" trailer
+    /// rewrites all of it, minutes after a long recording - and kills it only when it stops reading or at
+    /// <paramref name="cap"/> (<see cref="FinishWatch"/>). <paramref name="asStop"/> marks it as asked for, like
+    /// <see cref="StopAsync"/>; without it the end counts as ffmpeg's own (<see cref="QuitAsync"/>) and a stop asked for
+    /// meanwhile owns the kill.
+    /// </summary>
+    public async Task FinishAsync(TimeSpan cap, bool asStop)
+    {
+        var p = _process;
+        if (p is null) return;
+        if (asStop) StopRequested = true;
+        try
+        {
+            try
+            {
+                if (p.HasExited) return;
+                await p.StandardInput.WriteAsync("q\n");
+                await p.StandardInput.FlushAsync();
+            }
+            catch { /* stdin may already be closed */ }
+
+            bool exited = await FinishWatch.WaitAsync(() => HasExited(p), () => ReadCounter(p), FinishWatch.Quiet, cap,
+                                                      FinishWatch.Poll).ConfigureAwait(false);
+            if (!exited && (asStop || !StopRequested)) Kill(p);
+        }
+        finally
+        {
+            if (asStop) _readerCts?.Cancel();
+        }
+    }
+
+    private static bool HasExited(Process p)
+    {
+        try { return p.HasExited; }
+        catch { return true; }   // disposed: it is gone either way
+    }
+
+    private void Kill(Process p)
+    {
+        try
+        {
+            if (p.HasExited) return;
+            Killed = true;
+            p.Kill(entireProcessTree: false);
+        }
+        catch { }
     }
 
     private static int SafeExitCode(Process? p)
