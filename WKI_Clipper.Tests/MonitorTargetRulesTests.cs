@@ -192,16 +192,58 @@ public sealed class MonitorTargetRulesTests
     }
 
     [Fact]
-    public void Unique_model_on_a_new_port_matches_by_edid_and_requests_upgrade()
+    public void Unique_model_on_a_new_port_matches_only_with_the_saved_gdi_name()
     {
         var saved = MonitorRef.Of(TestDisplays.Dell(uid: 257));
-        var moved = TestDisplays.Dell(uid: 260, gdi: @"\\.\DISPLAY4");
+        var movedSameSlot = TestDisplays.Dell(uid: 260);
 
-        var r = MonitorTargetRules.Resolve(saved, TestDisplays.Topology(TestDisplays.Lg(), moved));
+        var r = MonitorTargetRules.Resolve(saved, TestDisplays.Topology(TestDisplays.Lg(), movedSameSlot));
 
         Assert.Equal(MonitorResolutionStatus.Matched, r.Status);
-        Assert.Equal(moved.DevicePath, r.Display!.DevicePath);
+        Assert.Equal(movedSameSlot.DevicePath, r.Display!.DevicePath);
         Assert.True(r.UpgradeSavedRef);
+
+        // Another path AND another GDI slot: exactly what an identical twin of a monitor that is gone looks like - not guessed.
+        var movedOtherSlot = TestDisplays.Dell(uid: 260, gdi: @"\\.\DISPLAY4");
+        var guess = MonitorTargetRules.Resolve(saved, TestDisplays.Topology(TestDisplays.Lg(), movedOtherSlot));
+
+        Assert.Equal(MonitorResolutionStatus.FallbackPrimary, guess.Status);
+        Assert.Equal("LG ULTRAGEAR+", guess.Display!.FriendlyName);
+        Assert.False(guess.UpgradeSavedRef);
+    }
+
+    [Fact]
+    public void Identical_twin_of_a_missing_chosen_monitor_is_not_taken_for_it()
+    {
+        // Two DELLs of the same model: A is the primary on the left, B (chosen) on the right. B is unplugged.
+        var a = TestDisplays.Dell(uid: 257, gdi: @"\\.\DISPLAY1", hmon: 0x10001, x: 0, primary: true, output: 0);
+        var b = TestDisplays.Dell(uid: 258, gdi: @"\\.\DISPLAY2", hmon: 0x20001, x: 2560, output: 1);
+        var saved = MonitorRef.Of(b);
+
+        var gone = MonitorTargetRules.Resolve(saved, TestDisplays.Topology(a));
+
+        Assert.Equal(MonitorResolutionStatus.FallbackPrimary, gone.Status);   // visible: warning, "Ersatz: ..." label
+        Assert.Same(a, gone.Display);
+        Assert.Equal("„DELL S2721DGF“ ist nicht verbunden", gone.Reason);
+        Assert.False(gone.UpgradeSavedRef);                                    // the setting keeps B
+        Assert.Null(MonitorTargetRules.Locate(saved, TestDisplays.Topology(a)));
+
+        // Asleep, A reports no device path: still not B.
+        Assert.Equal(MonitorResolutionStatus.FallbackPrimary,
+                     MonitorTargetRules.Resolve(saved, TestDisplays.Topology(a with { DevicePath = null })).Status);
+
+        // B is back: exactly B again.
+        var back = MonitorTargetRules.Resolve(saved, TestDisplays.Topology(a, b));
+        Assert.Equal(MonitorResolutionStatus.Exact, back.Status);
+        Assert.Same(b, back.Display);
+
+        // Three monitors: the LG is the primary, A and B are twins, B is missing - the LG is recorded, not A.
+        var a2 = TestDisplays.Dell(uid: 257, gdi: @"\\.\DISPLAY2", hmon: 0x20001, x: 3440, output: 1);
+        var b2 = TestDisplays.Dell(uid: 258, gdi: @"\\.\DISPLAY3", hmon: 0x30001, x: 6000, output: 2);
+        var three = MonitorTargetRules.Resolve(MonitorRef.Of(b2), TestDisplays.Topology(TestDisplays.Lg(), a2));
+        Assert.Equal(MonitorResolutionStatus.FallbackPrimary, three.Status);
+        Assert.Equal("LG ULTRAGEAR+", three.Display!.FriendlyName);
+        Assert.False(three.UpgradeSavedRef);
     }
 
     [Fact]

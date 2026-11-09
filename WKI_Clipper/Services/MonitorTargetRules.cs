@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace WKI_Clipper.Services;
@@ -9,7 +10,7 @@ public enum MonitorResolutionStatus
     /// <summary>The saved device path is connected.</summary>
     Exact,
     /// <summary>The saved path is gone (or Windows reports none right now), but exactly one connected monitor has the saved
-    /// EDID model - with several identical models, exactly one of them with the saved GDI name.</summary>
+    /// EDID model and the saved GDI name - or, when no path was saved, the EDID model alone.</summary>
     Matched,
     /// <summary>Only a GDI name is saved (0.19 and older) and a monitor has it.</summary>
     Legacy,
@@ -42,9 +43,10 @@ public sealed record MonitorResolution(MonitorResolutionStatus Status, DisplayIn
 }
 
 /// <summary>
-/// Finds the saved monitor in the current topology. Never through a list position: the identity is the device path, then a
-/// unique EDID model (identical models only with the saved GDI name as tie-breaker), then - for old settings that saved
-/// nothing else - the GDI name. A monitor that is missing or hangs on a GPU the capture does not reach falls back to the
+/// Finds the saved monitor in the current topology. Never through a list position: the identity is the device path, then
+/// the EDID model with the saved GDI name (the model alone only when no path was saved: with one saved, a unique model may
+/// be the identical twin of the chosen monitor that is gone), then - for old settings that saved nothing else - the GDI
+/// name. A monitor that is missing or hangs on a GPU the capture does not reach falls back to the
 /// primary monitor, visibly (status <see cref="MonitorResolutionStatus.FallbackPrimary"/> with a reason).
 /// </summary>
 public static class MonitorTargetRules
@@ -106,19 +108,21 @@ public static class MonitorTargetRules
         if (saved.HasEdid)
         {
             var sameModel = topo.Displays.Where(d => d.EdidMfg == saved.EdidMfg && d.EdidProduct == saved.EdidProduct).ToList();
+            var bySlot = saved.GdiName is string gdi
+                ? sameModel.Where(d => string.Equals(d.GdiName, gdi, StringComparison.OrdinalIgnoreCase)).ToList()
+                : new List<DisplayInfo>();
             DisplayInfo? pick = null;
             string reason = L.T("gleiches Modell (EDID)", "same model (EDID)");
-            if (sameModel.Count == 1)
-                pick = sameModel[0];
-            else if (sameModel.Count > 1 && saved.GdiName is string gdi)
+            if (bySlot.Count == 1)
             {
-                var byGdi = sameModel.Where(d => string.Equals(d.GdiName, gdi, StringComparison.OrdinalIgnoreCase)).ToList();
-                if (byGdi.Count == 1)
-                {
-                    pick = byGdi[0];
-                    reason = L.T("gleiches Modell (EDID) und GDI-Name", "same model (EDID) and GDI name");
-                }
+                pick = bySlot[0];
+                reason = L.T("gleiches Modell (EDID) und GDI-Name", "same model (EDID) and GDI name");
             }
+            // The model alone only when no device path was saved. With one saved, its monitor is gone - and an identical
+            // twin that is still connected looks exactly like a unique match (same model, another path or none while
+            // asleep): taking it would record the wrong monitor without a word, and save it as the choice.
+            else if (sameModel.Count == 1 && saved.DevicePath is null)
+                pick = sameModel[0];
 
             if (pick is not null)
             {

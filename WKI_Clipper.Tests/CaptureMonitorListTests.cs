@@ -42,6 +42,18 @@ public sealed class CaptureMonitorListTests
     }
 
     [Fact]
+    public void Missing_monitor_with_an_identical_twin_connected_is_listed_as_not_connected()
+    {
+        var twin = TestDisplays.Dell(uid: 257, gdi: @"\\.\DISPLAY2", output: 1);
+        var chosen = MonitorRef.Of(TestDisplays.Dell(uid: 258, gdi: @"\\.\DISPLAY3", hmon: 0x30001, x: 6000, output: 2));
+
+        var (items, selected) = CaptureMonitorList.Build(TestDisplays.Topology(TestDisplays.Lg(), twin), chosen);
+
+        Assert.Equal(new CaptureMonitorChoice("DELL S2721DGF (nicht verbunden)", chosen), items[selected]);
+        Assert.Equal(MonitorRef.Of(twin), items.Single(i => i.Display.StartsWith("DELL S2721DGF ·")).Value);
+    }
+
+    [Fact]
     public void Rebuild_keeps_the_selection()
     {
         var dell = TestDisplays.Dell(output: 1);
