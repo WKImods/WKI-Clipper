@@ -20,6 +20,11 @@ public sealed class ManualRecordingTests
         "[Parsed_ddagrab_0 @ 0000020b1c3e4f40] Output parameters changed!\n" +
         "Conversion failed!";
 
+    private const string AccessLostStderr =
+        "frame= 1234 fps= 60 q=-0.0 size=   20480KiB time=00:00:20.56\n" +
+        "[Parsed_ddagrab_0 @ 0000020b1c3e4f40] AcquireNextFrame failed: 887a0026\n" +
+        "Conversion failed!";
+
     private const string GenericStderr =
         "frame= 1234 fps= 60 q=-0.0 size=   20480KiB time=00:00:20.56\n" +
         "[h264_amf @ 0000020b] Encoder failed\n" +
@@ -160,6 +165,123 @@ public sealed class ManualRecordingTests
         Assert.False(env.Recording.IsRecording);
     }
 
+    [Fact]
+    public async Task Ctrl_F9_while_a_part_end_is_still_handled_stops_the_recording()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        string first = env.Recording.Start();
+        env.WriteFootage(first);
+
+        // ffmpeg ended on a mode switch; its end is still being handled (the part is let go, its last stderr lines are
+        // awaited). The user presses Ctrl+F9 right then: that is a stop - not a second recording next to this one.
+        Assert.True(env.Recording.IsRecording);
+        await env.Recording.ToggleAsync();
+
+        Assert.Equal(PartExitAction.Saved, env.Recording.OnPartExited(first, 1, stopRequested: false, ModeChangeStderr));
+        Assert.Equal(new RecordingResult(first, true, null), Assert.Single(env.Stopped));
+        Assert.False(env.Recording.IsRecording);
+        await Task.Delay(100);
+        Assert.Single(env.Starts);   // neither a second recording nor a part 2
+        Assert.Empty(env.Continued);
+    }
+
+    [Fact]
+    public void End_of_a_part_that_is_not_the_running_one_is_ignored()
+    {
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()), continueDelay: TimeSpan.FromMinutes(10));
+        string first = env.Recording.Start();
+        env.WriteFootage(first);
+        string stale = Path.Combine(Path.GetDirectoryName(first)!, "Rec_2026-11-09_19-00-00.mp4");
+        env.WriteFootage(stale);
+
+        Assert.Equal(PartExitAction.Ignored, env.Recording.OnPartExited(stale, 1, stopRequested: false, ModeChangeStderr));
+
+        Assert.Empty(env.Stopped);
+        Assert.True(env.Recording.IsRecording);
+        Assert.Equal(first, env.Recording.CurrentOutputPath);
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 1, stopRequested: false, ModeChangeStderr));
+    }
+
+    [Fact]
+    public async Task Next_part_on_the_fallback_monitor_ends_the_recording_with_the_reason()
+    {
+        var dell = TestDisplays.Dell();
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg(), dell), saved: MonitorRef.Of(dell));
+        string first = env.Recording.Start();
+        Assert.Equal(dell.HMonitor, env.Starts.Single().Plan.Source.HMonitor);
+        env.WriteFootage(first);
+
+        // The chosen DELL is unplugged: ddagrab ends on ACCESS_LOST. Part 2 would record the primary LG instead - silently.
+        env.Topology = TestDisplays.Topology(TestDisplays.Lg());
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 1, stopRequested: false, AccessLostStderr));
+
+        await Wait.Until(() => !env.Stopped.IsEmpty);
+        var result = Assert.Single(env.Stopped);
+        Assert.Equal(first, result.Path);
+        Assert.True(result.Success);   // part 1 is a good file
+        Assert.Equal("Aufnahme beendet: „DELL S2721DGF“ ist nicht verbunden.", result.Note);
+        Assert.Single(env.Starts);
+        Assert.Empty(env.Continued);
+        Assert.False(env.Recording.IsRecording);
+    }
+
+    [Fact]
+    public async Task Next_part_back_on_the_chosen_monitor_ends_the_fallback_recording_with_a_note()
+    {
+        var dell = TestDisplays.Dell();
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()), saved: MonitorRef.Of(dell));
+        string first = env.Recording.Start();
+        Assert.True(env.Starts.Single().Plan.Source.Resolution.IsFallback);   // recording the primary for the missing DELL
+        env.WriteFootage(first);
+
+        env.Topology = TestDisplays.Topology(TestDisplays.Lg(), dell);         // the DELL is back
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 1, stopRequested: false, AccessLostStderr));
+
+        await Wait.Until(() => !env.Stopped.IsEmpty);
+        var result = Assert.Single(env.Stopped);
+        Assert.True(result.Success);
+        Assert.Equal("Aufnahme beendet: Der Monitor hat gewechselt („LG ULTRAGEAR+“ → „DELL S2721DGF“).", result.Note);
+        Assert.Single(env.Starts);
+        Assert.Empty(env.Continued);
+    }
+
+    [Fact]
+    public async Task Next_part_on_the_same_monitor_without_its_device_path_continues()
+    {
+        // Nothing saved: the primary LG. While the DisplayPort link retrains Windows reports no device path for it - the
+        // same monitor all the same (HMONITOR, GDI name, output).
+        var lg = TestDisplays.Lg();
+        using var env = new RecordingEnv(TestDisplays.Topology(lg, TestDisplays.Dell()));
+        string first = env.Recording.Start();
+        env.WriteFootage(first);
+
+        env.Topology = TestDisplays.Topology(lg with { DevicePath = null }, TestDisplays.Dell());
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 1, stopRequested: false, ModeChangeStderr));
+
+        await Wait.Until(() => env.Starts.Count == 2);
+        Assert.Empty(env.Stopped);
+    }
+
+    [Fact]
+    public async Task Next_part_waits_until_the_display_is_quiet()
+    {
+        // R8: a game flips the mode several times while it starts - part 2 starts once, after the last flip.
+        using var env = new RecordingEnv(TestDisplays.Topology(TestDisplays.Lg()));
+        bool flipping = true;
+        env.Recording.LastDisplayChangeUtc = () => flipping ? DateTime.UtcNow : DateTime.UtcNow.AddMinutes(-1);
+        string first = env.Recording.Start();
+        env.WriteFootage(first);
+
+        Assert.Equal(PartExitAction.Continues, env.Recording.OnPartExited(first, 1, stopRequested: false, ModeChangeStderr));
+        await Task.Delay(400);   // twenty times the delay, but the display never calmed down
+        Assert.Single(env.Starts);
+        Assert.True(env.Recording.IsRecording);
+
+        flipping = false;
+        await Wait.Until(() => env.Starts.Count == 2);
+        Assert.Single(env.Continued);
+    }
+
     [Theory]
     [InlineData(2, @"C:\Clips\Arma\Rec_2026-11-09_20-15-00_Teil2.mp4")]
     [InlineData(3, @"C:\Clips\Arma\Rec_2026-11-09_20-15-00_Teil3.mp4")]
@@ -180,7 +302,8 @@ public sealed class ManualRecordingTests
         public ConcurrentQueue<RecordingResult> Stopped { get; } = new();
         public ConcurrentQueue<RecordingPart> Continued { get; } = new();
 
-        public RecordingEnv(DisplayTopology topology, TimeSpan? continueDelay = null)
+        /// <param name="saved">The chosen monitor; null = nothing saved (the primary monitor).</param>
+        public RecordingEnv(DisplayTopology topology, TimeSpan? continueDelay = null, MonitorRef? saved = null)
         {
             Topology = topology;
             Directory.CreateDirectory(_dir);
@@ -190,7 +313,13 @@ public sealed class ManualRecordingTests
             o.SortByGame = false;
             settings.Current.Audio.RecordSystemSound = false;
             settings.Current.Audio.RecordMicrophone = false;
-            settings.Current.Capture.Mode = CaptureMode.Monitor;   // nothing saved: the primary monitor
+            var capture = settings.Current.Capture;
+            capture.Mode = CaptureMode.Monitor;
+            capture.MonitorDevicePath = saved?.DevicePath;
+            capture.MonitorDeviceName = saved?.GdiName;
+            capture.MonitorFriendlyName = saved?.FriendlyName;
+            capture.MonitorEdidMfg = saved?.EdidMfg;
+            capture.MonitorEdidProduct = saved?.EdidProduct;
 
             Recording = new ManualRecordingService(settings)
             {

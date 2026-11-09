@@ -23,18 +23,21 @@ public sealed class ManualRecordingService : IDisposable
     // The automatic continuations after a display mode switch: the same bounds as the buffer's restarts (R2, R8).
     private readonly AutoRestartLedger _continuations = new();
     private CaptureTargetResolver.CapturePlan? _plan;   // the running (or last) part's plan
-    private string? _firstPath;                         // part 1's file; the next parts are named after it
+    private string? _firstPath;                         // part 1's file (the next parts are named after it); set while the recording lasts, also read without _gate
     private int _part;                                  // number of the running (or last) part
     private PendingPart? _pending;                      // a mode switch ended a part; the next one starts soon (also read without _gate)
+    private bool _stopRequested;                        // a stop was asked for: the part that ends now ends the recording
 
     public string? CurrentOutputPath { get; private set; }
     public DateTime? StartedAt { get; private set; }
 
     /// <summary>
-    /// True from Ctrl+F9 until the recording ends - also in the short pause between two parts after a display mode switch
-    /// (a Ctrl+F9 then stops it instead of starting a second recording).
+    /// True from Ctrl+F9 until the recording ends - also while the end of a part is still being handled and in the short
+    /// pause between two parts after a display mode switch (a Ctrl+F9 then stops it instead of starting a second recording).
     /// </summary>
-    public bool IsRecording => (_ffmpeg?.IsRunning ?? false) || Volatile.Read(ref _pending) is not null;
+    public bool IsRecording => Volatile.Read(ref _firstPath) is not null
+                               || (_ffmpeg?.IsRunning ?? false)
+                               || Volatile.Read(ref _pending) is not null;
 
     public event EventHandler<string>? RecordingStarted;
     /// <summary>Fired once when a recording ends — carries whether the file is usable.</summary>
@@ -60,8 +63,11 @@ public sealed class ManualRecordingService : IDisposable
     /// <summary>The display topology plans are resolved on; null = <see cref="DisplayTopologyCache.Shared"/> (tests set their own).</summary>
     internal DisplayTopologyCache? Topology { get; set; }
 
-    /// <summary>How long the display gets to settle before the next part starts.</summary>
+    /// <summary>How long the display gets to settle - after its last event - before the next part starts.</summary>
     internal TimeSpan ContinueDelay { get; set; } = DisplayRestartPolicy.RestartDelay;
+
+    /// <summary>The longest the next part waits on top of <see cref="ContinueDelay"/> for a display that keeps changing.</summary>
+    internal TimeSpan ContinueMaxWait { get; set; } = DisplayRestartPolicy.MaxSettleWait;
 
     /// <summary>Tests: replaces starting the capture of a part (gets its plan and file); the test then plays ffmpeg's end.</summary>
     internal Action<CaptureTargetResolver.CapturePlan, string>? StartPartOverride { get; set; }
@@ -72,6 +78,7 @@ public sealed class ManualRecordingService : IDisposable
         lock (_gate)
         {
             if (IsRecording) throw new InvalidOperationException("Recording already in progress.");
+            _stopRequested = false;
 
             // Same resolver as the buffer: in Auto mode the recording pins the window
             // that is active at Strg+F9 (occlusion-proof WGC) and STAYS on it until
@@ -86,7 +93,7 @@ public sealed class ManualRecordingService : IDisposable
             path = Path.Combine(clipsDir, filename);
 
             StartPart(plan, path);
-            _firstPath = path;
+            Volatile.Write(ref _firstPath, path);
             _part = 1;
             CurrentOutputPath = path;
             StartedAt = DateTime.Now;
@@ -102,6 +109,9 @@ public sealed class ManualRecordingService : IDisposable
     /// <summary>Starts audio, video and ffmpeg for one part into <paramref name="path"/>. Assumes _gate is held.</summary>
     private void StartPart(CaptureTargetResolver.CapturePlan plan, string path)
     {
+        // Never replace a running part: its ffmpeg would record on, out of reach of Stop and Dispose.
+        if (_ffmpeg is { IsRunning: true })
+            throw new InvalidOperationException("A part of the recording is still running.");
         _plan = plan;
         if (StartPartOverride is { } fake)
         {
@@ -239,10 +249,12 @@ public sealed class ManualRecordingService : IDisposable
 
     /// <summary>
     /// The ffmpeg of the part recording into <paramref name="path"/> ended. A usable file the user asked to stop (or that
-    /// ffmpeg finished by itself) ends the recording as a success, as before. An end the display explains - a mode-change
-    /// error in <paramref name="recentStderr"/> or a display change just before (R2) - keeps the part and continues in the
-    /// next one after <see cref="ContinueDelay"/>, at most <see cref="DisplayRestartPolicy.MaxRestarts"/> times per
-    /// <see cref="DisplayRestartPolicy.RestartWindow"/>. Anything else fails as before.
+    /// ffmpeg finished by itself) ends the recording as a success, as before - a stop asked for while this end was still
+    /// being handled counts too. An end the display explains - a mode-change error in <paramref name="recentStderr"/> or a
+    /// display change just before (R2) - keeps the part and continues in the next one once the display has been quiet for
+    /// <see cref="ContinueDelay"/>, at most <see cref="DisplayRestartPolicy.MaxRestarts"/> times per
+    /// <see cref="DisplayRestartPolicy.RestartWindow"/>. Anything else fails as before. The end of a part that is not the
+    /// running one is ignored.
     /// </summary>
     internal PartExitAction OnPartExited(string path, int code, bool stopRequested, string? recentStderr)
     {
@@ -255,6 +267,13 @@ public sealed class ManualRecordingService : IDisposable
         PartExitAction action;
         lock (_gate)
         {
+            if (_firstPath is null || !string.Equals(path, CurrentOutputPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Warn($"ManualRecording: '{Path.GetFileName(path)}' ended, but it is not the running part - ignored");
+                return PartExitAction.Ignored;
+            }
+            // Ctrl+F9 right after a mode switch ended the part (its end was still being handled): that is a stop.
+            stopRequested |= _stopRequested;
             var now = DateTime.UtcNow;
             var lastChange = LastDisplayChangeUtc?.Invoke();
             if (fileValid && !stopRequested && _continuations.TryTake(recentStderr, lastChange, now, out int attempt))
@@ -294,18 +313,27 @@ public sealed class ManualRecordingService : IDisposable
         return action;
     }
 
-    /// <summary>The part in <paramref name="keptPath"/> is kept; the next one starts after the display settled. Assumes _gate is held.</summary>
+    /// <summary>
+    /// The part in <paramref name="keptPath"/> is kept; the next one starts once the display has been quiet for
+    /// <see cref="ContinueDelay"/> after its last event (R8: a burst of flips costs one part). Assumes _gate is held.
+    /// </summary>
     private void ScheduleNextPart(string keptPath, int attempt)
     {
         int part = _part + 1;
         var pending = new PendingPart(new CancellationTokenSource(), keptPath, PartPath(_firstPath ?? keptPath, part), part);
         Volatile.Write(ref _pending, pending);
         Logger.Info($"ManualRecording: ffmpeg ended on a display change - part {_part} kept ({Path.GetFileName(keptPath)}), " +
-                    $"part {part} starts in {ContinueDelay.TotalMilliseconds:0} ms ({attempt}/{DisplayRestartPolicy.MaxRestarts})");
+                    $"part {part} starts once the display has been quiet for {ContinueDelay.TotalMilliseconds:0} ms " +
+                    $"({attempt}/{DisplayRestartPolicy.MaxRestarts})");
         var delay = ContinueDelay;
+        var maxWait = ContinueMaxWait;
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(delay, pending.Cts.Token).ConfigureAwait(false); }
+            try
+            {
+                await DisplayRestartPolicy.WaitForQuietDisplayAsync(() => LastDisplayChangeUtc?.Invoke(), delay, maxWait,
+                                                                   pending.Cts.Token).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) { return; }
             StartNextPart(pending);
         });
@@ -321,11 +349,23 @@ public sealed class ManualRecordingService : IDisposable
             try
             {
                 // Same window and audio as before (a recording stays on what it pinned); the monitor at its new mode.
-                var plan = CaptureTargetResolver.Reresolve(_plan!.Value, _settings.Current.Capture, Topology);
-                StartPart(plan, pending.NextPath);
-                _part = pending.Part;
-                CurrentOutputPath = pending.NextPath;
-                continued = new RecordingPart(pending.KeptPath, pending.NextPath, pending.Part);
+                var previous = _plan!.Value;
+                var plan = CaptureTargetResolver.Reresolve(previous, _settings.Current.Capture, Topology);
+                if (MonitorChangeNote(previous, plan) is { } note)
+                {
+                    Logger.Warn($"ManualRecording: part {pending.Part} would record another monitor ('{previous.Source.Label}' -> " +
+                                $"'{plan.Source.Label}', {plan.Source.Resolution.Status}: {plan.Source.Resolution.Reason}) - the recording " +
+                                $"ends with part {pending.Part - 1}{Environment.NewLine}{TopologyNow().Dump()}");
+                    ended = new RecordingResult(pending.KeptPath, true, null, note);
+                    EndRecording();
+                }
+                else
+                {
+                    StartPart(plan, pending.NextPath);
+                    _part = pending.Part;
+                    CurrentOutputPath = pending.NextPath;
+                    continued = new RecordingPart(pending.KeptPath, pending.NextPath, pending.Part);
+                }
             }
             catch (Exception ex)
             {
@@ -342,13 +382,31 @@ public sealed class ManualRecordingService : IDisposable
         if (ended is { } e) RecordingStopped?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Why the next part must not go on with <paramref name="next"/>: a mode switch continues the SAME capture, but another
+    /// monitor - the chosen one gone (the next part would record the primary instead), back again, or a new primary - would
+    /// put another picture into the same recording without a word. Null when the next part records the same monitor (or,
+    /// through WGC, the same window).
+    /// </summary>
+    private static string? MonitorChangeNote(CaptureTargetResolver.CapturePlan previous, CaptureTargetResolver.CapturePlan next)
+    {
+        if (previous.UseWgc || CaptureSourceRules.SameMonitorOrPathless(previous.Source, next.Source)) return null;
+        if (next.Source.Resolution.IsFallback)
+            return L.T($"Aufnahme beendet: {next.Source.Resolution.Reason}.", $"Recording ended: {next.Source.Resolution.Reason}.");
+        string from = MonitorLabels.NameOf(previous.Source.Resolution.Display?.FriendlyName);
+        string to = MonitorLabels.NameOf(next.Source.Resolution.Display?.FriendlyName);
+        return L.T($"Aufnahme beendet: Der Monitor hat gewechselt („{from}“ → „{to}“).",
+                   $"Recording ended: the monitor changed (“{from}” → “{to}”).");
+    }
+
     /// <summary>The recording is over. Assumes _gate is held.</summary>
     private void EndRecording()
     {
         CurrentOutputPath = null;
         StartedAt = null;
-        _firstPath = null;
+        Volatile.Write(ref _firstPath, null);
         _part = 0;
+        _stopRequested = false;
     }
 
     private DisplayTopology TopologyNow() => (Topology ?? DisplayTopologyCache.Shared).Get();
@@ -365,6 +423,12 @@ public sealed class ManualRecordingService : IDisposable
                 Volatile.Write(ref _pending, null);
                 ended = new RecordingResult(pending.KeptPath, true, null);
                 EndRecording();
+            }
+            else if (_firstPath is not null)
+            {
+                // Whatever ends the running part now ends the recording - also a part that ended on its own just before
+                // (its end is still being handled and would otherwise go on into the next part).
+                _stopRequested = true;
             }
         }
         if (ended is { } result)
@@ -465,5 +529,7 @@ internal enum PartExitAction
     /// <summary>The recording failed, as before.</summary>
     Failed,
     /// <summary>A display mode switch: the part is kept and the next one is scheduled.</summary>
-    Continues
+    Continues,
+    /// <summary>The end of a part that is not the running one (a late exit): nothing happens.</summary>
+    Ignored
 }
