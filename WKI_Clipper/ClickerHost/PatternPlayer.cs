@@ -174,6 +174,19 @@ internal sealed class PatternPlayer : IDisposable
     }
 
     /// <summary>
+    /// Whether <paramref name="id"/> is on its way back after its last pass: back at the start it ends (no repeat, stopped, no new
+    /// pass waiting). Any thread.
+    /// </summary>
+    public bool IsOnFinalReturn(string id)
+    {
+        lock (_lock)
+        {
+            int i = IndexOf(id);
+            return i >= 0 && _playbacks[i] is { Back: not null, PassDue: false, Next: null } p && (p.Stopping || !p.Request.Repeat);
+        }
+    }
+
+    /// <summary>
     /// Starts a playback from where the pointer is now; one with the same id that still plays starts over from there. One that plays with
     /// a way back first sends the rest of its way back (all of it, if it is still on its way out) at once as one move, with the next tick;
     /// the new pass follows in the tick after, from where the old one began. Any thread.

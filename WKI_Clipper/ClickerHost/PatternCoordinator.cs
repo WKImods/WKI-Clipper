@@ -181,7 +181,11 @@ internal sealed class PatternCoordinator
                 if (!_entries.TryGetValue(id, out var entry)) return;
                 // Only the press is filtered: a release always reaches the machine, so Hold still stops.
                 if (matched && !PressCounts(entry)) return;
-                changed = Apply(entry, entry.Machine.OnMatchChanged(matched));
+                // Toggle, on its own way back after its last pass: that pass is over, so a press means "again", not "stop" - the rest
+                // of the way back is jumped and a new pass starts at the start; the toggle stays on until that one is back.
+                if (matched && entry.Options.Mode == ActivationMode.Toggle && entry.Machine.IsRunning && _player.IsOnFinalReturn(id))
+                    changed = Start(entry);
+                else changed = Apply(entry, entry.Machine.OnMatchChanged(matched));
             }
         }
         if (changed) RaiseStateChanged();
@@ -199,22 +203,28 @@ internal sealed class PatternCoordinator
         return true;
     }
 
+    /// <summary>Plays the pattern with its current options (under the gate). true = the status changed.</summary>
+    private bool Start(Entry entry)
+    {
+        if (!_data.TryGetValue(entry.Id, out var stored) || stored.Revision != entry.Options.Revision)
+        {
+            entry.Machine.OnStoppedByEngine();   // the machine assumed the start happened
+            HostLog.Info("Pattern " + entry.Id + " has no samples of its current recording (yet); it does not start.");
+            return false;
+        }
+        var o = entry.Options;
+        _player.Play(new PatternPlayRequest(entry.Id, stored.Data, o.Speed, o.Repeat, o.Replay, o.Return));
+        _blockedBy = null;
+        return UpdateStatus();
+    }
+
     /// <summary>Carries out what a pattern's machine asked for (under the gate). true = the status changed.</summary>
     private bool Apply(Entry entry, ActivationOutput output)
     {
         switch (output.Command)
         {
             case ActivationCommand.Start:
-                if (!_data.TryGetValue(entry.Id, out var stored) || stored.Revision != entry.Options.Revision)
-                {
-                    entry.Machine.OnStoppedByEngine();   // the machine assumed the start happened
-                    HostLog.Info("Pattern " + entry.Id + " has no samples of its current recording (yet); it does not start.");
-                    return false;
-                }
-                var o = entry.Options;
-                _player.Play(new PatternPlayRequest(entry.Id, stored.Data, o.Speed, o.Repeat, o.Replay, o.Return));
-                _blockedBy = null;
-                return UpdateStatus();
+                return Start(entry);
             case ActivationCommand.Stop:
                 // Its own hotkey (released or pressed again): one with a way back goes back to its start first and plays until then.
                 _player.StopWithReturn(entry.Id);

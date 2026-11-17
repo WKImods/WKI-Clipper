@@ -280,6 +280,55 @@ public sealed class PatternCoordinatorTests
         Assert.True(r.Playing(A));
     }
 
+    /// <summary>
+    /// Toggle without repeat: the pass is over and the pattern goes back on its own. A press then means "again", not "stop": the rest of
+    /// the way back is jumped and a new pass starts at the start (the toggle stays on until that pass is back).
+    /// </summary>
+    [Fact]
+    public void A_toggle_press_on_the_way_back_after_the_pass_starts_it_again()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => { p.Mode = ActivationMode.Toggle; p.Return = PatternReturn.Reverse; });
+
+        r.Press(F8);
+        r.Release(F8);
+        r.Run(110);                       // the 100 px pass, then 10 of them back
+        Assert.True(r.Playing(A));
+        long before = r.Input.Of("moveby").Count();
+
+        r.Press(F8);
+        r.Release(F8);
+        r.Run(30);
+
+        var after = r.Input.Of("moveby").Skip((int)before).ToList();
+        Assert.True(after.Count > 1, "nothing moved after the press");
+        Assert.True(after[0].A < -1, $"no jump back but {after[0].A}");   // the rest of the way back at once
+        Assert.All(after.Skip(1), e => Assert.True(e.A > 0, $"not a new pass: {e.A}"));
+        Assert.True(r.Playing(A));
+        r.RunOut();
+        Assert.Equal((0L, 0L), r.Moved);
+        Assert.False(r.Playing(A));
+    }
+
+    [Fact]
+    public void A_toggle_press_on_the_way_back_of_a_repeating_pattern_stops_it()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => { p.Mode = ActivationMode.Toggle; p.Repeat = true; p.Return = PatternReturn.Reverse; });
+
+        r.Press(F8);
+        r.Release(F8);
+        r.Run(110);                       // on the way back between two passes
+        double pressedAt = r.Clock.Now;
+        r.Press(F8);                      // a repeating pattern still runs: this is its stop
+        r.Release(F8);
+        r.RunOut();
+
+        Assert.Equal((0L, 0L), r.Moved);
+        Assert.All(r.Input.Of("moveby").Where(e => e.T > pressedAt), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
+        Assert.False(r.Playing(A));
+    }
+
     [Fact]
     public void Pressing_again_on_the_way_back_starts_at_the_start()
     {
