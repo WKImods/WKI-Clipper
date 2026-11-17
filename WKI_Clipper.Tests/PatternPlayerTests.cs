@@ -42,8 +42,9 @@ public sealed class PatternPlayerTests
             Player.Blocked += b => Log.Add(new Note("blocked:" + b, Clock.Now, Input.Events.Count));
         }
 
-        public void Play(string id, PatternData data, double speed = 1, bool repeat = false, PatternReplay replay = PatternReplay.Auto)
-            => Player.Play(new PatternPlayRequest(id, data, speed, repeat, replay));
+        public void Play(string id, PatternData data, double speed = 1, bool repeat = false, PatternReplay replay = PatternReplay.Auto,
+            PatternReturn ret = PatternReturn.Off)
+            => Player.Play(new PatternPlayRequest(id, data, speed, repeat, replay, ret));
 
         public void Run() => Player.RunSync();
 
@@ -117,6 +118,9 @@ public sealed class PatternPlayerTests
 
     /// <summary><paramref name="n"/> bins of the same motion, one every <paramref name="step"/> ms from 0.</summary>
     private static PatternTrack Line(int n, int dx, int dy, int step = 1) => Bins(n, i => (i * step, dx, dy));
+
+    /// <summary>1 px to the right per ms from 0 to <paramref name="n"/> ms (the bin at k ms moves over (k-1, k]): its way back is 1 px per ms too.</summary>
+    private static PatternTrack Ramp(int n) => Bins(n, i => (i + 1, 1, 0));
 
     /// <summary>Uneven values, pauses and both directions, so rounding has every chance to drift.</summary>
     private static PatternTrack Wobbly(int n)
@@ -390,6 +394,289 @@ public sealed class PatternPlayerTests
         foreach (var e in rig.Input.Events)
             path.Add(e.Kind == "moveby" ? new PixelPoint(path[^1].X + e.A, path[^1].Y + e.B) : new PixelPoint(e.A, e.B));
         NoJump(path);
+    }
+
+    // ---- back to the start (pattern return design 1) ----
+
+    /// <summary>Replays the relative moves as positions: none leaves 0 .. <paramref name="max"/> px, so every pass starts at the start.</summary>
+    private static void StaysWithin(IEnumerable<InputEvent> moves, long max)
+    {
+        long x = 0;
+        foreach (var e in moves)
+        {
+            x += e.A;
+            Assert.InRange(x, 0, max);
+        }
+    }
+
+    [Fact]
+    public void Jump_after_a_pass_goes_back_in_one_move()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), ret: PatternReturn.Jump);   // 0 .. 19 ms
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        var moves = rig.Input.Of("moveby").ToList();
+        Assert.Equal(21, moves.Count);
+        Assert.All(moves.Take(20), e => Assert.Equal((1, 0), (e.A, e.B)));
+        Assert.Equal(19, moves[^2].T);
+        Assert.Equal(new InputEvent(20, "moveby", -20, 0), moves[^1]);   // one tick after the pass's last move, never merged into it
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+        Assert.Equal(20, rig.Log.Single().At);                           // Finished once it is back
+        Assert.Empty(rig.Player.Playing);
+    }
+
+    [Fact]
+    public void Reverse_after_a_pass_retraces_it_and_ends_at_the_start()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Ramp(20), PatternTrack.Empty), ret: PatternReturn.Reverse);
+        bool playingOnTheWayBack = false;
+        rig.Waiter.At(30, () => playingOnTheWayBack = rig.Player.IsPlaying("a"));
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        var moves = rig.Input.Of("moveby").ToList();
+        Assert.Equal(Enumerable.Range(1, 20).Select(t => (double)t), moves.Take(20).Select(e => e.T));    // out: 1 .. 20 ms
+        Assert.All(moves.Take(20), e => Assert.Equal((1, 0), (e.A, e.B)));
+        Assert.Equal(Enumerable.Range(21, 20).Select(t => (double)t), moves.Skip(20).Select(e => e.T));   // back: 21 .. 40 ms
+        Assert.All(moves.Skip(20), e => Assert.Equal((-1, 0), (e.A, e.B)));
+        Assert.True(playingOnTheWayBack);   // the way back belongs to the playback
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+        Assert.Equal(40, rig.Log.Single().At);
+    }
+
+    [Fact]
+    public void Repeat_with_a_return_starts_every_pass_at_the_start()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true, ret: PatternReturn.Jump);
+        rig.Waiter.At(65, () => rig.Player.StopWithReturn("a"));
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        var moves = rig.Input.Of("moveby").ToList();
+        var jumps = moves.Where(e => e.A == -20).ToList();
+        Assert.True(jumps.Count >= 3, $"only {jumps.Count} whole passes");
+        Assert.All(jumps, j => Assert.Equal(j.T + 1, moves.First(e => e.T > j.T).T));   // the next pass follows in the next tick
+        StaysWithin(moves, 20);
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+        Assert.Empty(rig.Player.Playing);
+    }
+
+    [Fact]
+    public void Releasing_during_a_return_finishes_it_without_a_further_pass()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true, ret: PatternReturn.Reverse);
+        rig.Waiter.At(25, () => rig.Player.StopWithReturn("a"));   // on the way back of the first pass (20 .. 38 ms)
+
+        rig.Run();
+
+        Assert.All(rig.Input.Of("moveby").Where(e => e.T >= 25), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
+        Assert.Equal((0L, 0L), rig.Moved);
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+        Assert.Equal(38, rig.Log.Single().At);
+    }
+
+    [Fact]
+    public void Releasing_between_the_way_back_and_the_next_pass_starts_no_further_pass()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true, ret: PatternReturn.Jump);
+        rig.Waiter.At(20.5, () => rig.Player.StopWithReturn("a"));   // back at 20 ms, the next pass was due at 21 ms
+
+        rig.Run();
+
+        Assert.Equal(20, rig.Input.Events.Max(e => e.T));
+        Assert.Equal((0L, 0L), rig.Moved);
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+    }
+
+    [Theory]
+    [InlineData(PatternReturn.Jump)]
+    [InlineData(PatternReturn.Reverse)]
+    public void Stopping_mid_pass_with_return_goes_back_from_there(PatternReturn ret)
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), ret: ret);
+        rig.Waiter.At(7.5, () => rig.Player.StopWithReturn("a"));
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        Assert.All(rig.Input.Of("moveby").Where(e => e.T > 7.5), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+        if (ret == PatternReturn.Jump) Assert.Equal(new InputEvent(8, "moveby", -8, 0), rig.Input.Events[^1]);
+        else Assert.Equal(14, rig.Log.Single().At);   // back over the 7 ms it drove
+    }
+
+    [Fact]
+    public void Released_before_its_first_move_is_back_already()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), ret: PatternReturn.Reverse);
+        rig.Player.StopWithReturn("a");
+
+        rig.Run();
+
+        Assert.Empty(rig.Input.Events);
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+    }
+
+    [Fact]
+    public void Pressing_again_on_the_way_back_jumps_the_rest_and_starts_at_the_start()
+    {
+        var rig = new Rig();
+        var data = Data(Line(20, 1, 0), PatternTrack.Empty);
+        rig.Play("a", data, ret: PatternReturn.Reverse);
+        rig.Waiter.At(25, () => rig.Play("a", data, ret: PatternReturn.Reverse));   // on the way back: 5 of 20 px are back
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        var moves = rig.Input.Of("moveby").ToList();
+        Assert.Equal(new InputEvent(25, "moveby", -15, 0), Assert.Single(moves, e => e.T == 25));   // the rest at once, in one move
+        Assert.Equal(new InputEvent(26, "moveby", 1, 0), moves.First(e => e.T > 25));                // then the new pass from the start
+        StaysWithin(moves, 20);
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);   // a restart is no end
+    }
+
+    [Fact]
+    public void Pressing_again_on_the_way_out_jumps_all_of_it_back()
+    {
+        var rig = new Rig();
+        var data = Data(Line(20, 1, 0), PatternTrack.Empty);
+        rig.Play("a", data, ret: PatternReturn.Reverse);
+        rig.Waiter.At(7.5, () => rig.Play("a", data, ret: PatternReturn.Reverse));
+
+        rig.Run();
+
+        Assert.Equal((0L, 0L), rig.Moved);
+        Assert.Equal(new InputEvent(7.5, "moveby", -8, 0), Assert.Single(rig.Input.Of("moveby"), e => e.A < 0 && e.T < 20));
+        StaysWithin(rig.Input.Of("moveby"), 20);
+    }
+
+    [Theory]
+    [InlineData(PatternReplay.Raw)]
+    [InlineData(PatternReplay.Pointer)]
+    public void Many_presses_never_drift(PatternReplay replay)
+    {
+        var rig = new Rig();
+        var start = new PixelPoint(700, 500);
+        rig.Host.Cursor = start;
+        var track = Wobbly(60);
+        var data = replay == PatternReplay.Raw ? Data(track, PatternTrack.Empty) : Data(PatternTrack.Empty, track);
+        void Press() => rig.Play("a", data, speed: 1.37, replay: replay, ret: PatternReturn.Reverse);
+        Press();
+        for (int k = 0; k < 10; k++)
+        {
+            rig.Waiter.At(9 * k + 3.5, () => rig.Player.StopWithReturn("a"));
+            if (k < 9) rig.Waiter.At(9 * k + 5.25, Press);   // again while it is on its way back
+        }
+
+        rig.Run();
+
+        Assert.Empty(rig.Player.Playing);
+        if (replay == PatternReplay.Raw) Assert.Equal((0L, 0L), rig.Moved);
+        else Assert.Equal(start, rig.Targets[^1]);
+        Assert.Equal(start, rig.Host.Cursor);
+    }
+
+    [Theory]
+    [InlineData(PatternReturn.Jump)]
+    [InlineData(PatternReturn.Reverse)]
+    public void Pointer_return_at_the_screen_edge_ends_exactly_at_the_start_point(PatternReturn ret)
+    {
+        var rig = new Rig();
+        rig.Host.Cursor = new PixelPoint(100, 50);
+        // 200 px up: 150 of them run into the top edge of the screen.
+        rig.Play("a", Data(PatternTrack.Empty, Line(20, 0, -10)), replay: PatternReplay.Pointer, ret: ret);
+
+        rig.Run();
+
+        var targets = rig.Targets;
+        Assert.Contains(new PixelPoint(100, 0), targets);
+        Assert.Equal(new PixelPoint(100, 50), targets[^1]);            // exactly where the pass began
+        Assert.All(targets, p => Assert.InRange(p.Y, 0, 50));          // the way back never overshoots it: the edge held the pointer
+        Assert.Equal(new[] { "finished:a" }, rig.Notes);
+    }
+
+    [Fact]
+    public void Reverse_at_double_tempo_takes_as_long_as_the_way_out()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), speed: 2, ret: PatternReturn.Reverse);   // 19 ms of curve
+
+        rig.Run();
+
+        var moves = rig.Input.Of("moveby").ToList();
+        Assert.Equal(10, moves.Last(e => e.A > 0).T);   // out: 0 .. 10 ms
+        Assert.Equal(20, moves[^1].T);                  // back: 10 .. 20 ms
+        Assert.Equal(20, rig.Log.Single().At);
+        Assert.Equal((0L, 0L), rig.Moved);
+    }
+
+    [Fact]
+    public void Stop_and_StopAll_never_return()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true, ret: PatternReturn.Jump);
+        rig.Waiter.At(7.5, () => rig.Player.Stop("a"));
+
+        rig.Run();
+
+        Assert.All(rig.Input.Events, e => Assert.True(e.T < 7.5, $"moved at {e.T}"));
+        Assert.Equal((8L, 0L), rig.Moved);
+        Assert.Empty(rig.Log);
+
+        var all = new Rig();
+        all.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), ret: PatternReturn.Reverse);
+        all.Play("b", Data(PatternTrack.Empty, Line(20, 0, 1)), replay: PatternReplay.Pointer, ret: PatternReturn.Jump);
+        all.Waiter.At(25, () => all.Player.StopAll());   // a on its way back, b already back
+        all.Run();
+
+        Assert.All(all.Input.Events, e => Assert.True(e.T < 25, $"moved at {e.T}"));
+        Assert.NotEqual((0L, 0L), all.Moved);
+        Assert.Equal(new[] { "finished:b" }, all.Notes);
+    }
+
+    [Fact]
+    public void StopWithReturn_without_a_return_is_Stop()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true);
+        bool? playing = null;
+        rig.Waiter.At(7.5, () =>
+        {
+            rig.Player.StopWithReturn("a");
+            playing = rig.Player.IsPlaying("a");
+        });
+        rig.Player.StopWithReturn("unknown");   // nothing plays under that id: nothing happens
+
+        rig.Run();
+
+        Assert.False(playing);
+        Assert.Equal((8L, 0L), rig.Moved);
+        Assert.Empty(rig.Log);
+    }
+
+    [Fact]
+    public void A_refused_move_on_the_way_back_ends_it_there()
+    {
+        var rig = new Rig();
+        rig.Play("a", Data(Line(20, 1, 0), PatternTrack.Empty), repeat: true, ret: PatternReturn.Reverse);
+        rig.Waiter.At(25, () => rig.Input.FailEverything = true);
+
+        rig.Run();
+
+        Assert.Equal(25, rig.Clock.Now);
+        Assert.Empty(rig.Player.Playing);
+        Assert.Equal(new[] { "finished:a", "blocked:True" }, rig.Notes);
     }
 
     // ---- the replay type ----

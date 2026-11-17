@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using WKI_Clipper.Models;
@@ -9,9 +10,11 @@ namespace WKI_Clipper.ClickerHost;
 
 /// <summary>
 /// One playback as the coordinator starts it: the pattern's samples and the options it has at that moment (an edit while it plays
-/// applies to the next start, mouse-patterns design 4.4).
+/// applies to the next start, mouse-patterns design 4.4). <paramref name="Return"/>: back to the start after every pass and when its
+/// own hotkey stops it (pattern return design 1).
 /// </summary>
-internal sealed record PatternPlayRequest(string Id, PatternData Data, double Speed, bool Repeat, PatternReplay Replay);
+internal sealed record PatternPlayRequest(string Id, PatternData Data, double Speed, bool Repeat, PatternReplay Replay,
+    PatternReturn Return = PatternReturn.Off);
 
 /// <summary>
 /// Plays mouse patterns in the helper (mouse-patterns design 4.3, 4.4, 5.1) on its own thread with its own <see cref="IWaiter"/> (the
@@ -26,32 +29,69 @@ internal sealed record PatternPlayRequest(string Id, PatternData Data, double Sp
 /// zero and one that ends leaves its offset in the anchor, and a relative move of the same tick shifts the anchor too, so playbacks
 /// add up and none moves the pointer by starting or stopping. The target stays on the monitors, and what an edge swallows is gone, as
 /// with a hand on the mouse: never a jump, also with negative coordinates or gaps between monitors.</item>
+/// <item>A playback with a way back (<see cref="PatternPlayRequest.Return"/>, pattern return design 1) plays a pass, then its way back
+/// (<see cref="PatternReturnPath"/>, from the tick after the pass's last move), and with repeat the next pass in the tick after that,
+/// each pass from the same point. Its offset is what its way out and its way back sent together. While it is the only absolute
+/// playback, its way back also retraces what an edge swallowed on the way out - the edge holds the pointer instead - so it ends
+/// exactly where the pass began.</item>
 /// </list>
-/// The replay type is decided once per start (<see cref="PatternReplayRules.Resolve"/>). <see cref="Play"/>, <see cref="Stop"/> and
-/// <see cref="StopAll"/> may be called from any thread; a tick runs under the same lock, so once a stop returns nothing of that
-/// playback is sent any more. A move Windows refuses (an elevated window in front) ends every playback.
+/// The replay type is decided once per start (<see cref="PatternReplayRules.Resolve"/>). <see cref="Play"/>, <see cref="Stop"/>,
+/// <see cref="StopWithReturn"/> and <see cref="StopAll"/> may be called from any thread; a tick runs under the same lock, so once a
+/// stop returns nothing of that playback is sent any more. A move Windows refuses (an elevated window in front) ends every playback.
 /// </summary>
 internal sealed class PatternPlayer : IDisposable
 {
     /// <summary>The tick while something plays.</summary>
     public const double TickMs = 1.0;
 
+    /// <summary>One running pattern. Everything but the constructor runs under the player's lock.</summary>
     private sealed class Playback
     {
         public Playback(PatternPlayRequest request, double startMs)
         {
             Request = request;
-            StartMs = startMs;
+            StartMs = LastMs = startMs;
         }
 
-        public PatternPlayRequest Request { get; }
+        /// <summary>Replaced by <see cref="Next"/> when the pass after a press on the way begins.</summary>
+        public PatternPlayRequest Request;
         public string Id => Request.Id;
-        public double StartMs { get; }
+        public bool Returns => Request.Return != PatternReturn.Off;
 
-        // Set by its first tick, under the player's lock. Cursor stays null when the data cannot be played.
-        public PatternCursor? Cursor;
-        public bool Absolute;
+        // Curve, Cursor and Absolute are set by its first tick; Curve stays null until then and when the data cannot be played.
+        public PatternCurve? Curve;
+        public PatternCursor? Cursor;         // the current pass, on its way out
+        public PatternReturnPath? Back;       // ... and on its way back, once it turned
+        public long CarriedX, CarriedY;       // what an earlier way back of this pass sent before a press turned it into a jump
+        public long SwallowedX, SwallowedY;   // what an edge swallowed of this pass while it was the only absolute playback
+        public double StartMs;                // of the current pass
+        public double LastMs;                 // its last move on the way out
+        public double BackStartMs;
+        public bool Absolute;                 // counted in _absolute
+        public bool Stopping;                 // its hotkey stopped it: back to the start, then no further pass
+        public bool PassDue;                  // back at the start: the next pass begins with the next tick
+        public PatternPlayRequest? Next;      // pressed again on the way: the next pass plays this request
         public bool Done;
+
+        /// <summary>Everything the current pass sent: its way out and its way back.</summary>
+        public (long X, long Y) Offset
+        {
+            get
+            {
+                long x = CarriedX, y = CarriedY;
+                if (Cursor is { } cursor)
+                {
+                    x += cursor.Emitted.X;
+                    y += cursor.Emitted.Y;
+                }
+                if (Back is { } back)
+                {
+                    x += back.Emitted.X;
+                    y += back.Emitted.Y;
+                }
+                return (x, y);
+            }
+        }
     }
 
     /// <summary>The curves of one <see cref="PatternData"/>: built at its first start, shared by every later one.</summary>
@@ -97,9 +137,10 @@ internal sealed class PatternPlayer : IDisposable
     }
 
     /// <summary>
-    /// A playback ended by itself: a pass without repeat is complete (raised after its last move went out), or the player ended it (a
-    /// refused move, data it cannot play). Not raised for <see cref="Stop"/>, <see cref="StopAll"/> or a restart by <see cref="Play"/> -
-    /// the caller knows - nor when the id plays again by the time it would be raised. On the player's thread, outside its lock.
+    /// A playback ended by itself: a pass without repeat is complete (raised after its last move went out; with a way back once it is
+    /// back, also after <see cref="StopWithReturn"/>), or the player ended it (a refused move, data it cannot play). Not raised for
+    /// <see cref="Stop"/>, <see cref="StopAll"/> or a restart by <see cref="Play"/> - the caller knows - nor when the id plays again by the
+    /// time it would be raised. On the player's thread, outside its lock.
     /// </summary>
     public event Action<string>? Finished;
 
@@ -130,7 +171,11 @@ internal sealed class PatternPlayer : IDisposable
         lock (_lock) return IndexOf(id) >= 0;
     }
 
-    /// <summary>Starts a playback from where the pointer is now; one with the same id that still plays starts over. Any thread.</summary>
+    /// <summary>
+    /// Starts a playback from where the pointer is now; one with the same id that still plays starts over from there. One that plays with
+    /// a way back first sends the rest of its way back (all of it, if it is still on its way out) at once as one move, with the next tick;
+    /// the new pass follows in the tick after, from where the old one began. Any thread.
+    /// </summary>
     public void Play(PatternPlayRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -139,8 +184,19 @@ internal sealed class PatternPlayer : IDisposable
         {
             if (_disposed) return;
             int i = IndexOf(request.Id);
-            if (i >= 0) Remove(i);
-            _playbacks.Add(new Playback(request, _clock.NowMs));
+            if (i >= 0 && _playbacks[i] is { Curve: not null, Returns: true } p)
+            {
+                if (!p.PassDue) TurnBack(p, _clock.NowMs, PatternReturn.Jump);
+                p.Next = request;
+                p.Stopping = false;
+                _playbacks.RemoveAt(i);
+                _playbacks.Add(p);   // start order
+            }
+            else
+            {
+                if (i >= 0) Remove(i);
+                _playbacks.Add(new Playback(request, _clock.NowMs));
+            }
             Wake();   // the first move goes out now, not at the next tick (or after the idle sleep)
         }
     }
@@ -152,6 +208,28 @@ internal sealed class PatternPlayer : IDisposable
         {
             int i = IndexOf(id);
             if (i >= 0) Remove(i);
+        }
+    }
+
+    /// <summary>
+    /// Its own hotkey stopped it (released or pressed again): a playback with a way back turns back from where its last move took it - one
+    /// already on its way back finishes that - and starts no further pass; <see cref="Finished"/> follows once it is back, and it plays
+    /// until then. Without a way back the same as <see cref="Stop"/>. No effect when it does not play. Any thread.
+    /// </summary>
+    public void StopWithReturn(string id)
+    {
+        lock (_lock)
+        {
+            int i = IndexOf(id);
+            if (i < 0) return;
+            var p = _playbacks[i];
+            if (!p.Returns)
+            {
+                Remove(i);
+                return;
+            }
+            p.Stopping = true;   // the next tick turns it back
+            p.Next = null;
         }
     }
 
@@ -253,13 +331,7 @@ internal sealed class PatternPlayer : IDisposable
         long relX = 0, relY = 0;
         foreach (var p in _playbacks)
         {
-            if (p.Cursor is null && !Begin(p))
-            {
-                p.Done = true;
-                continue;
-            }
-            // The last move of a pass comes with the false: it is sent like any other.
-            if (!p.Cursor!.Advance(now - p.StartMs, out int dx, out int dy)) p.Done = true;
+            Advance(p, now, out int dx, out int dy);
             if (p.Absolute) continue;
             relX += dx;
             relY += dy;
@@ -272,16 +344,29 @@ internal sealed class PatternPlayer : IDisposable
             _anchorX += relX;   // the relative move took the pointer along: the absolute target follows, so both add up
             _anchorY += relY;
             long tx = _anchorX, ty = _anchorY;
+            Playback? sole = null;
             foreach (var p in _playbacks)
             {
-                if (!p.Absolute || p.Cursor is not { } cursor) continue;
-                var (ex, ey) = cursor.Emitted;
+                if (!p.Absolute) continue;
+                sole = p;
+                var (ex, ey) = p.Offset;
                 tx += ex;
                 ty += ey;
             }
+            if (_absolute != 1) sole = null;
             var (x, y) = ClampToScreen(tx, ty, _env.Monitors);
-            _anchorX += x - tx;   // what the edge swallowed is gone: the way back starts at the edge
-            _anchorY += y - ty;
+            // What the edge swallowed is gone: the way back starts at the edge, as with a hand on the mouse. Only the way back of the
+            // only absolute playback retraces it (TurnBack took it out of the anchor): there the edge holds the pointer instead.
+            if (sole?.Back is null)
+            {
+                _anchorX += x - tx;
+                _anchorY += y - ty;
+                if (sole is not null)
+                {
+                    sole.SwallowedX += x - tx;
+                    sole.SwallowedY += y - ty;
+                }
+            }
             if (x != _lastX || y != _lastY)
             {
                 if (!Sent(_sink.MoveTo(x, y))) return false;
@@ -299,39 +384,158 @@ internal sealed class PatternPlayer : IDisposable
     }
 
     /// <summary>
-    /// The first tick of a playback: its replay type, its cursor and, for the first absolute playback, the anchor. false = its data
+    /// One playback's step of this tick: the relative move in <paramref name="dx"/>/<paramref name="dy"/> (an absolute one's lands in its
+    /// <see cref="Playback.Offset"/>). Sets <see cref="Playback.Done"/> when it ends with this tick.
+    /// </summary>
+    private void Advance(Playback p, double now, out int dx, out int dy)
+    {
+        dx = dy = 0;
+        if (p.Curve is null)
+        {
+            // Its first tick; stopped with its way back before it moved, it is where it began.
+            if (p.Stopping || !Begin(p))
+            {
+                p.Done = true;
+                return;
+            }
+        }
+        else if (p.PassDue && (p.Stopping || !NextPass(p, now)))
+        {
+            p.Done = true;
+            return;
+        }
+
+        if (p.Back is null)
+        {
+            if (!p.Stopping)
+            {
+                // The last move of a pass comes with the false: it is sent like any other.
+                bool more = p.Cursor!.Advance(now - p.StartMs, out dx, out dy);
+                p.LastMs = now;
+                if (more) return;
+                if (p.Returns) TurnBack(p, now, p.Request.Return);   // its way back begins with the next tick, never in this move
+                else p.Done = true;
+                return;
+            }
+            TurnBack(p, p.LastMs, p.Request.Return);   // stopped on its way out: back from where its last move took it
+        }
+
+        if (p.Back!.Advance(now - p.BackStartMs, out dx, out dy)) return;
+        // Back at the start with this move.
+        if (!p.Stopping && (p.Next is not null || p.Request.Repeat)) p.PassDue = true;
+        else p.Done = true;
+    }
+
+    /// <summary>
+    /// The first tick of a playback: its replay type, its first pass and, for the first absolute playback, the anchor. false = its data
     /// cannot be played (the playback ends without a move).
     /// </summary>
     private bool Begin(Playback p)
     {
-        var r = p.Request;
+        if (!Resolve(p.Request, out var curve, out bool absolute)) return false;
+        p.Curve = curve;
+        if (absolute) JoinAbsolute(p);
+        StartPass(p, p.StartMs);
+        return true;
+    }
+
+    /// <summary>
+    /// The pass after a way back, from where the last one began. Pressed again on the way, it plays the new request: its replay type is
+    /// decided anew, like at any start. false = that data cannot be played.
+    /// </summary>
+    private bool NextPass(Playback p, double now)
+    {
+        if (p.Next is { } next)
+        {
+            p.Next = null;
+            p.Request = next;
+            if (!Resolve(next, out var curve, out bool absolute)) return false;
+            p.Curve = curve;
+            if (absolute && !p.Absolute) JoinAbsolute(p);
+            else if (!absolute && p.Absolute) LeaveAbsolute(p);
+        }
+        StartPass(p, now);
+        return true;
+    }
+
+    private void StartPass(Playback p, double startMs)
+    {
+        // With a way back the player repeats (pass, way back, pass); without one the cursor repeats seamlessly.
+        p.Cursor = new PatternCursor(p.Curve!, p.Request.Speed, repeat: p.Request.Repeat && !p.Returns);
+        p.Back = null;
+        p.CarriedX = p.CarriedY = 0;
+        p.SwallowedX = p.SwallowedY = 0;
+        p.StartMs = p.LastMs = startMs;
+        p.PassDue = false;
+    }
+
+    /// <summary>
+    /// Turns the current pass back to where it began, from <paramref name="startMs"/> on. A way back already under way (a press turns it
+    /// into a jump) keeps what it sent. The only absolute playback also retraces what an edge swallowed of its way out: the anchor gets it
+    /// back, and <see cref="Tick"/> lets the edge hold the pointer on the way back instead.
+    /// </summary>
+    private void TurnBack(Playback p, double startMs, PatternReturn mode)
+    {
+        var cursor = p.Cursor!;
+        if (p.Back is { } back)
+        {
+            p.CarriedX += back.Emitted.X;
+            p.CarriedY += back.Emitted.Y;
+        }
+        var sent = (cursor.Emitted.X + p.CarriedX, cursor.Emitted.Y + p.CarriedY);
+        p.Back = new PatternReturnPath(p.Curve!, p.Request.Speed, cursor.CurveMs, sent, mode);
+        p.BackStartMs = startMs;
+        if (p.Absolute && _absolute == 1)
+        {
+            _anchorX -= p.SwallowedX;
+            _anchorY -= p.SwallowedY;
+            p.SwallowedX = p.SwallowedY = 0;
+        }
+    }
+
+    /// <summary>The track a request plays (replay type and curve). false = its data cannot be played.</summary>
+    private bool Resolve(PatternPlayRequest r, [NotNullWhen(true)] out PatternCurve? curve, out bool absolute)
+    {
         var data = r.Data;
         var replay = PatternReplayRules.Resolve(r.Replay, _env.AccelerationOn, _env.PointerVisible, hasRaw: data.Raw.Count > 0);
         // Auto never chooses a track without motion while the other one has some (a recording whose pointer track stayed empty).
         if (r.Replay == PatternReplay.Auto && replay == ResolvedReplay.AbsolutePointer && data.Pointer.Count == 0 && data.Raw.Count > 0)
             replay = ResolvedReplay.RelativeRaw;
+        absolute = replay == ResolvedReplay.AbsolutePointer;
 
         try
         {
             var curves = _curves.GetValue(data, static _ => new Curves());
-            var curve = replay == ResolvedReplay.RelativeRaw
+            curve = replay == ResolvedReplay.RelativeRaw
                 ? curves.Raw ??= new PatternCurve(data.Raw, data.DurationMs)
                 : curves.Pointer ??= new PatternCurve(data.Pointer, data.DurationMs);
-            p.Cursor = new PatternCursor(curve, r.Speed, r.Repeat);
+            return true;
         }
         catch (ArgumentException ex)
         {
             HostLog.Warn("Pattern " + r.Id + " cannot be played: " + ex.Message);
+            curve = null;
             return false;
         }
+    }
 
-        p.Absolute = replay == ResolvedReplay.AbsolutePointer;
-        if (p.Absolute && _absolute++ == 0)
-        {
-            var c = _env.CursorPosition;
-            (_anchorX, _anchorY, _lastX, _lastY) = (c.X, c.Y, c.X, c.Y);
-        }
-        return true;
+    /// <summary>Counts an absolute playback; the first one anchors at the pointer.</summary>
+    private void JoinAbsolute(Playback p)
+    {
+        p.Absolute = true;
+        if (_absolute++ > 0) return;
+        var c = _env.CursorPosition;
+        (_anchorX, _anchorY, _lastX, _lastY) = (c.X, c.Y, c.X, c.Y);
+    }
+
+    /// <summary>An absolute playback leaves: its offset stays in the anchor, so the pointer remains where it took it.</summary>
+    private void LeaveAbsolute(Playback p)
+    {
+        var (x, y) = p.Offset;
+        _anchorX += x;
+        _anchorY += y;
+        _absolute--;
+        p.Absolute = false;
     }
 
     /// <summary>
@@ -379,11 +583,7 @@ internal sealed class PatternPlayer : IDisposable
     {
         var p = _playbacks[index];
         _playbacks.RemoveAt(index);
-        if (!p.Absolute || p.Cursor is not { } cursor) return;
-        var (x, y) = cursor.Emitted;   // stays in the anchor: the pointer remains where this playback took it
-        _anchorX += x;
-        _anchorY += y;
-        _absolute--;
+        if (p.Absolute) LeaveAbsolute(p);
     }
 
     /// <summary>The player ends every playback itself (a refused move, a failure): each gets its <see cref="Finished"/>.</summary>
