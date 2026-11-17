@@ -117,6 +117,14 @@ public static class MousePatternUiRules
     public static string ModeName(ActivationMode mode)
         => mode == ActivationMode.Toggle ? L.T("Umschalten", "Toggle") : L.T("Halten", "Hold");
 
+    /// <summary>"Zum Start": what a pattern does after every pass (pattern return design 1).</summary>
+    public static string ReturnName(PatternReturn r) => r switch
+    {
+        PatternReturn.Jump => L.T("Springen", "Jump"),
+        PatternReturn.Reverse => L.T("Rückwärts", "Reverse"),
+        _ => L.T("Aus", "Off")
+    };
+
     private static List<string> PlayingIds(string? playing)
         => string.IsNullOrWhiteSpace(playing)
             ? new List<string>()

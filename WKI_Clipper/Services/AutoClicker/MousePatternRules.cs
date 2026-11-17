@@ -64,6 +64,7 @@ public static class MousePatternRules
             p.Hotkey = ClickerSettingsRules.NormalizeHotkey(p.Hotkey, required: false);
             p.Mode = Enum.IsDefined(p.Mode) ? p.Mode : ActivationMode.Hold;
             p.Replay = Enum.IsDefined(p.Replay) ? p.Replay : PatternReplay.Auto;
+            p.Return = Enum.IsDefined(p.Return) ? p.Return : PatternReturn.Off;
             p.Speed = double.IsFinite(p.Speed) && p.Speed >= 0 ? Math.Clamp(p.Speed, MinSpeed, MaxSpeed) : DefaultSpeed;
             p.Program = AutoClickerBlacklist.Canonical(p.Program);
             if (p.Program is null) p.OnlyInProgram = false;   // nothing to bind to

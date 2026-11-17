@@ -143,3 +143,21 @@ public sealed class MousePatternUiRulesTests
         Assert.Equal("Umschalten", MousePatternUiRules.ModeName(ActivationMode.Toggle));
     }
 }
+
+[Collection("Language")]
+public sealed class MousePatternReturnNameTests
+{
+    [Fact]
+    public void Return_names()
+    {
+        Assert.Equal("Aus", MousePatternUiRules.ReturnName(PatternReturn.Off));
+        Assert.Equal("Springen", MousePatternUiRules.ReturnName(PatternReturn.Jump));
+        Assert.Equal("Rückwärts", MousePatternUiRules.ReturnName(PatternReturn.Reverse));
+        Assert.Equal("Aus", MousePatternUiRules.ReturnName((PatternReturn)7));
+
+        using var _ = TestLanguage.English();
+        Assert.Equal("Off", MousePatternUiRules.ReturnName(PatternReturn.Off));
+        Assert.Equal("Jump", MousePatternUiRules.ReturnName(PatternReturn.Jump));
+        Assert.Equal("Reverse", MousePatternUiRules.ReturnName(PatternReturn.Reverse));
+    }
+}

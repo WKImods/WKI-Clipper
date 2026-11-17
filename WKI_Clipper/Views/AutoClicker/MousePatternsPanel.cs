@@ -29,7 +29,7 @@ public sealed class MousePatternsPanel : ClickerPanel
 
     /// <summary>The controls of one pattern's card that a refresh or a test reads.</summary>
     internal sealed record PatternCard(Border Root, CheckBox Active, TextBox NameBox, Polyline Preview, TextBlock Duration, CheckBox OnlyIn,
-        HotkeyCaptureBox Hotkey, TextBox Speed, Button Rerecord, StackPanel Warnings);
+        HotkeyCaptureBox Hotkey, TextBox Speed, ComboBox Return, Button Rerecord, StackPanel Warnings);
 
     /// <summary>What a pattern's samples gave for one revision: whether they load, and the drawing's points.</summary>
     private sealed record PreviewEntry(int Revision, bool HasData, IReadOnlyList<DipPoint> Points);
@@ -184,7 +184,7 @@ public sealed class MousePatternsPanel : ClickerPanel
     private static string RowsKey(IEnumerable<MousePattern> patterns, bool sided)
         => sided + "#" + string.Join("|", patterns.Select(p => string.Join(";",
             p.Id, p.Name, p.Hotkey is { } h ? $"{(int)h.Modifiers}:{string.Join(",", h.Keys ?? new List<int>())}" : "-",
-            p.Active, p.Mode, p.Repeat, p.Speed.ToString("R", CultureInfo.InvariantCulture), p.Replay, p.Program, p.OnlyInProgram,
+            p.Active, p.Mode, p.Repeat, p.Return, p.Speed.ToString("R", CultureInfo.InvariantCulture), p.Replay, p.Program, p.OnlyInProgram,
             p.DurationMs.ToString("R", CultureInfo.InvariantCulture), p.Revision)));
 
     /// <summary>The drawing of a pattern, read from its samples once per revision (a missing store is not remembered as missing samples).</summary>
@@ -248,7 +248,7 @@ public sealed class MousePatternsPanel : ClickerPanel
         onlyIn.Checked += (_, _) => Edit(id, x => x.OnlyInProgram = true);
         onlyIn.Unchecked += (_, _) => Edit(id, x => x.OnlyInProgram = false);
 
-        // ---- line 2: hotkey, Halten/Umschalten, [Wiederholen], tempo, replay, "Neu aufnehmen", "Löschen" ----
+        // ---- line 2: hotkey, Halten/Umschalten, [Wiederholen], Zum Start, tempo, replay, "Neu aufnehmen", "Löschen" ----
         var hotkey = new HotkeyCaptureBox(required: false)
         {
             Sided = sided,
@@ -265,11 +265,19 @@ public sealed class MousePatternsPanel : ClickerPanel
         var repeat = new CheckBox
         {
             Content = L.T("Wiederholen", "Repeat"), IsChecked = p.Repeat,
-            ToolTip = L.T("An: am Ende geht es nahtlos mit dem nächsten Durchgang weiter. Aus: ein Durchgang pro Druck.",
-                          "On: at the end it continues seamlessly with the next pass. Off: one pass per press."),
+            ToolTip = L.T("An: am Ende geht es nahtlos mit dem nächsten Durchgang weiter (mit 'Zum Start' nach dem Rückweg). Aus: ein Durchgang pro Druck.",
+                          "On: at the end it continues seamlessly with the next pass (with 'To start' after the way back). Off: one pass per press."),
         };
         repeat.Checked += (_, _) => Edit(id, x => x.Repeat = true);
         repeat.Unchecked += (_, _) => Edit(id, x => x.Repeat = false);
+
+        var back = Combo(new[] { PatternReturn.Off, PatternReturn.Jump, PatternReturn.Reverse }, p.Return, MousePatternUiRules.ReturnName,
+            v => Edit(id, x => x.Return = v),
+            L.T("Nach jedem Durchgang zum Startpunkt zurück: Springen = sofort in einem Zug, Rückwärts = den Pfad rückwärts im selben Tempo. Auch beim Stoppen mit dem eigenen Hotkey.",
+                "Back to the start point after every pass: Jump = at once, Reverse = the path backwards at the same tempo. Also when stopped with its own hotkey."));
+        var toStart = new StackPanel { Orientation = Orientation.Horizontal };
+        toStart.Children.Add(Spaced(Label(L.T("Zum Start", "To start")), 4));
+        toStart.Children.Add(back);
 
         var speed = new TextBox
         {
@@ -313,7 +321,7 @@ public sealed class MousePatternsPanel : ClickerPanel
         delete.Click += (_, _) => Delete(id);
 
         var first = CardLine(new Thickness(0), active, name, drawing, duration, onlyIn);
-        var second = CardLine(new Thickness(0, 6, 0, 0),hotkey, hotkey.CancelButton, hotkey.ClearButton, mode, repeat, tempo, playback, rerecord, delete);
+        var second = CardLine(new Thickness(0, 6, 0, 0),hotkey, hotkey.CancelButton, hotkey.ClearButton, mode, repeat, toStart, tempo, playback, rerecord, delete);
         var warnings = new StackPanel { Visibility = Visibility.Collapsed };
 
         var stack = new StackPanel();
@@ -328,7 +336,7 @@ public sealed class MousePatternsPanel : ClickerPanel
         root.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
         root.SetResourceReference(Border.BackgroundProperty, "SoftFillBrush");
 
-        return new PatternCard(root, active, name, line, duration, onlyIn, hotkey, speed, rerecord, warnings);
+        return new PatternCard(root, active, name, line, duration, onlyIn, hotkey, speed, back, rerecord, warnings);
     }
 
     /// <summary>The small path drawing: the motion scaled into a box, its start marked with a dot.</summary>
@@ -440,8 +448,8 @@ public sealed class MousePatternsPanel : ClickerPanel
 
     private static MousePattern Copy(MousePattern o) => new()
     {
-        Id = o.Id, Name = o.Name, Hotkey = o.Hotkey?.Clone(), Active = o.Active, Mode = o.Mode, Repeat = o.Repeat, Speed = o.Speed,
-        Replay = o.Replay, Program = o.Program, OnlyInProgram = o.OnlyInProgram, DurationMs = o.DurationMs, Revision = o.Revision,
+        Id = o.Id, Name = o.Name, Hotkey = o.Hotkey?.Clone(), Active = o.Active, Mode = o.Mode, Repeat = o.Repeat, Return = o.Return,
+        Speed = o.Speed, Replay = o.Replay, Program = o.Program, OnlyInProgram = o.OnlyInProgram, DurationMs = o.DurationMs, Revision = o.Revision,
     };
 
     /// <summary>Marks the pattern the next recording replaces (null: a new one). Not a setting, so the panel redraws itself.</summary>

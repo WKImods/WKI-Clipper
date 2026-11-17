@@ -276,6 +276,35 @@ public sealed class GamingUtilitiesTests
     }
 
     [Fact]
+    public void A_card_shows_its_way_back_and_follows_a_change()
+    {
+        var r = OnSta(() =>
+        {
+            var panel = new MousePatternsPanel { Store = new FakePatternStore() };
+            var settings = TwoPatterns();
+            settings.AutoClicker.Clicker.MousePatterns[0].Return = PatternReturn.Reverse;
+            panel.Render(settings, ReadyState, recordTarget: null);
+            var a = panel.CardsById[PatternA];
+            var b = panel.CardsById[PatternB];
+            static string Shown(System.Windows.Controls.ComboBox box) => (box.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "";
+            var items = a.Return.Items.OfType<System.Windows.Controls.ComboBoxItem>().Select(i => i.Content?.ToString()).ToArray();
+            var first = (A: Shown(a.Return), B: Shown(b.Return), Tip: a.Return.ToolTip?.ToString());
+
+            settings.AutoClicker.Clicker.MousePatterns[1].Return = PatternReturn.Jump;   // changed elsewhere (another window, an import)
+            panel.Render(settings, ReadyState, recordTarget: null);
+            var after = panel.CardsById[PatternB];
+            return (items, first, Rebuilt: !ReferenceEquals(after.Return, b.Return), After: Shown(after.Return));
+        });
+
+        Assert.Equal(new[] { "Aus", "Springen", "Rückwärts" }, r.items);
+        Assert.Equal("Rückwärts", r.first.A);
+        Assert.Equal("Aus", r.first.B);
+        Assert.Contains("Startpunkt", r.first.Tip);
+        Assert.True(r.Rebuilt);
+        Assert.Equal("Springen", r.After);
+    }
+
+    [Fact]
     public void Without_patterns_the_tab_says_how_to_record_one()
     {
         var r = OnSta(() =>

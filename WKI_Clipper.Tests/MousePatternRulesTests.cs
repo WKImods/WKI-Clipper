@@ -126,6 +126,38 @@ public sealed class MousePatternRulesTests
     }
 
     [Fact]
+    public void Normalize_repairs_an_unknown_return_to_off()
+    {
+        var c = Norm(x =>
+        {
+            x.MousePatterns.Add(new MousePattern { Id = NewId(), Return = (PatternReturn)7 });
+            x.MousePatterns.Add(new MousePattern { Id = NewId(), Return = PatternReturn.Reverse });
+            x.MousePatterns.Add(new MousePattern { Id = NewId(), Return = PatternReturn.Jump });
+        });
+
+        Assert.Equal(new[] { PatternReturn.Off, PatternReturn.Reverse, PatternReturn.Jump }, c.MousePatterns.Select(p => p.Return));
+    }
+
+    [Fact]
+    public void A_pattern_saved_without_Return_loads_as_off()
+    {
+        var id = NewId();
+        var app = JsonSerializer.Deserialize<AppSettings>(
+            "{\"SchemaVersion\":12,\"AutoClicker\":{\"Clicker\":{\"MousePatterns\":[{\"Id\":\"" + id + "\",\"Name\":\"Kreis\",\"Repeat\":true}]}}}")!;
+        var p = Assert.Single(ClickerSettingsRules.Normalize(app.AutoClicker.Clicker).MousePatterns);
+        Assert.Equal(PatternReturn.Off, p.Return);
+        Assert.True(p.Repeat);
+
+        // Saved as a word, and it reaches the helper with the config.
+        var s = new ClickerSettings();
+        s.MousePatterns.Add(new MousePattern { Id = id, Return = PatternReturn.Reverse });
+        Assert.Contains("\"Return\":\"Reverse\"", JsonSerializer.Serialize(s));
+        var decoded = ClickerProtocol.Decode(ClickerProtocol.Encode(new ConfigMessage(s)));
+        var sent = Assert.IsType<ConfigMessage>(decoded.Message);
+        Assert.Equal(PatternReturn.Reverse, Assert.Single(sent.Settings.MousePatterns).Return);
+    }
+
+    [Fact]
     public void The_record_hotkey_is_required_and_falls_back_to_its_own_default()
     {
         Assert.True(ClickerHotkey.SameCombo(MousePatternRules.DefaultRecordHotkey(), Norm(x => x.PatternRecordHotkey = null!).PatternRecordHotkey));

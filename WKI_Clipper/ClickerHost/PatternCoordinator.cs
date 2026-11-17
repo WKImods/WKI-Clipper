@@ -20,7 +20,8 @@ internal sealed record PatternStatus(bool Recording, string? Playing, string? Bl
 /// <item><see cref="Configure"/> turns the settings into the tracker's bindings: the record hotkey first, then every active pattern with
 /// a hotkey; none while "Mausbewegung bereit" is off. A pattern that is no longer bound stops.</item>
 /// <item>Each bound pattern has its own <see cref="ActivationStateMachine"/> (Hold/Toggle, no master); its Start/Stop become
-/// <see cref="PatternPlayer"/> calls. A press does not count while locked, suppressed (a picker or hotkey field in the clipper),
+/// <see cref="PatternPlayer"/> calls - its Stop a <see cref="PatternPlayer.StopWithReturn"/>, so a pattern with "Zum Start" goes back
+/// first. Every other stop (program, task switcher, lock, suppression, recording, disarm, unbind) ends it where it is. A press does not count while locked, suppressed (a picker or hotkey field in the clipper),
 /// recording or while the record hotkey is held; a mouse hotkey's start press over the clipper's windows and a program-bound pattern's
 /// start while its program is not in front do not count either (a toggle's stop press does). A release always gets through. A pattern
 /// without samples of its current revision never starts.</item>
@@ -41,7 +42,7 @@ internal sealed class PatternCoordinator
 
     /// <summary>A pattern's options as the last config had them; a playback keeps the ones it started with.</summary>
     private sealed record Options(ActivationMode Mode, ClickerHotkey Hotkey, bool Repeat, double Speed, PatternReplay Replay,
-        string? ProgramKey, bool OnlyInProgram, int Revision);
+        PatternReturn Return, string? ProgramKey, bool OnlyInProgram, int Revision);
 
     private sealed class Entry
     {
@@ -128,7 +129,7 @@ internal sealed class PatternCoordinator
             {
                 if (p is null || string.IsNullOrEmpty(p.Id) || !listed.Add(p.Id)) continue;
                 if (!_armed || !p.Active || p.Hotkey is not { IsEmpty: false } hotkey) continue;
-                var options = new Options(p.Mode, hotkey.Clone(), p.Repeat, p.Speed, p.Replay, AutoClickerBlacklist.Key(p.Program),
+                var options = new Options(p.Mode, hotkey.Clone(), p.Repeat, p.Speed, p.Replay, p.Return, AutoClickerBlacklist.Key(p.Program),
                     p.OnlyInProgram, p.Revision);
                 if (_entries.TryGetValue(p.Id, out var entry)) entry.Options = options;
                 else entry = new Entry(p.Id, options);
@@ -211,11 +212,12 @@ internal sealed class PatternCoordinator
                     return false;
                 }
                 var o = entry.Options;
-                _player.Play(new PatternPlayRequest(entry.Id, stored.Data, o.Speed, o.Repeat, o.Replay));
+                _player.Play(new PatternPlayRequest(entry.Id, stored.Data, o.Speed, o.Repeat, o.Replay, o.Return));
                 _blockedBy = null;
                 return UpdateStatus();
             case ActivationCommand.Stop:
-                _player.Stop(entry.Id);
+                // Its own hotkey (released or pressed again): one with a way back goes back to its start first and plays until then.
+                _player.StopWithReturn(entry.Id);
                 return UpdateStatus();
         }
         return false;

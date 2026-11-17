@@ -389,8 +389,10 @@ needed.
     limit* that raises the maximum from 500 to 1000 per unit.
   - *Randomisation:* every interval varies at random around the set rate (spread 0–200 %,
     35 % by default); the average rate stays what you set.
-  - *Hold time (duty cycle):* how much of each cycle the button or key stays down (0–100 %), or
-    *hold down until stopped* instead of clicking.
+  - *Hold time (duty cycle):* how long the button or key stays down per cycle — in % of the cycle
+    (0–100 %) or in seconds (0.001–3600 s, three decimals). It is never longer than one cycle; a
+    seconds value the cycle cuts shows what it really is. Or *hold down until stopped* instead of
+    clicking.
   - *Double click* (capped at 10 double clicks per second).
   - *Click limit* and *time limit* (seconds, minutes or hours) end a run on their own.
   - *Strict modifiers:* an extra modifier held on top of the hotkey's own stops it from matching.
@@ -447,9 +449,19 @@ visible pointer. Patterns only move the mouse: they never click and never press 
   hotkey may sit on several patterns; tick the one you need.
 - **Replay:** *Hold* plays while the hotkey is held and stops the moment you let go; *Toggle*
   starts with one press and stops with the next. *Repeat* on continues seamlessly with the next
-  pass, off means one pass per press. *Tempo* 0.25–4x changes the speed, never the shape. The
-  movement is relative to where it starts and does not drift, at any tempo and over any number of
-  repeats.
+  pass (with *To start* after the way back), off means one pass per press. *Tempo* 0.25–4x changes
+  the speed, never the shape. The movement is relative to where it starts and does not drift, at
+  any tempo and over any number of repeats.
+- **To start:** *Off* (default) leaves the mouse where a pass ends, so a movement that does not end
+  where it began carries on from there with the next press. *Jump* takes the mouse back to where
+  the pass began in one move after every pass; *Reverse* plays the driven path backwards at the
+  same tempo. With *Repeat* every pass then starts at the same point. Stopping the pattern with
+  its own hotkey (letting go of *Hold*, the second *Toggle* press) goes back from wherever it is,
+  and it counts as playing until it is back; pressing again on the way back jumps the rest at once
+  and starts the new pass from the start point. Every other stop (its program left the front,
+  Alt+Tab, the blacklist lock, a recording, an administrator window) ends it where it is. *Pointer*
+  returns to the exact start pixel, also when the path ran into the screen edge; *Game (raw)* sends
+  exactly minus what the pass sent (a game may cap one very large *Jump* move).
 - **Replay type:** *Automatic* (default) decides at every start. *Pointer* moves the pointer
   pixel-exact from the start point — your own mouse movement is overridden meanwhile. *Game (raw)*
   sends the movement like a real mouse, which is what games without a pointer read — your own

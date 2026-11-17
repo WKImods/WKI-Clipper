@@ -251,6 +251,100 @@ public sealed class PatternCoordinatorTests
         Assert.Null(r.Patterns.Status.Playing);
     }
 
+    // ---- back to the start (pattern return design 1) ----
+
+    [Theory]
+    [InlineData(ActivationMode.Hold)]
+    [InlineData(ActivationMode.Toggle)]
+    public void Releasing_the_hotkey_takes_a_pattern_with_return_back(ActivationMode mode)
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => { p.Mode = mode; p.Repeat = true; p.Return = PatternReturn.Jump; });
+
+        r.Press(F8);
+        if (mode == ActivationMode.Toggle) r.Release(F8);
+        r.Run(30);
+        Assert.True(r.Moved.X > 0);
+
+        if (mode == ActivationMode.Toggle) r.Press(F8);   // its own hotkey stops it
+        else r.Release(F8);
+        Assert.True(r.Playing(A));                        // on its way back it still plays
+        Assert.Equal(A, r.Patterns.Status.Playing);
+        r.RunOut();
+
+        Assert.Equal((0L, 0L), r.Moved);
+        Assert.False(r.Playing(A));
+        Assert.Null(r.Patterns.Status.Playing);           // its Finished updated the status
+        if (mode == ActivationMode.Toggle) r.Release(F8);
+        r.Press(F8);                                      // and the next press starts it again
+        Assert.True(r.Playing(A));
+    }
+
+    [Fact]
+    public void Pressing_again_on_the_way_back_starts_at_the_start()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => p.Return = PatternReturn.Reverse);
+
+        r.Press(F8);
+        r.Run(30);                        // 31 px out
+        r.Release(F8);
+        r.Run(10);                        // 10 of them back
+        r.Press(F8);                      // the rest at once, then a new pass from the start
+        r.Run(20);
+        r.Release(F8);
+        r.RunOut();
+
+        Assert.Equal((0L, 0L), r.Moved);
+        var moves = r.Input.Of("moveby").ToList();
+        int jump = moves.FindIndex(e => e.A == -21);
+        Assert.True(jump > 0, "no jump back");
+        Assert.Equal(0, moves.Take(jump + 1).Sum(e => (long)e.A));   // the new pass starts at the start ...
+        Assert.True(moves[jump + 1].A > 0);                           // ... right after the jump
+        long x = 0;
+        foreach (var e in moves)
+        {
+            x += e.A;
+            Assert.InRange(x, 0, 100);
+        }
+    }
+
+    [Fact]
+    public void Its_program_leaving_the_front_stops_it_without_return()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => { p.OnlyInProgram = true; p.Repeat = true; p.Return = PatternReturn.Jump; });
+        r.Press(F8);
+        r.Run(30);
+
+        r.Foreground = Other;
+        r.Patterns.Poll();
+
+        Assert.False(r.Playing(A));
+        int sent = r.Input.Events.Count;
+        r.RunOut();
+        Assert.Equal(sent, r.Input.Events.Count);   // no way back
+        Assert.NotEqual((0L, 0L), r.Moved);
+    }
+
+    [Fact]
+    public void Lock_stops_a_pattern_with_return_without_return()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(F8), p => { p.Repeat = true; p.Return = PatternReturn.Reverse; });
+        r.Press(F8);
+        r.Run(30);
+        r.Release(F8);                    // on its way back ...
+        r.Run(5);
+
+        r.Patterns.Lock();                // ... the lock ends it there
+
+        Assert.False(r.Playing(A));
+        int sent = r.Input.Events.Count;
+        r.RunOut();
+        Assert.Equal(sent, r.Input.Events.Count);
+    }
+
     // ---- data ----
 
     [Fact]
