@@ -12,6 +12,13 @@ namespace WKI_Clipper.Models;
 public enum PatternReplay { Auto, Pointer, Raw }
 
 /// <summary>
+/// "Zum Start zurück" (pattern return design 1): after every pass - and when its own hotkey stops it - the mouse goes back to where the
+/// pass began. Jump = in one move; Reverse = the driven part of the path backwards at the same tempo. Off = as before (the default).
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum PatternReturn { Off, Jump, Reverse }
+
+/// <summary>
 /// A recorded mouse movement that replays relative to where the mouse is (mouse-patterns design 4.1). Metadata only: the samples
 /// live in their own file (<see cref="MousePatternStore"/>), never in settings.json or the per-change config push.
 /// <see cref="MousePatternRules.Normalize"/> repairs every field after a load or a UI edit.
@@ -30,8 +37,11 @@ public sealed class MousePattern
 
     public ActivationMode Mode { get; set; } = ActivationMode.Hold;
 
-    /// <summary>On: a finished pass continues seamlessly with the next one; off: one pass per press.</summary>
+    /// <summary>On: a finished pass continues seamlessly with the next one (with <see cref="Return"/>: after the way back); off: one pass per press.</summary>
     public bool Repeat { get; set; }
+
+    /// <summary>Back to the start after every pass and when its own hotkey stops it; Off for patterns saved before it existed.</summary>
+    public PatternReturn Return { get; set; } = PatternReturn.Off;
 
     /// <summary>Tempo factor, <see cref="MousePatternRules.MinSpeed"/> .. <see cref="MousePatternRules.MaxSpeed"/>; the shape stays the same.</summary>
     public double Speed { get; set; } = MousePatternRules.DefaultSpeed;

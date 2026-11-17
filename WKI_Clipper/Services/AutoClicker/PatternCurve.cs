@@ -100,14 +100,22 @@ public sealed class PatternCursor
     public PatternCursor(PatternCurve curve, double speed, bool repeat)
     {
         _curve = curve;
-        _speed = double.IsFinite(speed) && speed >= 0
-            ? Math.Clamp(speed, MousePatternRules.MinSpeed, MousePatternRules.MaxSpeed)
-            : MousePatternRules.DefaultSpeed;
+        _speed = ClampSpeed(speed);
         _repeat = repeat;
     }
 
+    /// <summary>A tempo factor as the settings clamp it (<see cref="MousePatternRules.MinSpeed"/> .. <see cref="MousePatternRules.MaxSpeed"/>; NaN, infinite or negative = 1x).</summary>
+    internal static double ClampSpeed(double speed)
+        => double.IsFinite(speed) && speed >= 0 ? Math.Clamp(speed, MousePatternRules.MinSpeed, MousePatternRules.MaxSpeed) : MousePatternRules.DefaultSpeed;
+
     /// <summary>Everything returned so far.</summary>
     public (long X, long Y) Emitted => (_x, _y);
+
+    /// <summary>
+    /// The curve time the last <see cref="Advance"/> reached (0 before the first): without repeat at most <see cref="PatternCurve.DurationMs"/>,
+    /// with repeat the time into the current pass. Where a <see cref="PatternReturnPath"/> turns back from.
+    /// </summary>
+    public double CurveMs { get; private set; }
 
     /// <summary>
     /// The move from the last call to <paramref name="elapsedMs"/> since the start (negative, NaN or infinite count as 0). The move is
@@ -133,6 +141,7 @@ public sealed class PatternCursor
             var total = _curve.Total;
             tx = (long)Math.Round(ax) + total.X * (long)passes;
             ty = (long)Math.Round(ay) + total.Y * (long)passes;
+            CurveMs = into;
         }
         else
         {
@@ -140,6 +149,7 @@ public sealed class PatternCursor
             tx = (long)Math.Round(ax);
             ty = (long)Math.Round(ay);
             passComplete = t >= _curve.DurationMs;
+            CurveMs = Math.Min(t, _curve.DurationMs);
         }
 
         // One move cannot carry more than an int; anything beyond follows with the next call.
