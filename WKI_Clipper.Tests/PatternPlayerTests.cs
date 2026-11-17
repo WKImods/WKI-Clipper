@@ -629,6 +629,40 @@ public sealed class PatternPlayerTests
         Assert.All(targets, p => Assert.InRange(p.Y, 0, 150));
     }
 
+    /// <summary>
+    /// A second pointer pattern joins while the first one goes back along the edge: what the edge swallowed can no longer be told apart,
+    /// so it is not given back later in one burst - the pointer never jumps when the second one ends.
+    /// </summary>
+    [Fact]
+    public void A_second_pointer_pattern_on_the_way_back_never_makes_the_pointer_jump()
+    {
+        var rig = new Rig();
+        rig.Host.Cursor = new PixelPoint(100, 50);
+        var track = Bins(35, i => i < 20 ? (i, 0, -10) : (i, 0, 10));
+        rig.Play("a", Data(PatternTrack.Empty, track), replay: PatternReplay.Pointer, ret: PatternReturn.Reverse);
+        rig.Waiter.At(52, () => rig.Play("b", Data(PatternTrack.Empty, Line(8, 1, 0)), replay: PatternReplay.Pointer));
+
+        rig.Run();
+
+        Assert.All(Steps(rig.Targets), s => Assert.True(Math.Abs(s.Dy) <= 10 && Math.Abs(s.Dx) <= 10, $"a jump of {s}"));
+    }
+
+    /// <summary>A game pattern moving at the same time does not keep the pointer pattern from ending exactly at its start.</summary>
+    [Fact]
+    public void A_pointer_pattern_ends_at_its_start_also_while_a_game_pattern_moves()
+    {
+        var rig = new Rig();
+        rig.Host.Cursor = new PixelPoint(100, 50);
+        rig.Play("a", Data(PatternTrack.Empty, Line(20, 0, -10)), replay: PatternReplay.Pointer, ret: PatternReturn.Jump);
+        // Net zero: +1 / -1 every millisecond, for longer than the pointer pattern plays.
+        rig.Play("b", Data(Bins(60, i => (i, i % 2 == 0 ? 1 : -1, 0)), PatternTrack.Empty), replay: PatternReplay.Raw);
+
+        rig.Run();
+
+        Assert.Equal(50, rig.Host.Cursor.Y);
+        Assert.InRange(rig.Host.Cursor.X, 99, 101);
+    }
+
     [Fact]
     public void Stopping_after_leaving_the_edge_again_goes_back_without_a_jump()
     {

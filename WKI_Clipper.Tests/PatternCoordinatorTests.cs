@@ -310,6 +310,25 @@ public sealed class PatternCoordinatorTests
         Assert.False(r.Playing(A));
     }
 
+    /// <summary>A press on the final way back is a start: over the clipper a mouse hotkey must not start a new pass (it is not a stop either).</summary>
+    [Fact]
+    public void A_toggle_press_on_the_way_back_over_the_clipper_starts_no_new_pass()
+    {
+        using var r = new Rig();
+        r.Add(A, Key(ClickerVk.XButton1), p => { p.Mode = ActivationMode.Toggle; p.Return = PatternReturn.Reverse; });
+
+        r.Tap(ClickerVk.XButton1);
+        r.Run(110);                       // the pass is over, 10 px back
+        double pressedAt = r.Clock.Now;
+        r.OverClipper = true;
+        r.Tap(ClickerVk.XButton1);
+        r.RunOut();
+
+        Assert.All(r.Input.Of("moveby").Where(e => e.T > pressedAt), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
+        Assert.Equal((0L, 0L), r.Moved);  // its way back goes on to the start
+        Assert.False(r.Playing(A));
+    }
+
     [Fact]
     public void A_toggle_press_on_the_way_back_of_a_repeating_pattern_stops_it()
     {

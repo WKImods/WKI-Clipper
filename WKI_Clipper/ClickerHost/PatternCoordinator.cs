@@ -184,7 +184,9 @@ internal sealed class PatternCoordinator
                 // Toggle, on its own way back after its last pass: that pass is over, so a press means "again", not "stop" - the rest
                 // of the way back is jumped and a new pass starts at the start; the toggle stays on until that one is back.
                 if (matched && entry.Options.Mode == ActivationMode.Toggle && entry.Machine.IsRunning && _player.IsOnFinalReturn(id))
-                    changed = Start(entry);
+                    // A start like any other: refused over the clipper or outside its program - then it changes nothing at all (the
+                    // way back goes on to the start).
+                    changed = StartAllowed(entry) && Start(entry);
                 else changed = Apply(entry, entry.Machine.OnMatchChanged(matched));
             }
         }
@@ -196,7 +198,12 @@ internal sealed class PatternCoordinator
         if (!_armed || _locked || _suppressed || _recording || _recordHeld) return false;
         // The clipper's windows and the program binding guard the start only; a toggle's stop press always counts (a path that runs
         // over the clipper must still be stoppable there).
-        if (entry.Machine.IsRunning) return true;
+        return entry.Machine.IsRunning || StartAllowed(entry);
+    }
+
+    /// <summary>The start's own guards: a mouse hotkey never starts over the clipper's windows, a program-bound one only in its program.</summary>
+    private bool StartAllowed(Entry entry)
+    {
         if (entry.Options.Hotkey.HasMouseInput && OverClipper()) return false;
         if (entry.Options is { OnlyInProgram: true, ProgramKey: { } program }
             && !string.Equals(program, AutoClickerBlacklist.Key(Foreground().Exe), StringComparison.Ordinal)) return false;

@@ -382,8 +382,9 @@ internal sealed class PatternPlayer : IDisposable
             {
                 _anchorX += x - tx;
                 _anchorY += y - ty;
-                // Kept for the way back - unless a relative move of this tick took part in pushing it there.
-                if (sole is { Returns: true, Cursor: { } cursor } && (x != tx || y != ty) && relX == 0 && relY == 0)
+                // Kept for the way back of the only absolute playback, so it ends exactly at its start (a game pattern moving at the
+                // same time may have helped push it there: its own way does not depend on the pointer).
+                if (sole is { Returns: true, Cursor: { } cursor } && (x != tx || y != ty))
                     sole.Swallowed.Add((cursor.CurveMs, x - tx, y - ty));
             }
             if (x != _lastX || y != _lastY)
@@ -552,7 +553,13 @@ internal sealed class PatternPlayer : IDisposable
     private void JoinAbsolute(Playback p)
     {
         p.Absolute = true;
-        if (_absolute++ > 0) return;
+        if (_absolute++ > 0)
+        {
+            // Two absolute playbacks share the anchor: what an edge swallowed can no longer be told apart. Given back later it would
+            // jump the pointer, so none of it is given back - the edge's part stays gone, as without a way back.
+            foreach (var other in _playbacks) other.Swallowed.Clear();
+            return;
+        }
         var c = _env.CursorPosition;
         (_anchorX, _anchorY, _lastX, _lastY) = (c.X, c.Y, c.X, c.Y);
     }
