@@ -63,7 +63,9 @@ internal sealed class PatternPlayer : IDisposable
         public PatternCursor? Cursor;         // the current pass, on its way out
         public PatternReturnPath? Back;       // ... and on its way back, once it turned
         public long CarriedX, CarriedY;       // what an earlier way back of this pass sent before a press turned it into a jump
-        public long SwallowedX, SwallowedY;   // what an edge swallowed of this pass while it was the only absolute playback
+        // What an edge swallowed of this pass's way out while it was the only absolute playback, with the place on the curve where it
+        // happened (increasing): its way back gives each part back at the same place.
+        public readonly List<(double CurveMs, long X, long Y)> Swallowed = new();
         public double StartMs;                // of the current pass
         public double LastMs;                 // its last move on the way out
         public double BackStartMs;
@@ -343,29 +345,33 @@ internal sealed class PatternPlayer : IDisposable
         {
             _anchorX += relX;   // the relative move took the pointer along: the absolute target follows, so both add up
             _anchorY += relY;
-            long tx = _anchorX, ty = _anchorY;
             Playback? sole = null;
+            if (_absolute == 1)
+                foreach (var p in _playbacks)
+                    if (p.Absolute) { sole = p; break; }
+            // The only absolute playback on its way back gets back what the edge swallowed of its way out at the same place on the
+            // curve: the anchor is then what it was there, so the pointer retraces its real way out - held at the edge where it was
+            // held - without a jump, and ends exactly where the pass began.
+            if (sole?.Back is { } back) GiveBackSwallowed(sole, back.IsHome ? double.NegativeInfinity : back.CurveMs);
+
+            long tx = _anchorX, ty = _anchorY;
             foreach (var p in _playbacks)
             {
                 if (!p.Absolute) continue;
-                sole = p;
                 var (ex, ey) = p.Offset;
                 tx += ex;
                 ty += ey;
             }
-            if (_absolute != 1) sole = null;
             var (x, y) = ClampToScreen(tx, ty, _env.Monitors);
-            // What the edge swallowed is gone: the way back starts at the edge, as with a hand on the mouse. Only the way back of the
-            // only absolute playback retraces it (TurnBack took it out of the anchor): there the edge holds the pointer instead.
+            // What the edge swallowed is gone: the way on starts at the edge, as with a hand on the mouse. On the way back of the only
+            // absolute playback the edge only holds the pointer (that part was given back above).
             if (sole?.Back is null)
             {
                 _anchorX += x - tx;
                 _anchorY += y - ty;
-                if (sole is not null)
-                {
-                    sole.SwallowedX += x - tx;
-                    sole.SwallowedY += y - ty;
-                }
+                // Kept for the way back - unless a relative move of this tick took part in pushing it there.
+                if (sole is { Returns: true, Cursor: { } cursor } && (x != tx || y != ty) && relX == 0 && relY == 0)
+                    sole.Swallowed.Add((cursor.CurveMs, x - tx, y - ty));
             }
             if (x != _lastX || y != _lastY)
             {
@@ -464,15 +470,15 @@ internal sealed class PatternPlayer : IDisposable
         p.Cursor = new PatternCursor(p.Curve!, p.Request.Speed, repeat: p.Request.Repeat && !p.Returns);
         p.Back = null;
         p.CarriedX = p.CarriedY = 0;
-        p.SwallowedX = p.SwallowedY = 0;
+        p.Swallowed.Clear();   // given back by now, or not attributable (another absolute playback joined)
         p.StartMs = p.LastMs = startMs;
         p.PassDue = false;
     }
 
     /// <summary>
     /// Turns the current pass back to where it began, from <paramref name="startMs"/> on. A way back already under way (a press turns it
-    /// into a jump) keeps what it sent. The only absolute playback also retraces what an edge swallowed of its way out: the anchor gets it
-    /// back, and <see cref="Tick"/> lets the edge hold the pointer on the way back instead.
+    /// into a jump) keeps what it sent. What an edge swallowed of the way out is given back by <see cref="Tick"/> as the way back passes
+    /// the place where it happened (a jump: at once).
     /// </summary>
     private void TurnBack(Playback p, double startMs, PatternReturn mode)
     {
@@ -485,11 +491,21 @@ internal sealed class PatternPlayer : IDisposable
         var sent = (cursor.Emitted.X + p.CarriedX, cursor.Emitted.Y + p.CarriedY);
         p.Back = new PatternReturnPath(p.Curve!, p.Request.Speed, cursor.CurveMs, sent, mode);
         p.BackStartMs = startMs;
-        if (p.Absolute && _absolute == 1)
+    }
+
+    /// <summary>
+    /// The anchor gets back the parts the edge swallowed of <paramref name="p"/>'s way out beyond <paramref name="curveMs"/> (all of them for
+    /// negative infinity: back at the start). Under the lock.
+    /// </summary>
+    private void GiveBackSwallowed(Playback p, double curveMs)
+    {
+        var log = p.Swallowed;
+        while (log.Count > 0 && log[^1].CurveMs > curveMs)
         {
-            _anchorX -= p.SwallowedX;
-            _anchorY -= p.SwallowedY;
-            p.SwallowedX = p.SwallowedY = 0;
+            var (_, x, y) = log[^1];
+            _anchorX -= x;
+            _anchorY -= y;
+            log.RemoveAt(log.Count - 1);
         }
     }
 

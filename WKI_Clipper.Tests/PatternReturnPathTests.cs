@@ -112,6 +112,31 @@ public sealed class PatternReturnPathTests
         Assert.Equal((0, 0, 0), (dx, dx2, dx3));
     }
 
+    /// <summary>
+    /// A track whose first move is at 0 ms: the way out went from the start to it at once, so the way back goes to it at r = 0 and to the
+    /// start one call later - never both in one move. A path that only passes its start on the way does not end there.
+    /// </summary>
+    [Fact]
+    public void Reverse_mirrors_the_first_move_at_0_ms_in_its_own_step()
+    {
+        var curve = new PatternCurve(new PatternTrack(new[] { 0, 1, 2, 3 }, new[] { 10, -10, 10, -10 }, new[] { 0, 0, 0, 0 }), 3);
+        var cursor = new PatternCursor(curve, 1, repeat: false);
+        for (int t = 0; t <= 3; t++) cursor.Advance(t, out _, out _);   // 10, 0, 10, 0: it passes its start at 1 ms
+        var back = new PatternReturnPath(curve, 1, cursor.CurveMs, cursor.Emitted, PatternReturn.Reverse);
+
+        var moves = new System.Collections.Generic.List<int>();
+        for (int t = 0; ; t++)
+        {
+            bool more = back.Advance(t, out int dx, out _);
+            moves.Add(dx);
+            if (!more) break;
+        }
+
+        Assert.Equal(new[] { 0, 10, -10, 10, -10 }, moves);   // r = 3, 2, 1, 0 (the move at 0 ms), then home
+        Assert.True(back.IsHome);
+        Assert.Equal(0, back.CurveMs);
+    }
+
     [Theory]
     [InlineData(0.25, 0.29)]
     [InlineData(1.37, 0.37)]
@@ -140,8 +165,8 @@ public sealed class PatternReturnPathTests
         Assert.Equal(-offset.X, sx);
         Assert.Equal(-offset.Y, sy);
         Assert.Equal((sx, sy), back.Emitted);
-        // The same time as the way out (within one step).
-        Assert.InRange((calls - 1) * step, cursor.CurveMs / speed - step, cursor.CurveMs / speed + step);
+        // The same time as the way out, within one step - plus one step that mirrors the way out's instant first move (a bin at 0 ms).
+        Assert.InRange((calls - 1) * step, cursor.CurveMs / speed - step, cursor.CurveMs / speed + 2 * step);
     }
 
     [Fact]

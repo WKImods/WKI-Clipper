@@ -18,6 +18,7 @@ public sealed class PatternReturnPath
     private readonly long _offsetX, _offsetY;   // what the way out sent
     private readonly PatternReturn _mode;
     private long _x, _y;
+    private double _curveMs;
     private bool _done;
 
     /// <param name="speed">Clamped like <see cref="PatternCursor"/>.</param>
@@ -37,10 +38,20 @@ public sealed class PatternReturnPath
         (_fromX, _fromY) = ((long)Math.Round(ax), (long)Math.Round(ay));
         (_offsetX, _offsetY) = offset;
         _mode = mode;
+        _curveMs = _fromMs;
     }
 
     /// <summary>Everything the way back sent so far.</summary>
     public (long X, long Y) Emitted => (_x, _y);
+
+    /// <summary>Back at the start: the last <see cref="Advance"/> returned false.</summary>
+    public bool IsHome => _done;
+
+    /// <summary>
+    /// Where on the curve the way back is after the last <see cref="Advance"/>: <c>fromCurveMs</c> before the first call, then counting
+    /// down; 0 once it is back (Jump: after its first call).
+    /// </summary>
+    public double CurveMs => _done ? 0 : _curveMs;
 
     /// <summary>
     /// The move from the last call to <paramref name="elapsedMs"/> since the way back began (negative, NaN or infinite count as 0). The
@@ -55,15 +66,20 @@ public sealed class PatternReturnPath
         // The way back's cumulative target: -offset at the start; on the way, the curve's position at r minus where it turned.
         long tx = -_offsetX, ty = -_offsetY;
         bool home = true;
+        _curveMs = 0;
         if (_mode == PatternReturn.Reverse)
         {
             double r = _fromMs - (elapsedMs > 0 && double.IsFinite(elapsedMs) ? elapsedMs * _speed : 0);
-            if (r > 0)
+            _curveMs = Math.Max(r, 0);
+            // The mirror of the way out, which went from the start to the curve's position at 0 ms (a bin at 0 ms is out at once) and on:
+            // back to that position at r = 0, then to the start - one bin per move, never two at once. Already there at r = 0 (nothing
+            // at 0 ms), it is home; a path that only passes its start on the way is not.
+            if (r >= 0)
             {
                 var (ax, ay) = _curve.At(r);
                 tx = (long)Math.Round(ax) - _fromX;
                 ty = (long)Math.Round(ay) - _fromY;
-                home = false;
+                home = r == 0 && tx == -_offsetX && ty == -_offsetY;
             }
         }
 

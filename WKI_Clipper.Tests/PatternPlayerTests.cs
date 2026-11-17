@@ -480,7 +480,8 @@ public sealed class PatternPlayerTests
         Assert.All(rig.Input.Of("moveby").Where(e => e.T >= 25), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
         Assert.Equal((0L, 0L), rig.Moved);
         Assert.Equal(new[] { "finished:a" }, rig.Notes);
-        Assert.Equal(38, rig.Log.Single().At);
+        // Back over the 19 ms of curve, then the mirror of the way out's first move at 0 ms: its own last step.
+        Assert.Equal(39, rig.Log.Single().At);
     }
 
     [Fact]
@@ -512,7 +513,7 @@ public sealed class PatternPlayerTests
         Assert.All(rig.Input.Of("moveby").Where(e => e.T > 7.5), e => Assert.True(e.A < 0, $"a forward move at {e.T}"));
         Assert.Equal(new[] { "finished:a" }, rig.Notes);
         if (ret == PatternReturn.Jump) Assert.Equal(new InputEvent(8, "moveby", -8, 0), rig.Input.Events[^1]);
-        else Assert.Equal(14, rig.Log.Single().At);   // back over the 7 ms it drove
+        else Assert.Equal(15, rig.Log.Single().At);   // back over the 7 ms it drove, then the mirror of its first move at 0 ms
     }
 
     [Fact]
@@ -604,6 +605,44 @@ public sealed class PatternPlayerTests
         Assert.Equal(new PixelPoint(100, 50), targets[^1]);            // exactly where the pass began
         Assert.All(targets, p => Assert.InRange(p.Y, 0, 50));          // the way back never overshoots it: the edge held the pointer
         Assert.Equal(new[] { "finished:a" }, rig.Notes);
+    }
+
+    /// <summary>
+    /// Up into the top edge, then back down: on its way back the pointer retraces its real way out - down from where the pass ended, held
+    /// at the edge where it was held, then to the start - and never jumps when it turns.
+    /// </summary>
+    [Fact]
+    public void Reverse_after_leaving_the_edge_again_retraces_the_real_way_without_a_jump()
+    {
+        var rig = new Rig();
+        rig.Host.Cursor = new PixelPoint(100, 50);
+        // 200 px up (150 run into the edge), then 150 px down again: the pass ends at y = 150.
+        var track = Bins(35, i => i < 20 ? (i, 0, -10) : (i, 0, 10));
+        rig.Play("a", Data(PatternTrack.Empty, track), replay: PatternReplay.Pointer, ret: PatternReturn.Reverse);
+
+        rig.Run();
+
+        var targets = rig.Targets;
+        Assert.Contains(new PixelPoint(100, 150), targets);                         // where the way out ended
+        Assert.Equal(new PixelPoint(100, 50), targets[^1]);                         // exactly where the pass began
+        Assert.All(Steps(targets), s => Assert.True(Math.Abs(s.Dy) <= 10, $"a jump of {s}"));   // never more than the track's own step
+        Assert.All(targets, p => Assert.InRange(p.Y, 0, 150));
+    }
+
+    [Fact]
+    public void Stopping_after_leaving_the_edge_again_goes_back_without_a_jump()
+    {
+        var rig = new Rig();
+        rig.Host.Cursor = new PixelPoint(100, 50);
+        var track = Bins(35, i => i < 20 ? (i, 0, -10) : (i, 0, 10));
+        rig.Play("a", Data(PatternTrack.Empty, track), replay: PatternReplay.Pointer, ret: PatternReturn.Reverse);
+        rig.Waiter.At(27.5, () => rig.Player.StopWithReturn("a"));                 // on the way down, off the edge again
+
+        rig.Run();
+
+        var targets = rig.Targets;
+        Assert.Equal(new PixelPoint(100, 50), targets[^1]);
+        Assert.All(Steps(targets), s => Assert.True(Math.Abs(s.Dy) <= 10, $"a jump of {s}"));
     }
 
     [Fact]
