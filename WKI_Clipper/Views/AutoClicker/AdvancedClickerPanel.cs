@@ -57,15 +57,25 @@ public sealed class AdvancedClickerPanel : ClickerPanel
             double interval = Cadence.IntervalMs(c);
             // The same limits as the click engine, the double-click pair included (Windows' double-click time, 500 ms when unknown).
             uint doubleClickMs = User32.GetDoubleClickTime();
-            bool cut = DutyCycle.SecondsCut(interval, Cadence.ClicksPerSecond(interval), c.DutyCycleSeconds, c.DoubleClick,
-                doubleClickMs == 0 ? 500 : doubleClickMs, out var actual);
-            double shown = DutyCycle.ShownSeconds(actual);
-            dutyCut.Text = shown <= 0
-                ? L.T($"tatsächlich unter {ClickerNumber.Format(0.0001, DutyCycle.ShownDecimals)} s",
-                      $"actually below {ClickerNumber.Format(0.0001, DutyCycle.ShownDecimals)} s")
-                : L.T($"tatsächlich {ClickerNumber.Format(shown, DutyCycle.ShownDecimals)} s",
-                      $"actually {ClickerNumber.Format(shown, DutyCycle.ShownDecimals)} s");
-            dutyCut.Visibility = c.DutyCycleEnabled && c.DutyCycleUnit == DutyUnit.Seconds && c.DutyMode == DutyMode.Click && cut
+            var actual = DutyCycle.ActualHolds(interval, Cadence.ClicksPerSecond(interval), c.DutyCycleSeconds, c.DoubleClick,
+                doubleClickMs == 0 ? 500 : doubleClickMs);
+            static string Seconds(double s)
+            {
+                double shown = DutyCycle.ShownSeconds(s);
+                return shown > 0
+                    ? ClickerNumber.Format(shown, DutyCycle.ShownDecimals) + " s"
+                    : L.T("unter ", "below ") + ClickerNumber.Format(0.0001, DutyCycle.ShownDecimals) + " s";
+            }
+            dutyCut.Text = actual switch
+            {
+                { Single: { } s, Pair: { } p } => L.T($"tatsächlich {Seconds(s)}, im Doppelklick {Seconds(p)}",
+                                                      $"actually {Seconds(s)}, {Seconds(p)} in a double click"),
+                { Single: { } s } => L.T($"tatsächlich {Seconds(s)}", $"actually {Seconds(s)}"),
+                { Pair: { } p } => L.T($"im Doppelklick tatsächlich {Seconds(p)}", $"actually {Seconds(p)} in a double click"),
+                _ => "",
+            };
+            dutyCut.Visibility = c.DutyCycleEnabled && c.DutyCycleUnit == DutyUnit.Seconds && c.DutyMode == DutyMode.Click
+                                 && (actual.Single is not null || actual.Pair is not null)
                 ? Visibility.Visible : Visibility.Collapsed;
         });
 

@@ -3,6 +3,12 @@ using WKI_Clipper.Models;
 
 namespace WKI_Clipper.Services.AutoClicker;
 
+/// <summary>
+/// What a seconds hold really becomes (<see cref="DutyCycle.ActualHolds"/>): <paramref name="Single"/> = a single press's hold when it is cut,
+/// <paramref name="Pair"/> = each press of a double click when that is shorter still; null = nothing to report.
+/// </summary>
+public readonly record struct HoldActuals(double? Single, double? Pair);
+
 /// <summary>How long each press is held inside its cycle (design section 4), given in percent of the cycle or in seconds.</summary>
 public static class DutyCycle
 {
@@ -74,21 +80,22 @@ public static class DutyCycle
     }
 
     /// <summary>
-    /// <see cref="SecondsCut(double, double, double, out double)"/> plus the double click: the engine shortens both presses of a pair so
-    /// that they and their gap fit into the cycle and the double-click window (<see cref="DoubleClickTiming.Plan"/>).
+    /// What really goes out for a seconds value, as the click engine sends it: <see cref="HoldActuals.Single"/> = a single press's hold
+    /// when the cycle or the rate cap cuts it (null: the full value); <see cref="HoldActuals.Pair"/> = with double click, each press of a
+    /// pair when it is shorter still - both presses and their gap must fit the cycle and the double-click window
+    /// (<see cref="DoubleClickTiming.Plan"/>); null otherwise. A double click still sends single presses now and then (the last click of an
+    /// odd limit, a click point with one click left), so the two are reported apart.
     /// </summary>
-    public static bool SecondsCut(double intervalMs, double cps, double seconds, bool doubleClick, double doubleClickTimeMs,
-                                  out double effectiveSeconds)
+    public static HoldActuals ActualHolds(double intervalMs, double cps, double seconds, bool doubleClick, double doubleClickTimeMs)
     {
-        bool cut = SecondsCut(intervalMs, cps, seconds, out effectiveSeconds);
-        if (!doubleClick || effectiveSeconds <= 0) return cut;
-        double pair = DoubleClickTiming.Plan(intervalMs, effectiveSeconds * 1000.0, doubleClickTimeMs).Hold1Ms / 1000.0;
-        if (pair * 1000.0 < effectiveSeconds * 1000.0 - CutEpsilonMs)
+        bool cut = SecondsCut(intervalMs, cps, seconds, out double single);
+        double? pair = null;
+        if (doubleClick && single > 0)
         {
-            effectiveSeconds = pair;
-            return true;
+            double pairSeconds = DoubleClickTiming.Plan(intervalMs, single * 1000.0, doubleClickTimeMs).Hold1Ms / 1000.0;
+            if (pairSeconds * 1000.0 < single * 1000.0 - CutEpsilonMs) pair = pairSeconds;
         }
-        return cut;
+        return new HoldActuals(cut ? single : null, pair);
     }
 
     /// <summary>Decimals of <see cref="ShownSeconds"/>.</summary>
