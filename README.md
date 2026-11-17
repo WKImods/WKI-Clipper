@@ -334,6 +334,10 @@ used is remembered.
 
 <img src="docs/screenshots/gaming-utilities-crosshair.png" height="420" alt="Gaming Utilities widget on the Crosshair tab: the Crosshair and AutoClicker tabs at the top, Applies to, the crosshair library and the image adjustments">
 
+**New in 0.20.0:** mouse patterns can go back to where they started after every pass — *Jump*
+back at once or *Reverse* along the driven path — so repeated runs no longer creep away (see
+[Mouse patterns](#mouse-patterns)); the clicker's hold time can be set in seconds as well as in %.
+
 **New in 0.19.2:** after a game switches the resolution the buffer is back within about two
 seconds, also while it records sound; a monitor in standby, the lock screen or a UAC prompt no
 longer bring restart notices: the buffer waits and records again as soon as the monitor and the
