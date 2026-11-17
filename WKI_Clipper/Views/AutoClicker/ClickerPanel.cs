@@ -132,19 +132,23 @@ public abstract class ClickerPanel : UserControl
         return box;
     }
 
-    /// <summary>A number box that commits on Enter or when it loses the focus; an unreadable entry falls back to the stored value.</summary>
-    protected TextBox Number(Func<ClickerSettings, double> get, Action<ClickerSettings, double> set, double width = 80, string? tooltip = null)
+    /// <summary>
+    /// A number box that commits on Enter or when it loses the focus; an unreadable entry falls back to the stored value. Shows up to
+    /// <paramref name="decimals"/> decimals.
+    /// </summary>
+    protected TextBox Number(Func<ClickerSettings, double> get, Action<ClickerSettings, double> set, double width = 80, string? tooltip = null,
+                             int decimals = 2)
     {
         var box = new TextBox { Width = width, ToolTip = tooltip, VerticalContentAlignment = VerticalAlignment.Center };
         void Apply()
         {
             if (_refreshing || Clicker is not { } current) return;
             if (ClickerNumber.TryParse(box.Text, out var value) && value != get(current)) Commit(c => set(c, value));
-            if (Clicker is { } after) box.Text = ClickerNumber.Format(get(after));   // the normalized value, also after a bad entry
+            if (Clicker is { } after) box.Text = ClickerNumber.Format(get(after), decimals);   // the normalized value, also after a bad entry
         }
         box.LostKeyboardFocus += (_, _) => Apply();
         box.KeyDown += (_, e) => { if (e.Key == Key.Enter) { Apply(); e.Handled = true; } };
-        OnSync(c => { if (!box.IsKeyboardFocused) box.Text = ClickerNumber.Format(get(c)); });
+        OnSync(c => { if (!box.IsKeyboardFocused) box.Text = ClickerNumber.Format(get(c), decimals); });
         return box;
     }
 

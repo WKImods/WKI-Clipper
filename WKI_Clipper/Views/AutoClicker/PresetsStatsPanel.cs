@@ -33,8 +33,9 @@ public sealed class PresetsStatsPanel : ClickerPanel
         foreach (var preset in ClickerPresets.Factory())
         {
             var p = preset;
-            var detail = L.T($"{ClickerNumber.Format(p.ClickSpeed)} pro Sekunde · Haltedauer {ClickerNumber.Format(p.DutyCyclePercent)} % · Zufall {ClickerNumber.Format(p.SpeedRandomizationPercent)} %",
-                             $"{ClickerNumber.Format(p.ClickSpeed)} per second · hold {ClickerNumber.Format(p.DutyCyclePercent)} % · random {ClickerNumber.Format(p.SpeedRandomizationPercent)} %")
+            var hold = DutyCycle.Describe(p.DutyCycleUnit, p.DutyCyclePercent, p.DutyCycleSeconds);
+            var detail = L.T($"{ClickerNumber.Format(p.ClickSpeed)} pro Sekunde · Haltedauer {hold} · Zufall {ClickerNumber.Format(p.SpeedRandomizationPercent)} %",
+                             $"{ClickerNumber.Format(p.ClickSpeed)} per second · hold {hold} · random {ClickerNumber.Format(p.SpeedRandomizationPercent)} %")
                 + (p.ClickLimitEnabled ? L.T($" · Limit {p.ClickLimit} Klicks", $" · limit {p.ClickLimit} clicks") : "");
             factory.Children.Add(ListRow(TwoLines(p.Name, detail), Btn(L.T("Anwenden", "Apply"), () => Commit(c => ClickerPresets.ApplyFactory(p, c)))));
         }

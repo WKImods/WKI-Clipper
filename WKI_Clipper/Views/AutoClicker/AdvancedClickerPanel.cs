@@ -33,9 +33,35 @@ public sealed class AdvancedClickerPanel : ClickerPanel
 
         var duty = Number(c => c.DutyCyclePercent, (c, v) => c.DutyCyclePercent = v, width: 60,
             tooltip: L.T("Wie lange die Taste pro Takt gedrückt bleibt. Bei hohen Raten automatisch begrenzt.", "How long the button stays down per cycle. Capped automatically at high rates."));
+        var dutySeconds = Number(c => c.DutyCycleSeconds, (c, v) => c.DutyCycleSeconds = v, width: 70,
+            tooltip: L.T("0,001 bis 3600 Sekunden. Nie länger als ein Takt.", "0.001 to 3600 seconds. Never longer than one cycle."),
+            decimals: DutyCycle.SecondsDecimals);
+        var dutyUnit = Choice(new[]
+        {
+            (DutyUnit.Percent, "%"),
+            (DutyUnit.Seconds, L.T("Sekunden", "seconds")),
+        }, c => c.DutyCycleUnit, (c, v) => c.DutyCycleUnit = v, minWidth: 100);
+        var dutyRange = Label("(0-100)");
+        var dutyCut = Muted("");
         timing.Children.Add(Row(L.T("Haltedauer (Duty)", "Hold time (duty)"),
-            Check(L.T("an", "on"), c => c.DutyCycleEnabled, (c, v) => c.DutyCycleEnabled = v), duty, Label("%  (0-100)")));
+            Check(L.T("an", "on"), c => c.DutyCycleEnabled, (c, v) => c.DutyCycleEnabled = v), duty, dutySeconds, dutyUnit, dutyRange, dutyCut));
+        VisibleWhen(duty, c => c.DutyCycleUnit == DutyUnit.Percent);
+        VisibleWhen(dutyRange, c => c.DutyCycleUnit == DutyUnit.Percent);
+        VisibleWhen(dutySeconds, c => c.DutyCycleUnit == DutyUnit.Seconds);
         EnabledWhen(duty, c => c.DutyCycleEnabled);
+        EnabledWhen(dutySeconds, c => c.DutyCycleEnabled);
+        EnabledWhen(dutyUnit, c => c.DutyCycleEnabled);
+        OnSync(c =>
+        {
+            double interval = Cadence.IntervalMs(c);
+            bool cut = DutyCycle.SecondsCut(interval, Cadence.ClicksPerSecond(interval), c.DutyCycleSeconds, out var actual);
+            dutyCut.Text = actual < DutyCycle.MinSeconds
+                ? L.T($"tatsächlich unter {ClickerNumber.Format(DutyCycle.MinSeconds, DutyCycle.SecondsDecimals)} s",
+                      $"actually below {ClickerNumber.Format(DutyCycle.MinSeconds, DutyCycle.SecondsDecimals)} s")
+                : L.T($"tatsächlich {ClickerNumber.Format(actual, DutyCycle.SecondsDecimals)} s",
+                      $"actually {ClickerNumber.Format(actual, DutyCycle.SecondsDecimals)} s");
+            dutyCut.Visibility = c.DutyCycleEnabled && c.DutyCycleUnit == DutyUnit.Seconds && cut ? Visibility.Visible : Visibility.Collapsed;
+        });
 
         timing.Children.Add(Row(L.T("Art", "Kind"), Choice(new[]
         {
