@@ -271,10 +271,15 @@ public static class ClickerNumber
     }
 
     /// <summary>Up to two decimals, the decimal separator of the app language, no thousands separator.</summary>
-    public static string Format(double value, bool english)
-        => value.ToString("0.##", CultureInfo.GetCultureInfo(english ? "en-US" : "de-DE"));
+    public static string Format(double value, bool english) => Format(value, english, 2);
 
     public static string Format(double value) => Format(value, L.English);
+
+    /// <summary>Up to <paramref name="decimals"/> decimals (1..15), otherwise as <see cref="Format(double, bool)"/>.</summary>
+    public static string Format(double value, bool english, int decimals)
+        => value.ToString("0." + new string('#', Math.Clamp(decimals, 1, 15)), CultureInfo.GetCultureInfo(english ? "en-US" : "de-DE"));
+
+    public static string Format(double value, int decimals) => Format(value, L.English, decimals);
 }
 
 /// <summary>The Start/Stop button of the status row: enabled, and whether it stops a running clicker.</summary>

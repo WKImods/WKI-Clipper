@@ -63,6 +63,7 @@ public static class ClickerSettingsRules
         s.RateInputMode = Valid(s.RateInputMode, RateInputMode.Rate);
         s.ClickUnit = Valid(s.ClickUnit, RateUnit.Second);
         s.DutyMode = Valid(s.DutyMode, DutyMode.Click);
+        s.DutyCycleUnit = Valid(s.DutyCycleUnit, DutyUnit.Percent);
         s.InputType = Valid(s.InputType, ClickerInput.Mouse);
         s.MouseButton = Valid(s.MouseButton, ClickerMouseButton.Left);
         s.KeyCase = Valid(s.KeyCase, KeyCase.Lower);
@@ -75,6 +76,7 @@ public static class ClickerSettingsRules
         s.DurationMs = Num(s.DurationMs, MinDurationMs(s.DoubleClick), MaxDurationMs, ClickerSettings.DefaultDurationMs);
         s.SpeedRandomizationPercent = Num(s.SpeedRandomizationPercent, 0, 200, 35);
         s.DutyCyclePercent = Num(s.DutyCyclePercent, 0, 100, 45);
+        s.DutyCycleSeconds = Num(RoundSeconds(s.DutyCycleSeconds), DutyCycle.MinSeconds, DutyCycle.MaxSeconds, DutyCycle.DefaultSeconds);
 
         s.KeyboardVk = s.KeyboardVk is < 1 or > 255 || ClickerVk.IsMouse(s.KeyboardVk) ? 0 : s.KeyboardVk;
 
@@ -247,6 +249,10 @@ public static class ClickerSettingsRules
         if (double.IsNaN(v) || double.IsInfinity(v) || v < 0) v = def;
         return Math.Clamp(v, min, max);
     }
+
+    /// <summary>Whole milliseconds, as the field shows them; NaN and infinities pass through so Num falls back to the default.</summary>
+    private static double RoundSeconds(double v)
+        => double.IsFinite(v) ? Math.Round(v, DutyCycle.SecondsDecimals, MidpointRounding.AwayFromZero) : v;
 
     private static long Num(long v, long min, long max, long def) => Math.Clamp(v < 0 ? def : v, min, max);
 

@@ -17,6 +17,10 @@ public enum RateUnit { Second, Minute, Hour, Day }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DutyMode { Click, Hold }
 
+/// <summary>How the hold time of a click is given: percent of the cycle, or seconds (both capped by the cycle, see <see cref="DutyCycle"/>).</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum DutyUnit { Percent, Seconds }
+
 /// <summary>What the clicker sends.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum ClickerInput { Mouse, Keyboard }
@@ -79,6 +83,8 @@ public sealed class ClickerPreset
     public double SpeedRandomizationPercent { get; set; } = 35;
     public bool DutyCycleEnabled { get; set; } = true;
     public double DutyCyclePercent { get; set; } = 45;
+    public DutyUnit DutyCycleUnit { get; set; } = DutyUnit.Percent;
+    public double DutyCycleSeconds { get; set; } = DutyCycle.DefaultSeconds;
     public DutyMode DutyMode { get; set; } = DutyMode.Click;
     public ClickerInput InputType { get; set; } = ClickerInput.Mouse;
     public ClickerMouseButton MouseButton { get; set; } = ClickerMouseButton.Left;
@@ -175,6 +181,12 @@ public sealed class ClickerSettings
     public double SpeedRandomizationPercent { get; set; } = 35;
     public bool DutyCycleEnabled { get; set; } = true;
     public double DutyCyclePercent { get; set; } = 45;
+
+    /// <summary>Which of <see cref="DutyCyclePercent"/> and <see cref="DutyCycleSeconds"/> sets the hold; the other one is kept for a switch back.</summary>
+    public DutyUnit DutyCycleUnit { get; set; } = DutyUnit.Percent;
+
+    /// <summary>Hold time in seconds (three decimals, <see cref="DutyCycle.MinSeconds"/> to <see cref="DutyCycle.MaxSeconds"/>), never longer than the cycle allows.</summary>
+    public double DutyCycleSeconds { get; set; } = DutyCycle.DefaultSeconds;
     public DutyMode DutyMode { get; set; } = DutyMode.Click;
 
     public ClickerInput InputType { get; set; } = ClickerInput.Mouse;

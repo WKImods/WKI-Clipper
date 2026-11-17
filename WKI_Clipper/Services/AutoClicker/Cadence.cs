@@ -14,7 +14,7 @@ public readonly record struct CadencePlan(double IntervalMs, double ClicksPerSec
         double interval = Cadence.IntervalMs(s);
         double cps = Cadence.ClicksPerSecond(interval);
         int cycles = Cadence.CyclesPerBatch(interval, s.DoubleClick);
-        double hold = DutyCycle.HoldMs(interval, cps, s.DutyCycleEnabled, s.DutyCyclePercent);
+        double hold = DutyCycle.HoldMs(interval, cps, s.DutyCycleEnabled, s.DutyCycleUnit, s.DutyCyclePercent, s.DutyCycleSeconds);
         return new CadencePlan(interval, cps, cycles, Cadence.BatchMs(interval, cycles), hold, s.DoubleClick);
     }
 }

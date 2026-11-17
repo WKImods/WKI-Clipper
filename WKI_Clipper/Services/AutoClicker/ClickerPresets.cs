@@ -75,6 +75,7 @@ public static class ClickerPresets
         settings.ClickSpeed = preset.ClickSpeed;
         settings.DutyCycleEnabled = true;
         settings.DutyCyclePercent = preset.DutyCyclePercent;
+        settings.DutyCycleUnit = DutyUnit.Percent;   // the factory holds are percentages; the user's seconds value stays for a switch back
         settings.SpeedRandomizationEnabled = true;
         settings.SpeedRandomizationPercent = preset.SpeedRandomizationPercent;
         settings.ClickLimitEnabled = preset.ClickLimitEnabled;
@@ -170,6 +171,7 @@ public static class ClickerPresets
         s.ExtendedSpeedLimit = p.ExtendedSpeedLimit;
         s.SpeedRandomizationEnabled = p.SpeedRandomizationEnabled; s.SpeedRandomizationPercent = p.SpeedRandomizationPercent;
         s.DutyCycleEnabled = p.DutyCycleEnabled; s.DutyCyclePercent = p.DutyCyclePercent; s.DutyMode = p.DutyMode;
+        s.DutyCycleUnit = p.DutyCycleUnit; s.DutyCycleSeconds = p.DutyCycleSeconds;
         s.InputType = p.InputType; s.MouseButton = p.MouseButton; s.KeyboardVk = p.KeyboardVk; s.KeyCase = p.KeyCase;
         s.DoubleClick = p.DoubleClick;
         s.ClickLimitEnabled = p.ClickLimitEnabled; s.ClickLimit = p.ClickLimit;
@@ -189,6 +191,7 @@ public static class ClickerPresets
         p.ExtendedSpeedLimit = s.ExtendedSpeedLimit;
         p.SpeedRandomizationEnabled = s.SpeedRandomizationEnabled; p.SpeedRandomizationPercent = s.SpeedRandomizationPercent;
         p.DutyCycleEnabled = s.DutyCycleEnabled; p.DutyCyclePercent = s.DutyCyclePercent; p.DutyMode = s.DutyMode;
+        p.DutyCycleUnit = s.DutyCycleUnit; p.DutyCycleSeconds = s.DutyCycleSeconds;
         p.InputType = s.InputType; p.MouseButton = s.MouseButton; p.KeyboardVk = s.KeyboardVk; p.KeyCase = s.KeyCase;
         p.DoubleClick = s.DoubleClick;
         p.ClickLimitEnabled = s.ClickLimitEnabled; p.ClickLimit = s.ClickLimit;

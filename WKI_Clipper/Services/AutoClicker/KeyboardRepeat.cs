@@ -38,11 +38,18 @@ public static class KeyboardRepeat
     public static double RepeatTimeMs(int repeatIndex, RepeatPlan plan) => plan.DelayMs + repeatIndex * plan.IntervalMs;
 
     /// <summary>
-    /// Keyboard output holds the key instead of tapping it: Duty Mode "Hold", or a duty cycle switched on at 100 %. The raw percent
-    /// decides (not the rate-capped one): 100 % is the user's explicit "keep it down". The mouse never uses key repeats.
+    /// Keyboard output holds the key instead of tapping it: Duty Mode "Hold", or a duty cycle switched on at 100 % in the percent
+    /// unit. The raw percent decides (not the rate-capped one): 100 % is the user's explicit "keep it down". A seconds value never
+    /// means "keep it down", however long it is. The mouse never uses key repeats.
     /// </summary>
-    public static bool IsHoldMode(ClickerInput input, bool dutyEnabled, double dutyPercent, DutyMode dutyMode)
-        => input == ClickerInput.Keyboard && (dutyMode == DutyMode.Hold || (dutyEnabled && dutyPercent >= 100));
+    public static bool IsHoldMode(ClickerInput input, bool dutyEnabled, DutyUnit unit, double dutyPercent, DutyMode dutyMode)
+        => input == ClickerInput.Keyboard
+           && (dutyMode == DutyMode.Hold || (dutyEnabled && unit == DutyUnit.Percent && dutyPercent >= 100));
 
-    public static bool IsHoldMode(ClickerSettings s) => IsHoldMode(s.InputType, s.DutyCycleEnabled, s.DutyCyclePercent, s.DutyMode);
+    /// <summary>The percent unit (<see cref="IsHoldMode(ClickerInput, bool, DutyUnit, double, DutyMode)"/>).</summary>
+    public static bool IsHoldMode(ClickerInput input, bool dutyEnabled, double dutyPercent, DutyMode dutyMode)
+        => IsHoldMode(input, dutyEnabled, DutyUnit.Percent, dutyPercent, dutyMode);
+
+    public static bool IsHoldMode(ClickerSettings s)
+        => IsHoldMode(s.InputType, s.DutyCycleEnabled, s.DutyCycleUnit, s.DutyCyclePercent, s.DutyMode);
 }

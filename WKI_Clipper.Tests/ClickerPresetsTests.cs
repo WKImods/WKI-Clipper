@@ -128,6 +128,38 @@ public sealed class ClickerPresetsTests
     }
 
     [Fact]
+    public void A_factory_preset_sets_the_percent_unit()
+    {
+        var s = new ClickerSettings { DutyCycleUnit = DutyUnit.Seconds, DutyCycleSeconds = 0.25 };
+        ClickerPresets.ApplyFactory(ClickerPresets.Factory()[0], s);
+        Assert.Equal(DutyUnit.Percent, s.DutyCycleUnit);
+        Assert.Equal(45, s.DutyCyclePercent);
+        Assert.All(ClickerPresets.Factory(), p => Assert.Equal(DutyUnit.Percent, p.DutyCycleUnit));
+    }
+
+    [Fact]
+    public void A_user_preset_keeps_unit_and_seconds()
+    {
+        var s = new ClickerSettings { DutyCycleUnit = DutyUnit.Seconds, DutyCycleSeconds = 0.25, DutyCyclePercent = 30 };
+        var preset = ClickerPresets.Capture(s, "secs");
+        Assert.Equal((DutyUnit.Seconds, 0.25, 30.0), (preset.DutyCycleUnit, preset.DutyCycleSeconds, preset.DutyCyclePercent));
+
+        var target = new ClickerSettings();
+        ClickerPresets.Apply(preset, target);
+        Assert.Equal((DutyUnit.Seconds, 0.25, 30.0), (target.DutyCycleUnit, target.DutyCycleSeconds, target.DutyCyclePercent));
+
+        var imported = ClickerPresets.Import(new List<ClickerPreset>(), ClickerPresets.Export(preset)).Preset!;
+        Assert.Equal((DutyUnit.Seconds, 0.25), (imported.DutyCycleUnit, imported.DutyCycleSeconds));
+    }
+
+    [Fact]
+    public void A_preset_file_without_the_unit_imports_in_percent()
+    {
+        var r = ClickerPresets.Import(new List<ClickerPreset>(), "{\"Version\":1,\"Preset\":{\"Name\":\"old\",\"DutyCyclePercent\":60}}");
+        Assert.Equal((DutyUnit.Percent, 0.05, 60.0), (r.Preset!.DutyCycleUnit, r.Preset.DutyCycleSeconds, r.Preset.DutyCyclePercent));
+    }
+
+    [Fact]
     public void Apply_deep_copies_the_lists()
     {
         var preset = new ClickerPreset
