@@ -73,6 +73,34 @@ public static class DutyCycle
         return false;
     }
 
+    /// <summary>
+    /// <see cref="SecondsCut(double, double, double, out double)"/> plus the double click: the engine shortens both presses of a pair so
+    /// that they and their gap fit into the cycle and the double-click window (<see cref="DoubleClickTiming.Plan"/>).
+    /// </summary>
+    public static bool SecondsCut(double intervalMs, double cps, double seconds, bool doubleClick, double doubleClickTimeMs,
+                                  out double effectiveSeconds)
+    {
+        bool cut = SecondsCut(intervalMs, cps, seconds, out effectiveSeconds);
+        if (!doubleClick || effectiveSeconds <= 0) return cut;
+        double pair = DoubleClickTiming.Plan(intervalMs, effectiveSeconds * 1000.0, doubleClickTimeMs).Hold1Ms / 1000.0;
+        if (pair * 1000.0 < effectiveSeconds * 1000.0 - CutEpsilonMs)
+        {
+            effectiveSeconds = pair;
+            return true;
+        }
+        return cut;
+    }
+
+    /// <summary>Decimals of <see cref="ShownSeconds"/>.</summary>
+    public const int ShownDecimals = 4;
+
+    /// <summary>
+    /// The actual hold as the note shows it: floored to 0.1 ms, so a cut hold never shows as the value that was typed (whole milliseconds)
+    /// even when it is only a fraction of a millisecond shorter.
+    /// </summary>
+    public static double ShownSeconds(double effectiveSeconds)
+        => double.IsFinite(effectiveSeconds) && effectiveSeconds > 0 ? Math.Floor(effectiveSeconds * 10000 + 1e-6) / 10000 : 0;
+
     /// <summary>"45 %" or "0,05 s" (the app language's decimal separator; seconds with up to three decimals).</summary>
     public static string Describe(DutyUnit unit, double percent, double seconds)
         => unit == DutyUnit.Seconds

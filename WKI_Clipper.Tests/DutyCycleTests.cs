@@ -55,6 +55,36 @@ public sealed class DutyCycleTests
         Assert.Equal(0.007, cut, 9);
     }
 
+    /// <summary>Double click: both presses and their gap must fit into the cycle and the double-click window - the engine shortens them.</summary>
+    [Fact]
+    public void A_double_click_pair_cuts_the_seconds_hold_too()
+    {
+        double pairHold = DoubleClickTiming.Plan(500, 300, 500).Hold1Ms / 1000.0;
+
+        Assert.True(DutyCycle.SecondsCut(500, 2, 0.3, doubleClick: true, doubleClickTimeMs: 500, out var cut));
+        Assert.Equal(pairHold, cut, 9);
+        Assert.True(cut < 0.3);
+
+        Assert.False(DutyCycle.SecondsCut(500, 2, 0.3, doubleClick: false, doubleClickTimeMs: 500, out var single));
+        Assert.Equal(0.3, single, 9);
+    }
+
+    [Fact]
+    public void A_double_click_pair_that_fits_cuts_nothing()
+    {
+        Assert.False(DutyCycle.SecondsCut(1000, 1, 0.05, doubleClick: true, doubleClickTimeMs: 500, out var kept));
+        Assert.Equal(0.05, kept, 9);
+    }
+
+    /// <summary>The note never shows the typed value for a hold that was cut: floored to 0.1 ms, so a tiny cut still shows as smaller.</summary>
+    [Theory]
+    [InlineData(0.04, 0.04)]
+    [InlineData(0.0196, 0.0196)]
+    [InlineData(0.049996, 0.0499)]
+    [InlineData(0.00199999, 0.0019)]
+    public void The_actual_hold_is_shown_floored_to_a_tenth_of_a_millisecond(double actual, double shown)
+        => Assert.Equal(shown, DutyCycle.ShownSeconds(actual), 9);
+
     [Fact]
     public void A_seconds_value_exactly_at_the_interval_is_not_cut()
     {

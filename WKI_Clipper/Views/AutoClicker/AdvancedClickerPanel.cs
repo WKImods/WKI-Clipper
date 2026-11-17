@@ -1,5 +1,6 @@
 using System.Windows;
 using WKI_Clipper.Models;
+using WKI_Clipper.Native;
 using WKI_Clipper.Services;
 using WKI_Clipper.Services.AutoClicker;
 
@@ -54,13 +55,18 @@ public sealed class AdvancedClickerPanel : ClickerPanel
         OnSync(c =>
         {
             double interval = Cadence.IntervalMs(c);
-            bool cut = DutyCycle.SecondsCut(interval, Cadence.ClicksPerSecond(interval), c.DutyCycleSeconds, out var actual);
-            dutyCut.Text = actual < DutyCycle.MinSeconds
-                ? L.T($"tatsächlich unter {ClickerNumber.Format(DutyCycle.MinSeconds, DutyCycle.SecondsDecimals)} s",
-                      $"actually below {ClickerNumber.Format(DutyCycle.MinSeconds, DutyCycle.SecondsDecimals)} s")
-                : L.T($"tatsächlich {ClickerNumber.Format(actual, DutyCycle.SecondsDecimals)} s",
-                      $"actually {ClickerNumber.Format(actual, DutyCycle.SecondsDecimals)} s");
-            dutyCut.Visibility = c.DutyCycleEnabled && c.DutyCycleUnit == DutyUnit.Seconds && cut ? Visibility.Visible : Visibility.Collapsed;
+            // The same limits as the click engine, the double-click pair included (Windows' double-click time, 500 ms when unknown).
+            uint doubleClickMs = User32.GetDoubleClickTime();
+            bool cut = DutyCycle.SecondsCut(interval, Cadence.ClicksPerSecond(interval), c.DutyCycleSeconds, c.DoubleClick,
+                doubleClickMs == 0 ? 500 : doubleClickMs, out var actual);
+            double shown = DutyCycle.ShownSeconds(actual);
+            dutyCut.Text = shown <= 0
+                ? L.T($"tatsächlich unter {ClickerNumber.Format(0.0001, DutyCycle.ShownDecimals)} s",
+                      $"actually below {ClickerNumber.Format(0.0001, DutyCycle.ShownDecimals)} s")
+                : L.T($"tatsächlich {ClickerNumber.Format(shown, DutyCycle.ShownDecimals)} s",
+                      $"actually {ClickerNumber.Format(shown, DutyCycle.ShownDecimals)} s");
+            dutyCut.Visibility = c.DutyCycleEnabled && c.DutyCycleUnit == DutyUnit.Seconds && c.DutyMode == DutyMode.Click && cut
+                ? Visibility.Visible : Visibility.Collapsed;
         });
 
         timing.Children.Add(Row(L.T("Art", "Kind"), Choice(new[]
